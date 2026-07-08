@@ -1,0 +1,18 @@
+services:
+  dependency-track:
+    image: dependencytrack/bundled:latest
+    container_name: dependency-track
+    ports:
+      - "8080:8080"
+    volumes:
+      - dependency-track-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 8192m
+        reservations:
+          memory: 4096m
+    restart: unless-stopped
+
+volumes:
+  dependency-track-data:
