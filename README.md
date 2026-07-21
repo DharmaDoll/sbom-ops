@@ -22,6 +22,8 @@ CI/CD → CycloneDX SBOM → Dependency-Track → Orchestrator → KEV / EPSS / 
 - AGENTS.md — AI development guide
 - ARCHITECTURE.md — system design
 - SPEC.md — implementation specification
+- docs/use-cases.md — concrete operational flows and usage scenarios
+- docs/dependency-track/setup.md — local Dependency-Track bootstrap
 
 ## Design Principles
 1. SBOM is the source of truth for software composition.

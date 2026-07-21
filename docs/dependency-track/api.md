@@ -23,6 +23,7 @@ The orchestrator is expected to use API areas related to:
 - Vulnerabilities
 - Analysis
 - VEX
+- EPSS and finding risk metadata
 - Teams/API keys
 
 ## Implementation Rule
@@ -32,6 +33,11 @@ All Dependency-Track API calls must be implemented in:
 `src/sbom_ops/clients/dependency_track.py`
 
 The client must expose intent-based methods, not raw endpoint names.
+
+Dependency-Track is the preferred source for EPSS values and VEX-derived
+analysis state. The client should expose normalized finding fields for these
+values. VEX upload and analysis-state mutation require explicit workflow
+support and permissions; they are not part of the MVP.
 
 Good:
 

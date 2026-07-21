@@ -4,7 +4,7 @@
 
 - Dependency-Track API
 - KEV lookup
-- EPSS lookup
+- Dependency-Track EPSS retrieval
 - Priority Engine
 - GitHub Issues
 - GitHub Actions
@@ -41,6 +41,10 @@
 
 - VEX
 - Suppression Sync
+
+VEX ingestion remains owned by Dependency-Track. sbom-ops reads the resulting
+analysis state and uses it for workflow decisions; it does not independently
+approve, suppress, or mark findings as not affected.
 
 ---
 

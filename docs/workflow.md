@@ -5,14 +5,17 @@ SBOM
 ↓
 
 Dependency-Track
+  ├─ EPSS
+  └─ VEX / analysis state
 
 ↓
 
-Threat Intelligence
+KEV enrichment
 
 ↓
 
 Priority Engine
+(EPSS and VEX state from Dependency-Track)
 
 ↓
 

@@ -3,6 +3,9 @@
 ## Goal
 Transform SBOM vulnerabilities into actionable engineering tasks.
 
+Concrete operational flows and acceptance conditions are defined in
+`docs/use-cases.md`.
+
 Dependency-Track is intentionally kept as an inventory platform.
 Workflow management belongs outside Dependency-Track.
 
@@ -39,7 +42,7 @@ Stores
 ### Intelligence Layer
 Collect
 - KEV
-- EPSS
+- EPSS (prefer Dependency-Track-provided value)
 - NVD
 - GitHub Advisory
 
@@ -207,15 +210,22 @@ Responsibilities owned by Dependency-Track:
 - Vulnerability correlation
 - Policy violation tracking
 - Analysis state storage
-- VEX-related exploitability information
+- EPSS data and risk information
+- VEX ingestion and VEX-derived exploitability information
 
 Responsibilities owned by this repository:
 - Polling findings
-- Enriching findings with KEV and EPSS
+- Enriching findings with KEV
+- Using Dependency-Track-provided EPSS in priority calculation
 - Calculating operational priority
 - Creating remediation tasks
 - Synchronizing workflow state with GitHub Issues
 - Producing operational reports
+
+An external EPSS adapter may be retained as an explicitly configured fallback
+or verification source. It must not silently replace Dependency-Track values.
+This repository reads Dependency-Track analysis/VEX state but does not make
+independent VEX decisions or mutate analysis state automatically.
 
 Dependency-Track remains the inventory system.
 GitHub Issues remains the task system.
