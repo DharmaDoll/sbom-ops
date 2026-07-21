@@ -12,6 +12,12 @@ Official documentation must be treated as the source of truth:
 - https://docs.dependencytrack.org/usage/vex/
 - https://docs.dependencytrack.org/usage/analysis/
 
+Local repository guides:
+
+- `setup.md` for local bootstrap and API validation
+- `api.md` for client implementation rules
+- `operations.md` for day-2 operating flow
+
 Dependency-Track is used for:
 
 - SBOM ingestion

@@ -22,8 +22,10 @@ Use these official documents as the source of truth:
 - https://docs.dependencytrack.org/getting-started/deploy-docker/
 - https://docs.dependencytrack.org/getting-started/initial-startup/
 - https://docs.dependencytrack.org/getting-started/configuration/
+- https://docs.dependencytrack.org/getting-started/recurring-tasks/
 - https://docs.dependencytrack.org/integrations/rest-api/
 - https://docs.dependencytrack.org/usage/cicd/
+- https://docs.dependencytrack.org/datasources/private-vuln-repo/
 - https://docs.dependencytrack.org/administration/users-and-permissions/
 
 ## Local Topology
@@ -226,6 +228,25 @@ export SBOM_OPS_DT_PROJECT_UUID=replace-with-project-uuid
 scripts/upload_bom.sh path/to/bom.xml
 ```
 
+Repository demo SBOM with project auto-create:
+
+```bash
+export SBOM_OPS_SBOM_UPLOAD_API_KEY=replace-with-upload-key
+make dt-demo-upload
+```
+
+This uploads:
+
+```text
+examples/sboms/vulnerable-demo.cdx.json
+```
+
+to project:
+
+```text
+sbom-ops-vulnerable-demo / 0.1.0
+```
+
 Alternative auto-create flow:
 
 ```bash
@@ -272,6 +293,119 @@ export SBOM_OPS_DT_PROJECT_UUID=replace-with-project-uuid
 ```
 
 The upload key should be kept separate from the orchestrator key.
+
+For local development, store real secrets in `.env`.
+Do not put real API keys in `.env.example` or committed documentation.
+
+This repository ignores `.env` via `.gitignore`.
+Load it into the current shell before running upload helpers:
+
+```bash
+set -a
+source .env
+set +a
+```
+
+For the repository demo SBOM, project auto-create uses:
+
+```bash
+SBOM_OPS_DT_PROJECT_NAME=sbom-ops-vulnerable-demo
+SBOM_OPS_DT_PROJECT_VERSION=0.1.0
+```
+
+When project auto-create is used, the upload API key needs both:
+
+- `BOM_UPLOAD`
+- `PROJECT_CREATION_UPLOAD`
+
+## Reference Notes
+
+### API keys
+
+Dependency-Track UI credentials and REST API keys are separate.
+Scripts, CI jobs, and this repository's upload helper authenticate with the
+`X-Api-Key` HTTP header.
+
+API keys are created for teams.
+Creating a team does not automatically create an API key.
+New API keys are shown once when created and are stored hashed afterward, so save
+the key immediately in a local secret store such as `.env`.
+
+Use separate keys for separate responsibilities:
+
+- SBOM upload automation
+- orchestrator read access
+- future analysis-write workflows, if explicitly implemented
+
+### Vulnerability database count
+
+The global vulnerability count shown in the Dependency-Track UI is not the count
+of findings in the demo project.
+It is the local vulnerability intelligence catalog mirrored from configured
+datasources such as NVD, GitHub Advisories, OSV, and other enabled sources.
+
+For project validation, inspect the project-specific views instead:
+
+```text
+Projects
+-> sbom-ops-vulnerable-demo / 0.1.0
+-> Components
+-> Vulnerabilities or Audit Vulnerabilities
+```
+
+### Update cadence
+
+Dependency-Track uses asynchronous recurring tasks for mirroring, analysis, and
+metrics.
+Default intervals include:
+
+- GitHub Advisories mirror: every 24 hours
+- NVD mirror: every 24 hours
+- EPSS mirror: immediately after the NVD mirror task
+- OSV mirror: every 24 hours
+- VulnDB sync: every 24 hours, when enabled and configured
+- full portfolio vulnerability analysis: every 24 hours
+- portfolio metrics update: every 1 hour
+- vulnerability database metrics update: every 1 hour
+
+Dependency-Track also analyzes components during BOM ingestion and when
+components are changed through the REST API or UI.
+
+Task intervals can be configured in the administration panel.
+Changing task intervals should be rare because short intervals can add
+significant system load.
+Interval changes require an application restart to take effect.
+
+### Private vulnerability data
+
+Dependency-Track can maintain internally managed vulnerabilities in its private
+vulnerability repository.
+These vulnerabilities use the `INTERNAL` source and require a unique
+vulnerability ID.
+
+Creating internal vulnerabilities requires:
+
+- `VULNERABILITY_MANAGEMENT`
+
+Internal vulnerabilities can include severity, CVSS or OWASP risk rating,
+description, details, recommendation, references, and affected components.
+
+Affected components must be configured for the vulnerability to be picked up by
+Dependency-Track's scanner.
+Use identifiers that match ingested SBOM component identities, usually Package
+URL for modern BOM generators.
+
+Examples:
+
+```text
+pkg:pypi/django@2.2.0
+pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+```
+
+Dependency-Track does not automatically convert between Package URL and CPE.
+If the SBOM contains Package URLs, define affected components with Package URLs.
+If exact versions are used, include the version in the identifier.
+If version ranges are used, provide the package identifier and range bounds.
 
 ## Troubleshooting
 
