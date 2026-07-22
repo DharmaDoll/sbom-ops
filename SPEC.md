@@ -111,6 +111,7 @@ SBOM_OPS_EPSS_API_URL
 SBOM_OPS_KEV_FEED_URL
 SBOM_OPS_PRIORITY_P1_EPSS_THRESHOLD
 SBOM_OPS_PRIORITY_P2_CVSS_THRESHOLD
+SBOM_OPS_CREATE_ISSUES_FOR
 SBOM_OPS_ISSUE_LABEL_PREFIX
 SBOM_OPS_DRY_RUN
 SBOM_OPS_PROJECT_UUIDS
@@ -200,6 +201,7 @@ Required fields:
 - `has_known_active_exploitation: bool`
 - `analysis_state: str | None`
 - `is_suppressed: bool`
+- `analysis_detail: str | None`
 
 `epss_score` should be populated from the Dependency-Track finding when
 available. The external EPSS client is optional and may only be used as a
@@ -325,6 +327,7 @@ Dependency-Track unless explicitly configured.
 Required methods:
 
 - `find_open_issue_by_finding_key(finding_key: str)`
+- `list_open_issues(label: str)`
 - `create_issue(...)`
 - `update_issue(...)`
 - `close_issue(...)`

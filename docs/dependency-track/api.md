@@ -39,6 +39,18 @@ analysis state. The client should expose normalized finding fields for these
 values. VEX upload and analysis-state mutation require explicit workflow
 support and permissions; they are not part of the MVP.
 
+The MVP read path uses the following intent-level operations:
+
+- `GET /api/v1/project` to enumerate accessible projects
+- `GET /api/v1/project/{uuid}` to resolve project metadata
+- `GET /api/v1/finding/project/{uuid}` to retrieve findings and analysis state
+- `GET /api/v1/vulnerability/project/{uuid}` as the EPSS fallback source when a
+  finding response does not include an EPSS value
+
+The findings API requires the `VIEW_VULNERABILITY` permission. Endpoint details
+must be validated against the target instance's OpenAPI document before
+production deployment.
+
 Good:
 
 ```python

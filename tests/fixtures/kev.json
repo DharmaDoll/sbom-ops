@@ -1,0 +1,7 @@
+{
+  "title": "CISA Known Exploited Vulnerabilities Catalog",
+  "vulnerabilities": [
+    {"cveID": "CVE-2026-0001"},
+    {"cveID": "CVE-2026-0003"}
+  ]
+}

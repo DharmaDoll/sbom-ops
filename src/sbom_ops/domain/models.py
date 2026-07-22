@@ -46,6 +46,9 @@ class Enrichment:
     in_kev: bool
     epss_score: float | None
     has_known_active_exploitation: bool = False
+    analysis_state: str | None = None
+    is_suppressed: bool = False
+    analysis_detail: str | None = None
 
 
 @dataclass(frozen=True)

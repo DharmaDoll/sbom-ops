@@ -1,0 +1,8 @@
+[
+  {
+    "vulnID": "CVE-2026-0002",
+    "epssScore": 0.82,
+    "cvssV3BaseScore": 8.0,
+    "components": [{"name": "lib-a", "version": "1.2.3"}]
+  }
+]

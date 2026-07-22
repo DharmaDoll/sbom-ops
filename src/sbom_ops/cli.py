@@ -25,7 +25,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_plan(config: AppConfig) -> int:
-    print(config)
+    print("sbom-ops runtime plan")
+    print(f"Dependency-Track: {config.dependency_track.base_url}")
+    print(f"GitHub repository: {config.github.owner}/{config.github.repo}")
+    print(
+        "EPSS source: Dependency-Track "
+        f"(fallback: {config.intelligence.epss_api_url})"
+    )
+    print(f"KEV feed: {config.intelligence.kev_feed_url}")
+    print(f"P1 EPSS threshold: {config.priority.p1_epss_threshold}")
+    print(f"P2 CVSS threshold: {config.priority.p2_cvss_threshold}")
+    print(f"Create issues for: {', '.join(config.priority.create_issues_for)}")
+    print(f"Projects: {', '.join(config.runtime.project_uuids) or 'all accessible'}")
+    print(f"Dry run: {config.runtime.dry_run}")
     return 0
 
 

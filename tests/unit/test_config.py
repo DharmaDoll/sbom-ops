@@ -36,3 +36,16 @@ def test_cli_project_overrides_environment(monkeypatch: pytest.MonkeyPatch) -> N
     )
 
     assert config.runtime.project_uuids == ("cli-project",)
+
+
+def test_issue_priority_filter_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SBOM_OPS_DT_BASE_URL", "https://dtrack.example.com")
+    monkeypatch.setenv("SBOM_OPS_DT_API_KEY", "dt-key")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_TOKEN", "gh-token")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_OWNER", "acme")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_REPO", "svc")
+    monkeypatch.setenv("SBOM_OPS_CREATE_ISSUES_FOR", "P0, p2")
+
+    config = load_config(Namespace(dry_run=False, project_uuid=None, log_level=None))
+
+    assert config.priority.create_issues_for == ("P0", "P2")

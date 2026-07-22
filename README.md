@@ -6,7 +6,9 @@ This project builds an operational framework around OWASP Dependency-Track.
 Dependency-Track is treated as the **SBOM inventory and vulnerability analysis platform**.
 GitHub Issues (or Jira) is treated as the **remediation workflow platform**.
 
-An orchestrator connects these systems and enriches findings with external threat intelligence (CISA KEV, EPSS, GitHub Security Advisories, etc.) before creating actionable engineering tasks.
+An orchestrator connects these systems, uses Dependency-Track-provided EPSS and
+VEX/analysis state, enriches findings with CISA KEV data, and creates actionable
+engineering tasks.
 
 ## Goals
 - Centralize SBOM management
@@ -16,7 +18,7 @@ An orchestrator connects these systems and enriches findings with external threa
 - Support VEX and future reachability analysis
 
 ## High-Level Architecture
-CI/CD → CycloneDX SBOM → Dependency-Track → Orchestrator → KEV / EPSS / LLM → GitHub Issues → Developers → CI → Dependency-Track
+CI/CD → CycloneDX SBOM → Dependency-Track (EPSS/VEX) → Orchestrator (KEV/priority) → GitHub Issues → Developers → CI → Dependency-Track
 
 ## Repository Documentation
 - AGENTS.md — AI development guide

@@ -1,0 +1,28 @@
+[
+  {
+    "component": {"name": "openssl", "version": "3.0.0"},
+    "vulnerability": {
+      "uuid": "vulnerability-1",
+      "vulnId": "CVE-2026-0001",
+      "severity": "CRITICAL",
+      "cvssV3BaseScore": 9.8,
+      "epssScore": 0.91,
+      "cwes": [{"cweId": 78}],
+      "description": "Example vulnerability"
+    },
+    "analysis": {"state": "NOT_SET", "isSuppressed": false},
+    "uuid": "finding-1"
+  },
+  {
+    "component": {"name": "lib-a", "version": "1.2.3"},
+    "vulnerability": {
+      "uuid": "vulnerability-2",
+      "vulnId": "CVE-2026-0002",
+      "severity": "HIGH",
+      "cvssV3BaseScore": 8.0,
+      "cwes": [{"cweId": 79}]
+    },
+    "analysis": {"state": "NOT_AFFECTED", "isSuppressed": false},
+    "uuid": "finding-2"
+  }
+]

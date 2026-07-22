@@ -1,0 +1,8 @@
+[
+  {
+    "number": 10,
+    "title": "old finding",
+    "body": "<!-- sbom-ops:finding-key=project-1:old-lib:1.0:CVE-2025-0001 -->",
+    "labels": [{"name": "sbom"}]
+  }
+]

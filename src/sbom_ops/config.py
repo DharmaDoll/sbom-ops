@@ -74,6 +74,11 @@ def _parse_project_uuids(cli_project: str | None) -> tuple[str, ...]:
     return tuple(item.strip() for item in raw.split(",") if item.strip())
 
 
+def _parse_priorities() -> tuple[str, ...]:
+    raw = os.getenv("SBOM_OPS_CREATE_ISSUES_FOR", "P0,P1")
+    return tuple(item.strip().upper() for item in raw.split(",") if item.strip())
+
+
 def load_config(args: Any) -> AppConfig:
     dependency_track = DependencyTrackConfig(
         base_url=_require_env("SBOM_OPS_DT_BASE_URL"),
@@ -102,6 +107,7 @@ def load_config(args: Any) -> AppConfig:
         p2_cvss_threshold=float(
             os.getenv("SBOM_OPS_PRIORITY_P2_CVSS_THRESHOLD", "7.0")
         ),
+        create_issues_for=_parse_priorities(),
     )
     runtime = RuntimeConfig(
         dry_run=bool(getattr(args, "dry_run", False))
