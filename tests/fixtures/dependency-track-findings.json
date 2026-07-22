@@ -3,6 +3,7 @@
     "component": {"name": "openssl", "version": "3.0.0"},
     "vulnerability": {
       "uuid": "vulnerability-1",
+      "source": "NVD",
       "vulnId": "CVE-2026-0001",
       "severity": "CRITICAL",
       "cvssV3BaseScore": 9.8,

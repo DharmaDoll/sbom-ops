@@ -32,6 +32,7 @@ class Finding:
     description: str | None
     dependency_track_finding_id: str | None = None
     dependency_track_vulnerability_uuid: str | None = None
+    vulnerability_source: str | None = None
 
     def finding_key(self) -> str:
         component_version = self.component_version or ""

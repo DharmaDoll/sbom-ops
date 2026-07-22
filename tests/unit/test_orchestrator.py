@@ -47,6 +47,7 @@ def finding(
         analysis_detail=None,
         finding_id=f"finding-{vulnerability_id}",
         vulnerability_uuid=f"vulnerability-{vulnerability_id}",
+        vulnerability_source="NVD",
     )
 
 

@@ -9,6 +9,23 @@ Concrete operational flows and acceptance conditions are defined in
 Dependency-Track is intentionally kept as an inventory platform.
 Workflow management belongs outside Dependency-Track.
 
+## External API Connections
+
+```text
+sbom-ops CLI
+     │
+     ├─ Dependency-Track API
+     │    ├─ Project
+     │    ├─ Finding
+     │    ├─ EPSS
+     │    └─ VEX / Analysis state
+     │
+     ├─ CISA KEV feed
+     │
+     └─ GitHub REST API
+          └─ Issue作成・更新・クローズ
+```
+
 ---
 
 ## Components

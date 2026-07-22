@@ -28,6 +28,7 @@ def test_dependency_track_finding_is_normalized() -> None:
     findings = client.get_project_findings("project-1")
 
     assert findings[0].vulnerability_id == "CVE-2026-0001"
+    assert findings[0].vulnerability_source == "NVD"
     assert findings[0].epss_score == 0.91
     assert findings[0].analysis_state == "NOT_SET"
     assert findings[0].cwes == (78,)

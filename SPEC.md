@@ -191,6 +191,7 @@ Required fields:
 - `description: str | None`
 - `dependency_track_finding_id: str | None`
 - `dependency_track_vulnerability_uuid: str | None`
+- `vulnerability_source: str | None`
 
 ### Enrichment
 

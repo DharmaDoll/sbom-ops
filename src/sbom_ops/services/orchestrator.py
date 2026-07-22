@@ -166,6 +166,7 @@ class Orchestrator:
             description=raw.description,
             dependency_track_finding_id=raw.finding_id,
             dependency_track_vulnerability_uuid=raw.vulnerability_uuid,
+            vulnerability_source=raw.vulnerability_source,
         )
         enrichment = Enrichment(
             in_kev=raw.vulnerability_id in kev_ids,
@@ -213,6 +214,7 @@ class Orchestrator:
 - Project: `{finding.project_name}` (`{finding.project_uuid}`)
 - Component: `{finding.component_name}` `{finding.component_version or 'unknown'}`
 - Vulnerability: `{finding.vulnerability_id}`
+- Vulnerability source: `{finding.vulnerability_source or 'unknown'}`
 - Priority: `{item.priority.value}`
 - CVSS: `{finding.cvss_score if finding.cvss_score is not None else 'unknown'}`
 - EPSS: `{enrichment.epss_score if enrichment.epss_score is not None else 'unknown'}`

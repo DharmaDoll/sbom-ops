@@ -25,6 +25,7 @@ CI/CD → CycloneDX SBOM → Dependency-Track (EPSS/VEX) → Orchestrator (KEV/p
 - ARCHITECTURE.md — system design
 - SPEC.md — implementation specification
 - docs/use-cases.md — concrete operational flows and usage scenarios
+- docs/data-sources.md — Finding情報源と取得方法
 - docs/dependency-track/setup.md — local Dependency-Track bootstrap
 
 ## Design Principles
