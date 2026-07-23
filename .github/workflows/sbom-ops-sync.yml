@@ -1,0 +1,27 @@
+name: sbom-ops-sync
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 * * * *"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install .
+      - run: sbom-ops sync
+        env:
+          SBOM_OPS_DT_BASE_URL: ${{ secrets.SBOM_OPS_DT_BASE_URL }}
+          SBOM_OPS_DT_API_KEY: ${{ secrets.SBOM_OPS_DT_API_KEY }}
+          SBOM_OPS_GITHUB_TOKEN: ${{ secrets.SBOM_OPS_GITHUB_TOKEN }}
+          SBOM_OPS_GITHUB_OWNER: ${{ vars.SBOM_OPS_GITHUB_OWNER }}
+          SBOM_OPS_GITHUB_REPO: ${{ vars.SBOM_OPS_GITHUB_REPO }}

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import json
+import time
 from dataclasses import dataclass, replace
 from typing import Any
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from sbom_ops.clients.http import collection_items, request_json
 
 
 @dataclass(frozen=True)
@@ -104,10 +105,21 @@ def _finding_from_payload(
 
 
 class DependencyTrackClient:
-    def __init__(self, base_url: str, api_key: str, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        timeout: float = 30.0,
+        page_size: int = 100,
+        max_retries: int = 3,
+        retry_backoff_seconds: float = 1.0,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
+        self._page_size = page_size
+        self._max_retries = max_retries
+        self._retry_backoff_seconds = retry_backoff_seconds
 
     def _request_json(self, path: str, params: dict[str, str] | None = None) -> Any:
         query = f"?{urlencode(params)}" if params else ""
@@ -116,15 +128,42 @@ class DependencyTrackClient:
             headers={"Accept": "application/json", "X-Api-Key": self._api_key},
         )
         try:
-            with urlopen(request, timeout=self._timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise DependencyTrackApiError(
-                f"Dependency-Track request failed: {path}"
-            ) from exc
+            return request_json(
+                request,
+                timeout=self._timeout,
+                max_retries=self._max_retries,
+                backoff_seconds=self._retry_backoff_seconds,
+                error_message=f"Dependency-Track request failed: {path}",
+            )
+        except RuntimeError as exc:
+            raise DependencyTrackApiError(str(exc)) from exc
+
+    def _get_collection(self, path: str, keys: tuple[str, ...]) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        offset = 0
+        seen: set[str] = set()
+        while True:
+            payload = self._request_json(
+                path,
+                {"offset": str(offset), "limit": str(self._page_size)},
+            )
+            page = [dict(item) for item in collection_items(payload, keys)]
+            if not page:
+                break
+            identifiers = [
+                str(item.get("uuid") or item.get("id") or item) for item in page
+            ]
+            if seen.intersection(identifiers):
+                raise DependencyTrackApiError(f"pagination did not advance: {path}")
+            seen.update(identifiers)
+            items.extend(page)
+            if len(page) < self._page_size:
+                break
+            offset += len(page)
+        return items
 
     def list_projects(self) -> list[DependencyTrackProject]:
-        payload = self._request_json("/api/v1/project")
+        payload = self._get_collection("/api/v1/project", ("projects", "items"))
         return [
             DependencyTrackProject(uuid=str(item["uuid"]), name=str(item["name"]))
             for item in payload
@@ -136,18 +175,17 @@ class DependencyTrackClient:
             uuid=project_uuid,
             name=str(project_payload.get("name") or project_uuid),
         )
-        payload = self._request_json(f"/api/v1/finding/project/{project_uuid}")
-        if isinstance(payload, dict) and "findings" in payload:
-            payload = payload["findings"]
+        payload = self._get_collection(
+            f"/api/v1/finding/project/{project_uuid}", ("findings", "items")
+        )
         findings = [_finding_from_payload(item, project) for item in payload]
 
         # Dependency-Track exposes EPSS on the project vulnerability endpoint.
         # Use it as a fallback for finding responses that omit the field.
-        vulnerability_payload = self._request_json(
-            f"/api/v1/vulnerability/project/{project_uuid}"
+        vulnerability_payload = self._get_collection(
+            f"/api/v1/vulnerability/project/{project_uuid}",
+            ("vulnerabilities", "items"),
         )
-        if isinstance(vulnerability_payload, dict):
-            vulnerability_payload = vulnerability_payload.get("vulnerabilities", [])
         epss_by_vulnerability = {
             str(item.get("vulnID") or item.get("vulnId")): _number(
                 item.get("epssScore")
@@ -164,3 +202,45 @@ class DependencyTrackClient:
             )
             for finding in findings
         ]
+
+    def wait_for_analysis(
+        self,
+        project_uuid: str,
+        *,
+        timeout: float = 120.0,
+        poll_interval: float = 5.0,
+    ) -> list[DependencyTrackFinding]:
+        """Wait until the findings response is stable across two polls.
+
+        Dependency-Track BOM analysis is asynchronous. A stable response is the
+        portable signal across supported DT versions; NOT_SET is a valid result.
+        """
+        deadline = time.monotonic() + timeout
+        previous: tuple[tuple[Any, ...], ...] | None = None
+        while time.monotonic() < deadline:
+            findings = self.get_project_findings(project_uuid)
+            fingerprint = tuple(
+                sorted(
+                    (
+                        f.finding_id,
+                        f.vulnerability_id,
+                        f.component_name,
+                        f.component_version,
+                        f.analysis_state,
+                        f.is_suppressed,
+                    )
+                    for f in findings
+                )
+            )
+            if previous == fingerprint:
+                return findings
+            previous = fingerprint
+            time.sleep(
+                min(
+                    max(0.0, poll_interval),
+                    max(0.0, deadline - time.monotonic()),
+                )
+            )
+        raise DependencyTrackApiError(
+            f"Dependency-Track analysis did not stabilize: project {project_uuid}"
+        )

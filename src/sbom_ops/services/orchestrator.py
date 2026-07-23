@@ -28,6 +28,10 @@ class DependencyTrackClientProtocol(Protocol):
         self, project_uuid: str
     ) -> list[DependencyTrackFinding]: ...
 
+    def wait_for_analysis(
+        self, project_uuid: str, *, timeout: float, poll_interval: float
+    ) -> list[DependencyTrackFinding]: ...
+
 
 class KevClientProtocol(Protocol):
     def get_known_exploited_vulnerabilities(self) -> set[str]: ...
@@ -70,12 +74,19 @@ class Orchestrator:
         self._dependency_track = dependency_track or DependencyTrackClient(
             config.dependency_track.base_url,
             config.dependency_track.api_key,
+            timeout=config.dependency_track.timeout_seconds,
+            page_size=config.dependency_track.page_size,
+            max_retries=config.dependency_track.max_retries,
+            retry_backoff_seconds=config.dependency_track.retry_backoff_seconds,
         )
         self._kev = kev or KevClient(config.intelligence.kev_feed_url)
         self._github = github or GitHubIssuesClient(
             config.github.token,
             config.github.owner,
             config.github.repo,
+            timeout=config.github.timeout_seconds,
+            max_retries=config.github.max_retries,
+            retry_backoff_seconds=config.github.retry_backoff_seconds,
         )
 
     def run(self) -> RunResult:
@@ -92,7 +103,16 @@ class Orchestrator:
         created = updated = closed = findings_processed = 0
 
         for project in projects:
-            raw_findings = self._dependency_track.get_project_findings(project.uuid)
+            if self._config.runtime.wait_for_analysis:
+                raw_findings = self._dependency_track.wait_for_analysis(
+                    project.uuid,
+                    timeout=self._config.dependency_track.analysis_wait_timeout_seconds,
+                    poll_interval=(
+                        self._config.dependency_track.analysis_poll_interval_seconds
+                    ),
+                )
+            else:
+                raw_findings = self._dependency_track.get_project_findings(project.uuid)
             findings_processed += len(raw_findings)
             prioritized: list[PrioritizedFinding] = []
             for raw in raw_findings:
@@ -115,7 +135,10 @@ class Orchestrator:
                             body,
                             [
                                 self._config.github.issue_label_prefix,
-                                f"{self._config.github.issue_label_prefix}-{item.priority.value}",
+                                (
+                                    f"{self._config.github.issue_label_prefix}-"
+                                    f"{item.priority.value}"
+                                ),
                             ],
                         )
                     created += 1

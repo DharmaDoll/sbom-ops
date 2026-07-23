@@ -1,6 +1,8 @@
 services:
   dependency-track:
-    image: dependencytrack/bundled:latest
+    # Pin the local MVP to the v4 API contract used by this repository.
+    # Do not use latest for reproducible validation; plan v5 migration separately.
+    image: dependencytrack/bundled:4.14.3
     container_name: dependency-track
     ports:
       - "8080:8080"

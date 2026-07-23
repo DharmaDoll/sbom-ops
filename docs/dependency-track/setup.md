@@ -48,7 +48,9 @@ Important:
 - At least 8 GB RAM available for the API server
 
 The official quickstart notes that Docker is the easiest way to start.
-For local evaluation, the bundled container is acceptable.
+For local evaluation, the repository pins the bundled v4.14.3 image so that
+the `/api/v1` contract does not change unexpectedly. Dependency-Track v5 uses
+separate API/frontend images and requires a dedicated migration validation.
 For production, move to an external database.
 
 ## Start Dependency-Track
@@ -279,7 +281,21 @@ Before writing any client code, confirm these inputs exist:
 4. at least one uploaded SBOM
 5. at least one project with findings or at minimum component inventory
 
-Only after these are available should implementation start in `src/sbom_ops/clients/dependency_track.py`.
+The MVP client uses the target instance's OpenAPI document as the authority for
+endpoint and pagination behavior. It applies bounded retries to transient
+errors, paginates collection responses, and can wait for two stable findings
+responses after asynchronous BOM analysis.
+
+Run a safe connectivity check and preview:
+
+```bash
+set -a; source .env; set +a
+sbom-ops plan
+sbom-ops sync --dry-run --project "$SBOM_OPS_DT_PROJECT_UUID" --wait-for-analysis
+```
+
+`--wait-for-analysis` is intended for the first sync after an SBOM upload. It
+does not change Dependency-Track analysis state.
 
 ## Local Environment Variables
 
@@ -290,6 +306,11 @@ export SBOM_OPS_DT_BASE_URL=http://localhost:8080
 export SBOM_OPS_DT_API_KEY=replace-with-orchestrator-read-key
 export SBOM_OPS_SBOM_UPLOAD_API_KEY=replace-with-upload-key
 export SBOM_OPS_DT_PROJECT_UUID=replace-with-project-uuid
+export SBOM_OPS_DT_PAGE_SIZE=100
+export SBOM_OPS_DT_MAX_RETRIES=3
+export SBOM_OPS_DT_ANALYSIS_WAIT_TIMEOUT_SECONDS=120
+export SBOM_OPS_DT_ANALYSIS_POLL_INTERVAL_SECONDS=5
+export SBOM_OPS_WAIT_FOR_ANALYSIS=false
 ```
 
 The upload key should be kept separate from the orchestrator key.
@@ -317,6 +338,15 @@ When project auto-create is used, the upload API key needs both:
 
 - `BOM_UPLOAD`
 - `PROJECT_CREATION_UPLOAD`
+
+## Scheduled operation
+
+Run `sbom-ops sync --wait-for-analysis` after the SBOM upload job has completed.
+For recurring reconciliation, schedule `sbom-ops sync` from CI or an internal
+runner. Store DT and GitHub tokens in the runner's secret store, keep the
+orchestrator in dry-run until the issue behavior is confirmed, then enable
+write mode. The GitHub token needs issue read/write permission; the DT read key
+needs `VIEW_PORTFOLIO` and `VIEW_VULNERABILITY` only for the current MVP.
 
 ## Reference Notes
 

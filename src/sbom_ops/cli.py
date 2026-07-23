@@ -15,6 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument("--project", dest="project_uuid")
     sync_parser.add_argument("--dry-run", action="store_true")
     sync_parser.add_argument("--log-level")
+    sync_parser.add_argument("--wait-for-analysis", action="store_true")
 
     plan_parser = subparsers.add_parser("plan")
     plan_parser.add_argument("--config")
@@ -38,6 +39,7 @@ def run_plan(config: AppConfig) -> int:
     print(f"Create issues for: {', '.join(config.priority.create_issues_for)}")
     print(f"Projects: {', '.join(config.runtime.project_uuids) or 'all accessible'}")
     print(f"Dry run: {config.runtime.dry_run}")
+    print(f"Wait for analysis: {config.runtime.wait_for_analysis}")
     return 0
 
 

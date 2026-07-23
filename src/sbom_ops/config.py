@@ -10,6 +10,11 @@ class DependencyTrackConfig:
     base_url: str
     api_key: str
     page_size: int = 100
+    timeout_seconds: float = 30.0
+    max_retries: int = 3
+    retry_backoff_seconds: float = 1.0
+    analysis_wait_timeout_seconds: float = 120.0
+    analysis_poll_interval_seconds: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -18,6 +23,9 @@ class GitHubConfig:
     owner: str
     repo: str
     issue_label_prefix: str = "sbom"
+    timeout_seconds: float = 30.0
+    max_retries: int = 3
+    retry_backoff_seconds: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -41,6 +49,7 @@ class RuntimeConfig:
     dry_run: bool = False
     project_uuids: tuple[str, ...] = field(default_factory=tuple)
     log_level: str = "INFO"
+    wait_for_analysis: bool = False
 
 
 @dataclass(frozen=True)
@@ -83,12 +92,29 @@ def load_config(args: Any) -> AppConfig:
     dependency_track = DependencyTrackConfig(
         base_url=_require_env("SBOM_OPS_DT_BASE_URL"),
         api_key=_require_env("SBOM_OPS_DT_API_KEY"),
+        page_size=int(os.getenv("SBOM_OPS_DT_PAGE_SIZE", "100")),
+        timeout_seconds=float(os.getenv("SBOM_OPS_DT_TIMEOUT_SECONDS", "30")),
+        max_retries=int(os.getenv("SBOM_OPS_DT_MAX_RETRIES", "3")),
+        retry_backoff_seconds=float(
+            os.getenv("SBOM_OPS_DT_RETRY_BACKOFF_SECONDS", "1")
+        ),
+        analysis_wait_timeout_seconds=float(
+            os.getenv("SBOM_OPS_DT_ANALYSIS_WAIT_TIMEOUT_SECONDS", "120")
+        ),
+        analysis_poll_interval_seconds=float(
+            os.getenv("SBOM_OPS_DT_ANALYSIS_POLL_INTERVAL_SECONDS", "5")
+        ),
     )
     github = GitHubConfig(
         token=_require_env("SBOM_OPS_GITHUB_TOKEN"),
         owner=_require_env("SBOM_OPS_GITHUB_OWNER"),
         repo=_require_env("SBOM_OPS_GITHUB_REPO"),
         issue_label_prefix=os.getenv("SBOM_OPS_ISSUE_LABEL_PREFIX", "sbom"),
+        timeout_seconds=float(os.getenv("SBOM_OPS_GITHUB_TIMEOUT_SECONDS", "30")),
+        max_retries=int(os.getenv("SBOM_OPS_GITHUB_MAX_RETRIES", "3")),
+        retry_backoff_seconds=float(
+            os.getenv("SBOM_OPS_GITHUB_RETRY_BACKOFF_SECONDS", "1")
+        ),
     )
     intelligence = IntelligenceConfig(
         kev_feed_url=os.getenv(
@@ -115,6 +141,8 @@ def load_config(args: Any) -> AppConfig:
         project_uuids=_parse_project_uuids(getattr(args, "project_uuid", None)),
         log_level=getattr(args, "log_level", None)
         or os.getenv("SBOM_OPS_LOG_LEVEL", "INFO"),
+        wait_for_analysis=bool(getattr(args, "wait_for_analysis", False))
+        or _parse_bool(os.getenv("SBOM_OPS_WAIT_FOR_ANALYSIS"), False),
     )
     return AppConfig(
         dependency_track=dependency_track,
