@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 
+from sbom_ops.clients.dependency_track import DependencyTrackClient
 from sbom_ops.config import AppConfig, load_config
 from sbom_ops.services.orchestrator import Orchestrator
 
@@ -16,6 +18,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument("--dry-run", action="store_true")
     sync_parser.add_argument("--log-level")
     sync_parser.add_argument("--wait-for-analysis", action="store_true")
+
+    upload_parser = subparsers.add_parser("upload")
+    upload_parser.add_argument("bom_path")
+    upload_parser.add_argument("--project", dest="project_uuid")
+    upload_parser.add_argument("--no-wait", action="store_true")
 
     plan_parser = subparsers.add_parser("plan")
     plan_parser.add_argument("--config")
@@ -50,9 +57,47 @@ def run_sync(config: AppConfig) -> int:
     return 0
 
 
+def run_upload(args: argparse.Namespace) -> int:
+    base_url = os.getenv("SBOM_OPS_DT_BASE_URL")
+    api_key = os.getenv("SBOM_OPS_SBOM_UPLOAD_API_KEY")
+    project_uuid = args.project_uuid or os.getenv("SBOM_OPS_DT_PROJECT_UUID")
+    if not base_url or not api_key or not project_uuid:
+        raise ValueError(
+            "upload requires SBOM_OPS_DT_BASE_URL, "
+            "SBOM_OPS_SBOM_UPLOAD_API_KEY, and a project UUID"
+        )
+    client = DependencyTrackClient(
+        base_url,
+        api_key,
+        timeout=float(os.getenv("SBOM_OPS_DT_TIMEOUT_SECONDS", "30")),
+        max_retries=int(os.getenv("SBOM_OPS_DT_MAX_RETRIES", "3")),
+        retry_backoff_seconds=float(
+            os.getenv("SBOM_OPS_DT_RETRY_BACKOFF_SECONDS", "1")
+        ),
+    )
+    upload = client.upload_bom(project_uuid, args.bom_path)
+    if not args.no_wait:
+        client.wait_for_bom_processing(
+            upload.token,
+            timeout=float(
+                os.getenv("SBOM_OPS_DT_ANALYSIS_WAIT_TIMEOUT_SECONDS", "120")
+            ),
+            poll_interval=float(
+                os.getenv("SBOM_OPS_DT_ANALYSIS_POLL_INTERVAL_SECONDS", "5")
+            ),
+        )
+    if args.no_wait:
+        print("SBOM upload accepted; Dependency-Track processing is still asynchronous")
+    else:
+        print("SBOM upload accepted and Dependency-Track processing completed")
+    return 0
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    if args.command == "upload":
+        return run_upload(args)
     config = load_config(args)
     if args.command == "plan":
         return run_plan(config)

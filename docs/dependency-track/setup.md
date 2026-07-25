@@ -230,6 +230,15 @@ export SBOM_OPS_DT_PROJECT_UUID=replace-with-project-uuid
 scripts/upload_bom.sh path/to/bom.xml
 ```
 
+The installed CLI can upload to an existing project and wait for the upload's
+Dependency-Track event token to complete:
+
+```bash
+sbom-ops upload path/to/bom.xml --project "$SBOM_OPS_DT_PROJECT_UUID"
+```
+
+Use `--no-wait` only when another job owns the asynchronous processing wait.
+
 Repository demo SBOM with project auto-create:
 
 ```bash

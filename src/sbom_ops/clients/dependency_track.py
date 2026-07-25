@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request
 
-from sbom_ops.clients.http import collection_items, request_json
+from sbom_ops.clients.http import HttpApiError, collection_items, request_json
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,11 @@ class DependencyTrackFinding:
 
 class DependencyTrackApiError(RuntimeError):
     """Raised when Dependency-Track cannot serve an API request."""
+
+
+@dataclass(frozen=True)
+class BomUpload:
+    token: str
 
 
 def _number(value: Any) -> float | None:
@@ -135,18 +141,103 @@ class DependencyTrackClient:
                 backoff_seconds=self._retry_backoff_seconds,
                 error_message=f"Dependency-Track request failed: {path}",
             )
-        except RuntimeError as exc:
-            raise DependencyTrackApiError(str(exc)) from exc
+        except HttpApiError as exc:
+            detail = f" (HTTP {exc.status})" if exc.status else ""
+            raise DependencyTrackApiError(
+                f"Dependency-Track request failed{detail}: {path}"
+            ) from exc
 
-    def _get_collection(self, path: str, keys: tuple[str, ...]) -> list[dict[str, Any]]:
+    def upload_bom(self, project_uuid: str, bom_path: str | Path) -> BomUpload:
+        """Upload a CycloneDX BOM and return DT's asynchronous processing token."""
+        bom = Path(bom_path).read_bytes()
+        boundary = "----sbom-ops-boundary"
+        body = b"".join(
+            [
+                f"--{boundary}\r\n".encode(),
+                b'Content-Disposition: form-data; name="project"\r\n\r\n',
+                project_uuid.encode(),
+                b"\r\n",
+                (
+                    f'--{boundary}\r\nContent-Disposition: form-data; name="bom"; '
+                    f'filename="{Path(bom_path).name}"\r\n'
+                    "Content-Type: application/octet-stream\r\n\r\n"
+                ).encode(),
+                bom,
+                b"\r\n",
+                f"--{boundary}--\r\n".encode(),
+            ]
+        )
+        request = Request(
+            f"{self._base_url}/api/v1/bom",
+            data=body,
+            method="POST",
+            headers={
+                "Accept": "application/json",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "X-Api-Key": self._api_key,
+            },
+        )
+        try:
+            payload = request_json(
+                request,
+                timeout=self._timeout,
+                max_retries=self._max_retries,
+                backoff_seconds=self._retry_backoff_seconds,
+                error_message="Dependency-Track BOM upload failed",
+            )
+        except HttpApiError as exc:
+            detail = f" (HTTP {exc.status})" if exc.status else ""
+            raise DependencyTrackApiError(
+                f"Dependency-Track BOM upload failed{detail}"
+            ) from exc
+        token = payload.get("token") if isinstance(payload, dict) else None
+        if not token:
+            raise DependencyTrackApiError("Dependency-Track BOM response has no token")
+        return BomUpload(token=str(token))
+
+    def wait_for_bom_processing(
+        self,
+        token: str,
+        *,
+        timeout: float = 120.0,
+        poll_interval: float = 5.0,
+    ) -> None:
+        """Wait for the asynchronous tasks created by a BOM upload to finish."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            payload = self._request_json(f"/api/v1/event/token/{token}")
+            processing = (
+                payload.get("processing") if isinstance(payload, dict) else payload
+            )
+            if processing is False:
+                return
+            time.sleep(
+                min(
+                    max(0.0, poll_interval),
+                    max(0.0, deadline - time.monotonic()),
+                )
+            )
+        raise DependencyTrackApiError(
+            f"Dependency-Track BOM processing timed out: token {token}"
+        )
+
+    def _get_collection(
+        self,
+        path: str,
+        keys: tuple[str, ...],
+        *,
+        paginated: bool = False,
+    ) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         offset = 0
         seen: set[str] = set()
         while True:
-            payload = self._request_json(
-                path,
-                {"offset": str(offset), "limit": str(self._page_size)},
+            params = (
+                {"offset": str(offset), "limit": str(self._page_size)}
+                if paginated
+                else None
             )
+            payload = self._request_json(path, params)
             page = [dict(item) for item in collection_items(payload, keys)]
             if not page:
                 break
@@ -157,13 +248,15 @@ class DependencyTrackClient:
                 raise DependencyTrackApiError(f"pagination did not advance: {path}")
             seen.update(identifiers)
             items.extend(page)
-            if len(page) < self._page_size:
+            if not paginated or len(page) < self._page_size:
                 break
             offset += len(page)
         return items
 
     def list_projects(self) -> list[DependencyTrackProject]:
-        payload = self._get_collection("/api/v1/project", ("projects", "items"))
+        payload = self._get_collection(
+            "/api/v1/project", ("projects", "items"), paginated=True
+        )
         return [
             DependencyTrackProject(uuid=str(item["uuid"]), name=str(item["name"]))
             for item in payload

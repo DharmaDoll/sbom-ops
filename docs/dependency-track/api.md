@@ -47,9 +47,26 @@ The MVP read path uses the following intent-level operations:
 - `GET /api/v1/vulnerability/project/{uuid}` as the EPSS fallback source when a
   finding response does not include an EPSS value
 
+The upload-and-wait path uses:
+
+- `POST /api/v1/bom` with multipart `project` and `bom` fields; the response
+  contains an asynchronous processing `token`
+- `GET /api/v1/event/token/{token}` until `processing=false`
+- then the project Finding and vulnerability endpoints above
+
+The event token is the authoritative signal for the tasks created by that BOM
+upload. Finding stability is retained only as a defensive read-side check when
+the sync is started without a token.
+
 The findings API requires the `VIEW_VULNERABILITY` permission. Endpoint details
 must be validated against the target instance's OpenAPI document before
 production deployment.
+
+The v4.14 OpenAPI document exposes `offset`/`limit` pagination for project
+listing. Finding and project-vulnerability endpoints return their documented
+collections without pagination parameters in that version, so the client only
+sends pagination parameters where the target contract supports them. This
+avoids silently relying on an undocumented query parameter.
 
 Good:
 

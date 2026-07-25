@@ -8,6 +8,12 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
+class HttpApiError(RuntimeError):
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
 def request_json(
     request: Request,
     *,
@@ -26,7 +32,7 @@ def request_json(
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             if exc.code not in retryable_statuses or attempt == attempts - 1:
-                raise RuntimeError(error_message) from exc
+                raise HttpApiError(error_message, status=exc.code) from exc
             retry_after = exc.headers.get("Retry-After")
             try:
                 delay = (
@@ -38,10 +44,10 @@ def request_json(
                 delay = backoff_seconds * (2**attempt)
         except (URLError, TimeoutError, json.JSONDecodeError) as exc:
             if attempt == attempts - 1:
-                raise RuntimeError(error_message) from exc
+                raise HttpApiError(error_message) from exc
             delay = backoff_seconds * (2**attempt)
         time.sleep(min(max(0.0, delay), 30.0))
-    raise RuntimeError(error_message)
+    raise HttpApiError(error_message)
 
 
 def collection_items(payload: Any, keys: tuple[str, ...]) -> list[Mapping[str, Any]]:
