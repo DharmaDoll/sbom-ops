@@ -79,7 +79,12 @@ class Orchestrator:
             max_retries=config.dependency_track.max_retries,
             retry_backoff_seconds=config.dependency_track.retry_backoff_seconds,
         )
-        self._kev = kev or KevClient(config.intelligence.kev_feed_url)
+        self._kev = kev or KevClient(
+            config.intelligence.kev_feed_url,
+            timeout=config.intelligence.timeout_seconds,
+            max_retries=config.intelligence.max_retries,
+            retry_backoff_seconds=config.intelligence.retry_backoff_seconds,
+        )
         self._github = github or GitHubIssuesClient(
             config.github.token,
             config.github.owner,

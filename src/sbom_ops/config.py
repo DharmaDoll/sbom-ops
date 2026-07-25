@@ -35,6 +35,9 @@ class IntelligenceConfig:
         "known_exploited_vulnerabilities.json"
     )
     epss_api_url: str = "https://api.first.org/data/v1/epss"
+    timeout_seconds: float = 30.0
+    max_retries: int = 3
+    retry_backoff_seconds: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -124,6 +127,11 @@ def load_config(args: Any) -> AppConfig:
         epss_api_url=os.getenv(
             "SBOM_OPS_EPSS_API_URL",
             IntelligenceConfig.epss_api_url,
+        ),
+        timeout_seconds=float(os.getenv("SBOM_OPS_INTEL_TIMEOUT_SECONDS", "30")),
+        max_retries=int(os.getenv("SBOM_OPS_INTEL_MAX_RETRIES", "3")),
+        retry_backoff_seconds=float(
+            os.getenv("SBOM_OPS_INTEL_RETRY_BACKOFF_SECONDS", "1")
         ),
     )
     priority = PriorityConfig(

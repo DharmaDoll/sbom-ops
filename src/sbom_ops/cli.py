@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 
-from sbom_ops.clients.dependency_track import DependencyTrackClient
+from sbom_ops.clients.dependency_track import (
+    DependencyTrackApiError,
+    DependencyTrackClient,
+)
+from sbom_ops.clients.github import GitHubApiError
+from sbom_ops.clients.kev import KevApiError
 from sbom_ops.config import AppConfig, load_config
 from sbom_ops.services.orchestrator import Orchestrator
 
@@ -96,14 +102,24 @@ def run_upload(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    if args.command == "upload":
-        return run_upload(args)
-    config = load_config(args)
-    if args.command == "plan":
-        return run_plan(config)
-    if args.command == "sync":
-        return run_sync(config)
-    parser.error(f"unsupported command: {args.command}")
+    try:
+        if args.command == "upload":
+            return run_upload(args)
+        config = load_config(args)
+        if args.command == "plan":
+            return run_plan(config)
+        if args.command == "sync":
+            return run_sync(config)
+        parser.error(f"unsupported command: {args.command}")
+    except (
+        DependencyTrackApiError,
+        GitHubApiError,
+        KevApiError,
+        OSError,
+        ValueError,
+    ) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     return 2
 
 
