@@ -60,6 +60,9 @@ def run_sync(config: AppConfig) -> int:
     orchestrator = Orchestrator(config=config)
     result = orchestrator.run()
     print(result)
+    for action in result.actions:
+        prefix = "DRY-RUN " if config.runtime.dry_run else ""
+        print(f"{prefix}{action}")
     return 0
 
 

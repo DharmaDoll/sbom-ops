@@ -14,24 +14,24 @@
 | --- | --- | --- |
 | Domain model | 完了 | Finding、Severity、Priority、Enrichment |
 | Priority Engine | 完了 | KEV、Critical、EPSS、CVSSによるP0〜P3 |
-| Dependency-Track API client | MVP完了 | Project、Finding、EPSS、Analysis state読取 |
+| Dependency-Track API client | MVP完了 | Project、SBOM upload token、Finding、EPSS、Analysis state読取 |
 | KEV client | MVP完了 | CISA JSON feed取得 |
 | GitHub Issues client | MVP完了 | 作成、更新、重複検索、クローズ |
 | Orchestrator | MVP完了 | Finding取得からIssue同期まで |
 | VEX/Analysis state除外 | MVP完了 | `NOT_AFFECTED`、`FALSE_POSITIVE`、抑制済み |
-| Dry-run / plan | MVP完了 | 設定と書き込み予定の確認 |
-| Mock fixtures / tests | MVP完了 | 14 tests、外部クライアントと同期処理 |
+| Dry-run / plan | MVP完了 | 設定、Finding単位のIssue予定操作、書き込み予定の確認 |
+| Mock fixtures / tests | MVP完了 | 17 tests、外部クライアントと同期処理 |
 | 業務フロー・責務文書 | 完了 | 情報源、トリアージ、VEX運用を文書化 |
 
 ## Phase 0: 実運用接続とMVPハードニング（P0）
 
 | タスク | 目的 | 完了条件 |
 | --- | --- | --- |
-| 実Dependency-Track接続検証 | APIレスポンスと権限を確認 | 実環境でProject/Finding/EPSS/Analysisを取得できる |
-| 実GitHub接続検証 | Issue権限とラベルを確認 | Issue作成・更新・クローズをDry-run後に実行できる |
+| 実Dependency-Track接続検証 | APIレスポンスと権限を確認 | 実環境でProject/Finding/EPSS/Analysisを取得できる（資格情報待ち） |
+| 実GitHub接続検証 | Issue権限とラベルを確認 | Issue作成・更新・クローズをDry-run後に実行できる（資格情報待ち） |
 | APIリトライ・タイムアウト | 一時障害への耐性 | リトライ回数・待機・失敗ログが設定可能 |
-| APIページネーション | 大規模Portfolio対応 | Project/Finding/Issueの全ページを処理できる |
-| 非同期分析待機 | SBOM登録直後の欠損防止 | 分析完了確認または再試行ができる |
+| APIページネーション | 大規模Portfolio対応 | DT v4 OpenAPIが提供するProjectページとGitHub Issueの全ページを処理できる。Finding/VulnerabilityはDT v4の非ページング仕様に従う |
+| 非同期分析待機 | SBOM登録直後の欠損防止 | BOM upload tokenの`processing=false`を確認できる |
 | YAML設定 | 環境変数以外の運用設定 | `SPEC.md`の設定例を読み込める |
 | GitHub Actions実行例 | 定期同期を自動化 | 定期実行・Dry-run・Secrets設定例がある |
 | 権限分離ドキュメント | API keyの最小権限化 | DT read用、SBOM upload用、GitHub用を分離できる |

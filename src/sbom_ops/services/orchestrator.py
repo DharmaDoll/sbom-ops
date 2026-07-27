@@ -57,6 +57,7 @@ class RunResult:
     issues_updated: int
     issues_closed: int
     dry_run: bool
+    actions: tuple[str, ...] = ()
 
 
 _FINDING_KEY_PATTERN = re.compile(r"<!-- sbom-ops:finding-key=(.*?) -->")
@@ -106,6 +107,7 @@ class Orchestrator:
         current_keys: set[str] = set()
         managed_project_uuids = {project.uuid for project in projects}
         created = updated = closed = findings_processed = 0
+        actions: list[str] = []
 
         for project in projects:
             if self._config.runtime.wait_for_analysis:
@@ -134,6 +136,10 @@ class Orchestrator:
                 key = item.finding.finding_key()
                 existing = self._github.find_open_issue_by_finding_key(key)
                 if existing is None:
+                    actions.append(
+                        f"create {key} priority={item.priority.value} "
+                        f"analysis={item.enrichment.analysis_state or 'NOT_SET'}"
+                    )
                     if not self._config.runtime.dry_run:
                         self._github.create_issue(
                             title,
@@ -151,6 +157,9 @@ class Orchestrator:
                     number = existing.get("number")
                     if number is None:
                         continue
+                    actions.append(
+                        f"update {key} issue=#{number} priority={item.priority.value}"
+                    )
                     if not self._config.runtime.dry_run:
                         self._github.update_issue(int(number), title, body)
                     updated += 1
@@ -166,6 +175,7 @@ class Orchestrator:
             number = issue.get("number")
             if number is None:
                 continue
+            actions.append(f"close {key} issue=#{number}")
             if not self._config.runtime.dry_run:
                 self._github.close_issue(int(number))
             closed += 1
@@ -177,6 +187,7 @@ class Orchestrator:
             issues_updated=updated,
             issues_closed=closed,
             dry_run=self._config.runtime.dry_run,
+            actions=tuple(actions),
         )
 
     def _prioritize(

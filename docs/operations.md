@@ -10,8 +10,8 @@ Security teamはDependency-Trackのプロジェクト横断Findingを一元的�
 
 Daily
 
-1. CI uploads SBOM.
-2. Dependency-Track analyzes.
+1. CI uploads SBOM and receives a Dependency-Track processing token.
+2. sbom-ops waits for the token to report `processing=false`.
 3. Orchestrator polls findings.
 4. Orchestrator reads Dependency-Track EPSS/VEX analysis state.
 5. Orchestrator enriches findings with KEV.

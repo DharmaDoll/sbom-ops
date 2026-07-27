@@ -110,6 +110,10 @@ def test_orchestrator_updates_actionable_and_closes_stale_issue() -> None:
     assert result.issues_closed == 1
     assert github.updated == [11]
     assert github.closed == [12]
+    assert result.actions == (
+        "update project-1:openssl:3.0.0:CVE-2026-0001 issue=#11 priority=P0",
+        "close project-1:old:1:CVE-2025-0001 issue=#12",
+    )
 
 
 def test_orchestrator_dry_run_does_not_mutate_github() -> None:

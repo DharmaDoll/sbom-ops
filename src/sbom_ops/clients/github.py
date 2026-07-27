@@ -4,7 +4,7 @@ import json
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
-from sbom_ops.clients.http import request_json
+from sbom_ops.clients.http import HttpApiError, request_json
 
 
 class GitHubApiError(RuntimeError):
@@ -53,8 +53,11 @@ class GitHubIssuesClient:
                 error_message=f"GitHub request failed: {method} {path}",
                 opener=urlopen,
             )
-        except RuntimeError as exc:
-            raise GitHubApiError(str(exc)) from exc
+        except HttpApiError as exc:
+            detail = f" (HTTP {exc.status})" if exc.status else ""
+            raise GitHubApiError(
+                f"GitHub request failed{detail}: {method} {path}"
+            ) from exc
 
     @property
     def _repo_path(self) -> str:
