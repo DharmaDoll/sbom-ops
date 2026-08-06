@@ -91,6 +91,33 @@ def _parse_priorities() -> tuple[str, ...]:
     return tuple(item.strip().upper() for item in raw.split(",") if item.strip())
 
 
+def _validate(config: AppConfig) -> AppConfig:
+    dt = config.dependency_track
+    github = config.github
+    intelligence = config.intelligence
+    if dt.page_size < 1:
+        raise ValueError("SBOM_OPS_DT_PAGE_SIZE must be greater than zero")
+    if dt.timeout_seconds <= 0 or github.timeout_seconds <= 0:
+        raise ValueError("API timeout values must be greater than zero")
+    if (
+        dt.max_retries < 0
+        or github.max_retries < 0
+        or intelligence.max_retries < 0
+    ):
+        raise ValueError("API retry counts must not be negative")
+    if dt.analysis_wait_timeout_seconds <= 0:
+        raise ValueError("SBOM_OPS_DT_ANALYSIS_WAIT_TIMEOUT_SECONDS must be positive")
+    if dt.analysis_poll_interval_seconds < 0:
+        raise ValueError(
+            "SBOM_OPS_DT_ANALYSIS_POLL_INTERVAL_SECONDS must not be negative"
+        )
+    if not 0 <= config.priority.p1_epss_threshold <= 1:
+        raise ValueError("SBOM_OPS_PRIORITY_P1_EPSS_THRESHOLD must be between 0 and 1")
+    if config.priority.p2_cvss_threshold < 0:
+        raise ValueError("SBOM_OPS_PRIORITY_P2_CVSS_THRESHOLD must not be negative")
+    return config
+
+
 def load_config(args: Any) -> AppConfig:
     dependency_track = DependencyTrackConfig(
         base_url=_require_env("SBOM_OPS_DT_BASE_URL"),
@@ -152,10 +179,10 @@ def load_config(args: Any) -> AppConfig:
         wait_for_analysis=bool(getattr(args, "wait_for_analysis", False))
         or _parse_bool(os.getenv("SBOM_OPS_WAIT_FOR_ANALYSIS"), False),
     )
-    return AppConfig(
+    return _validate(AppConfig(
         dependency_track=dependency_track,
         github=github,
         intelligence=intelligence,
         priority=priority,
         runtime=runtime,
-    )
+    ))

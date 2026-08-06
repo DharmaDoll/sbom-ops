@@ -73,13 +73,14 @@ Typical execution modes:
 The process flow is:
 
 1. Load configuration
-2. Pull findings from Dependency-Track
-3. Normalize findings into domain models
-4. Read Dependency-Track EPSS and analysis state; enrich findings with KEV
-5. Calculate operational priority
-6. Decide whether an issue should be created or updated
-7. Write issue changes to GitHub
-8. Emit summary to stdout and logs
+2. If a new SBOM is supplied, upload it and wait for the returned Dependency-Track event token
+3. Pull findings from Dependency-Track
+4. Normalize findings into domain models
+5. Read Dependency-Track EPSS and analysis state; enrich findings with KEV
+6. Calculate operational priority
+7. Decide whether an issue should be created or updated
+8. Write issue changes to GitHub
+9. Emit summary and planned actions to stdout and logs
 
 ## Configuration Contract
 
@@ -115,6 +116,16 @@ SBOM_OPS_CREATE_ISSUES_FOR
 SBOM_OPS_ISSUE_LABEL_PREFIX
 SBOM_OPS_DRY_RUN
 SBOM_OPS_PROJECT_UUIDS
+SBOM_OPS_DT_PAGE_SIZE
+SBOM_OPS_DT_TIMEOUT_SECONDS
+SBOM_OPS_DT_MAX_RETRIES
+SBOM_OPS_DT_ANALYSIS_WAIT_TIMEOUT_SECONDS
+SBOM_OPS_DT_ANALYSIS_POLL_INTERVAL_SECONDS
+SBOM_OPS_WAIT_FOR_ANALYSIS
+SBOM_OPS_GITHUB_TIMEOUT_SECONDS
+SBOM_OPS_GITHUB_MAX_RETRIES
+SBOM_OPS_INTEL_TIMEOUT_SECONDS
+SBOM_OPS_INTEL_MAX_RETRIES
 ```
 
 ### Config schema

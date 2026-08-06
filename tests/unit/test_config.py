@@ -49,3 +49,15 @@ def test_issue_priority_filter_is_configurable(monkeypatch: pytest.MonkeyPatch) 
     config = load_config(Namespace(dry_run=False, project_uuid=None, log_level=None))
 
     assert config.priority.create_issues_for == ("P0", "P2")
+
+
+def test_invalid_timeout_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SBOM_OPS_DT_BASE_URL", "https://dtrack.example.com")
+    monkeypatch.setenv("SBOM_OPS_DT_API_KEY", "dt-key")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_TOKEN", "gh-token")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_OWNER", "acme")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_REPO", "svc")
+    monkeypatch.setenv("SBOM_OPS_DT_TIMEOUT_SECONDS", "0")
+
+    with pytest.raises(ValueError, match="timeout"):
+        load_config(Namespace(dry_run=False, project_uuid=None, log_level=None))
