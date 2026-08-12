@@ -20,3 +20,14 @@ Daily
 8. Developer remediation.
 9. CI verifies.
 10. Issue closed.
+
+For local GitHub authentication, keep the token in GitHub CLI's credential
+store and export it only for the process that runs sbom-ops:
+
+```bash
+export GH_TOKEN="$(gh auth token)"
+sbom-ops sync --dry-run
+```
+
+`GH_TOKEN` is accepted when `SBOM_OPS_GITHUB_TOKEN` is not set. Never commit
+the token or put it in `.env.example`.

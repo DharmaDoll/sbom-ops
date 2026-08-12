@@ -71,6 +71,16 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _github_token() -> str:
+    value = os.getenv("SBOM_OPS_GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+    if not value:
+        raise ValueError(
+            "missing required environment variable: "
+            "SBOM_OPS_GITHUB_TOKEN or GH_TOKEN"
+        )
+    return value
+
+
 def _parse_bool(value: str | None, default: bool) -> bool:
     if value is None:
         return default
@@ -136,7 +146,7 @@ def load_config(args: Any) -> AppConfig:
         ),
     )
     github = GitHubConfig(
-        token=_require_env("SBOM_OPS_GITHUB_TOKEN"),
+        token=_github_token(),
         owner=_require_env("SBOM_OPS_GITHUB_OWNER"),
         repo=_require_env("SBOM_OPS_GITHUB_REPO"),
         issue_label_prefix=os.getenv("SBOM_OPS_ISSUE_LABEL_PREFIX", "sbom"),
