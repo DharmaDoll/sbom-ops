@@ -30,6 +30,8 @@ def test_dependency_track_finding_is_normalized() -> None:
 
     assert findings[0].vulnerability_id == "CVE-2026-0001"
     assert findings[0].vulnerability_source == "NVD"
+    assert findings[0].component_uuid == "component-1"
+    assert findings[0].component_purl == "pkg:generic/openssl@3.0.0"
     assert findings[0].epss_score == 0.91
     assert findings[0].analysis_state == "NOT_SET"
     assert findings[0].cwes == (78,)
@@ -55,7 +57,7 @@ def test_bom_upload_returns_processing_token(monkeypatch, tmp_path) -> None:
     assert result.token == "token-1"
     assert captured["request"].get_method() == "POST"
     assert b'name="project"' in captured["request"].data
-    assert b'project-1' in captured["request"].data
+    assert b"project-1" in captured["request"].data
 
 
 def test_wait_for_bom_processing_polls_until_complete(monkeypatch) -> None:
@@ -68,9 +70,7 @@ def test_wait_for_bom_processing_polls_until_complete(monkeypatch) -> None:
 
 
 def test_project_listing_uses_offset_limit_pagination() -> None:
-    client = DependencyTrackClient(
-        "https://dtrack.example", "api-key", page_size=2
-    )
+    client = DependencyTrackClient("https://dtrack.example", "api-key", page_size=2)
     requests: list[dict[str, str] | None] = []
     pages = {
         0: [{"uuid": "project-1", "name": "one"}, {"uuid": "project-2", "name": "two"}],

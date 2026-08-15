@@ -12,7 +12,7 @@
 
 | 項目 | 状態 | 備考 |
 | --- | --- | --- |
-| Domain model | 完了 | Finding、Severity、Priority、Enrichment |
+| Domain model | 完了 | Finding、Severity、Priority、Enrichment、3種類のstate型 |
 | Priority Engine | 完了 | KEV、Critical、EPSS、CVSSによるP0〜P3 |
 | Dependency-Track API client | MVP完了 | Project、SBOM upload token、Finding、EPSS、Analysis state読取 |
 | KEV client | MVP完了 | CISA JSON feed取得 |
@@ -20,7 +20,9 @@
 | Orchestrator | MVP完了 | Finding取得からIssue同期まで |
 | VEX/Analysis state除外 | MVP完了 | `NOT_AFFECTED`、`FALSE_POSITIVE`、抑制済み |
 | Dry-run / plan | MVP完了 | 設定、Finding単位のIssue予定操作、書き込み予定の確認 |
-| Mock fixtures / tests | MVP完了 | 17 tests、外部クライアントと同期処理 |
+| Safe closure | MVP完了 | 既定無効、分析待機、最低2回の連続不在確認 |
+| Finding identity v2 | MVP完了 | UUID/PURLベース、旧keyからの移行 |
+| Mock fixtures / tests | MVP完了 | 外部クライアントと同期処理 |
 | 業務フロー・責務文書 | 完了 | 情報源、トリアージ、VEX運用を文書化 |
 
 ## Phase 0: 実運用接続とMVPハードニング（P0）
@@ -32,6 +34,8 @@
 | APIリトライ・タイムアウト | 一時障害への耐性 | リトライ回数・待機・失敗ログが設定可能 |
 | APIページネーション | 大規模Portfolio対応 | DT v4 OpenAPIが提供するProjectページとGitHub Issueの全ページを処理できる。Finding/VulnerabilityはDT v4の非ページング仕様に従う |
 | 非同期分析待機 | SBOM登録直後の欠損防止 | BOM upload tokenの`processing=false`を確認できる |
+| 実環境での安全なClose検証 | 誤クローズ防止 | timeout、部分取得、分析中、filter変更でcloseされない |
+| Finding identity実レスポンス検証 | 重複・衝突防止 | component UUID/PURLとvulnerability UUID/sourceを確認 |
 | YAML設定 | 環境変数以外の運用設定 | `SPEC.md`の設定例を読み込める |
 | GitHub Actions実行例 | 定期同期を自動化 | 定期実行・Dry-run・Secrets設定例がある |
 | 権限分離ドキュメント | API keyの最小権限化 | DT read用、SBOM upload用、GitHub用を分離できる |
@@ -48,6 +52,8 @@
 | KEV強制更新 | 緊急対応 | `kev-refresh --force`相当の操作ができる |
 | キャッシュロック | 同時実行競合を防止 | 並列同期でキャッシュが破損しない |
 | 同期失敗アラート | 運用停止を検知 | 連続失敗・キャッシュ期限切れを通知できる |
+| 3状態のライフサイクル | 状態混同を防止 | Finding、Analysis、Remediationを独立遷移として扱える |
+| Multi-repository routing | Projectごとの作業場所へ連携 | DT ProjectからGitHub repositoryを設定で解決できる |
 
 ## Phase 2: VEX作成・レビュー・公開（P1）
 
@@ -86,6 +92,8 @@
 | `osv-scanner`連携 | OSV情報との補完照合 |
 | 影響範囲集約 | CVE単位で全Projectを横断表示 |
 | Asset criticality | システム重要度を優先度に反映 |
+| PriorityContext | Exposure、Reachability、Controlを拡張可能な入力に分離 |
+| Remediation policy | PriorityとSLA/期限/escalationを別モデルで管理 |
 
 ## Phase 5: 外部連携と可視化（P3）
 

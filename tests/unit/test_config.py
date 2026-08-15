@@ -21,6 +21,8 @@ def test_load_config_reads_required_environment(
     assert config.dependency_track.base_url == "https://dtrack.example.com"
     assert config.github.owner == "acme"
     assert config.runtime.dry_run is False
+    assert config.workflow.close_missing_findings is False
+    assert config.workflow.missing_confirmation_runs == 2
 
 
 def test_cli_project_overrides_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -76,3 +78,34 @@ def test_gh_token_is_fallback_for_github_authentication(
     config = load_config(Namespace(dry_run=False, project_uuid=None, log_level=None))
 
     assert config.github.token == "gh-token-from-auth"
+
+
+def test_safe_closure_policy_is_configurable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SBOM_OPS_DT_BASE_URL", "https://dtrack.example.com")
+    monkeypatch.setenv("SBOM_OPS_DT_API_KEY", "dt-key")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_TOKEN", "gh-token")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_OWNER", "acme")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_REPO", "svc")
+    monkeypatch.setenv("SBOM_OPS_CLOSE_MISSING_FINDINGS", "true")
+    monkeypatch.setenv("SBOM_OPS_MISSING_CONFIRMATION_RUNS", "3")
+
+    config = load_config(Namespace(dry_run=False, project_uuid=None, log_level=None))
+
+    assert config.workflow.close_missing_findings is True
+    assert config.workflow.missing_confirmation_runs == 3
+
+
+def test_single_missing_confirmation_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SBOM_OPS_DT_BASE_URL", "https://dtrack.example.com")
+    monkeypatch.setenv("SBOM_OPS_DT_API_KEY", "dt-key")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_TOKEN", "gh-token")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_OWNER", "acme")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_REPO", "svc")
+    monkeypatch.setenv("SBOM_OPS_MISSING_CONFIRMATION_RUNS", "1")
+
+    with pytest.raises(ValueError, match="at least 2"):
+        load_config(Namespace(dry_run=False, project_uuid=None, log_level=None))

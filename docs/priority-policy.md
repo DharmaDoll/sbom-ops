@@ -4,7 +4,7 @@
 Known Exploited Vulnerability
 Immediate response
 
-SLA
+Example SLA (separate remediation policy)
 - 48 hours
 
 ---
@@ -13,7 +13,7 @@ SLA
 Critical
 High EPSS
 
-SLA
+Example SLA (separate remediation policy)
 - Next release
 
 ---
@@ -40,3 +40,8 @@ or accepted as risk.
 sbom-ops may recommend a priority and create or update a GitHub Issue, but it
 must not automatically approve exceptions, accept risk, or change
 Dependency-Track analysis state.
+
+Priority expresses work ordering; an SLA expresses a due date and escalation
+policy. They must remain separate domain concepts. Asset criticality, exposure,
+reachability, and compensating controls are future `PriorityContext` inputs and
+must not be inferred from CVSS alone.

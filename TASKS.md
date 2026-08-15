@@ -3,11 +3,13 @@
 ## Near Term
 
 - Implement YAML config loader compatible with `SPEC.md`
-- Add real HTTP clients for Dependency-Track, KEV, and GitHub
-- Map Dependency-Track EPSS and analysis/VEX state into domain findings
+- Validate safe closure against real Dependency-Track timeout, analysis-in-progress,
+  pagination failure, and project-filter scenarios
+- Validate component UUID/PURL and vulnerability UUID/source against the target
+  Dependency-Track OpenAPI response
+- Add Dependency-Track project to GitHub repository routing
+- Define Finding, Analysis, and Remediation state transitions independently
 - Keep external EPSS client as an explicit fallback/verification path only
-- Add orchestrator decision tests with fake clients
-- Add mock fixtures for Dependency-Track findings and GitHub Issues
 - Add GitHub Actions example workflow
 
 ## Future Operations
@@ -17,6 +19,9 @@
 - Add a persistent KEV cache with configurable TTL, ETag/Last-Modified support, stale fallback, and forced refresh
 - Add cache locking to prevent concurrent KEV refreshes
 - Add KEV cache freshness and synchronization failure alerts
+- Add a remediation policy model that keeps priority separate from SLA dates
+- Add `PriorityContext` inputs for asset criticality, exposure, reachability,
+  and compensating controls without changing priority automatically
 
 ## Future LLM Triage
 

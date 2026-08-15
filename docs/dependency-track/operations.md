@@ -10,8 +10,10 @@
 6. Orchestrator creates GitHub Issues for P0/P1 findings.
 7. Developers remediate issues.
 8. CI uploads updated SBOM.
-9. Orchestrator verifies that findings disappeared or changed state.
-10. GitHub Issues are updated or closed.
+9. Orchestrator verifies analysis readiness and observes whether findings are absent.
+10. GitHub Issues are marked missing on the first verified absence.
+11. GitHub Issues are closed only after the configured consecutive confirmations,
+    and only when automatic closure is explicitly enabled.
 
 ## Operational Ownership
 

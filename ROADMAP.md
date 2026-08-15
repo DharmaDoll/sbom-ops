@@ -14,9 +14,23 @@
 ## v0.2
 
 - Duplicate detection
-- Auto close
+- Safe, opt-in closure after consecutive verified absence
+- UUID/PURL-based Finding identity and legacy-key migration
+- Separate Finding / Analysis / Remediation states
+- Dependency-Track project to GitHub repository routing
 - Config file
 - Docker
+
+---
+
+## v0.2.x Operations Foundation
+
+- Persistent structured synchronization logs
+- Audit history for Finding, priority, Analysis state, and GitHub Issue changes
+- KEV cache with configurable five-hour default TTL
+- ETag/Last-Modified conditional refresh
+- Stale-cache fallback and forced KEV refresh command
+- Cache freshness and sync failure alerts
 
 ---
 
@@ -25,15 +39,6 @@
 - LLM Triage
 - OpenAI
 - Claude
-
-## v0.3.x Operations Foundation
-
-- Persistent structured synchronization logs
-- Audit history for Finding, priority, Analysis state, and GitHub Issue changes
-- KEV cache with configurable five-hour default TTL
-- ETag/Last-Modified conditional refresh
-- Stale-cache fallback and forced KEV refresh command
-- Cache freshness and sync failure alerts
 
 LLM output remains advisory. It may summarize findings, explain impact, propose
 remediation, and identify missing information. It must not change priority,

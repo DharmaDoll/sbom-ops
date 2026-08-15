@@ -10,16 +10,23 @@ Security teamはDependency-Trackのプロジェクト横断Findingを一元的�
 
 Daily
 
-1. CI uploads SBOM and receives a Dependency-Track processing token.
-2. sbom-ops waits for the token to report `processing=false`.
-3. Orchestrator polls findings.
+1. CI uploads the SBOM and waits for the Dependency-Track processing token to
+   report `processing=false` (the separate `sbom-ops upload` helper may do this).
+2. Orchestrator polls findings using `sync --wait-for-analysis`.
+3. Orchestrator confirms a stable project read.
 4. Orchestrator reads Dependency-Track EPSS/VEX analysis state.
 5. Orchestrator enriches findings with KEV.
 6. Priority calculation.
 7. GitHub Issue creation.
 8. Developer remediation.
 9. CI verifies.
-10. Issue closed.
+10. First verified absence marks the Issue as missing and leaves it open.
+11. A later verified absence may close it only when automatic closure is
+    explicitly enabled and the configured confirmation count is met.
+
+`SBOM_OPS_CLOSE_MISSING_FINDINGS` defaults to `false`. Enabling it also requires
+`sync --wait-for-analysis`.
+`SBOM_OPS_MISSING_CONFIRMATION_RUNS` defaults to `2` and cannot be lower than 2.
 
 For local GitHub authentication, keep the token in GitHub CLI's credential
 store and export it only for the process that runs sbom-ops:
