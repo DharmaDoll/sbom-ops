@@ -1,0 +1,70 @@
+https://share.google/aimode/s5eiY0HPY2blvxz2a
+
+これまでの議論をベースに、このままGitHub Copilot（旧CodexベースのAI）や各種LLMに入力してインフラコードや設定ファイルを一撃で出力させるための「システム要件定義・設計プロンプト（Input）」としてまとめました。
+このテキストをそのままAIへの指示（インテカ・インプット）としてご利用ください。
+------------------------------
+## 📋 Dependency-Track ゼロトラスト統合インフラ設計書 (AI生成用インプット)## 1. 背景と目的 (Background & Objectives)
+OWASP Dependency-TrackをGCP（Google Cloud）上にデプロイし、各開発チームが安全かつ透過的にSBOM（ソフトウェア部品表）を自動送信できるCI/CDパイプラインを構築する。
+従来の「静的なAPIキーをGitHubに埋め込む」運用や「境界型のIP制限」を排除し、「GitHub Actionsからのアクセス」と「人間の画面ログイン」の双方において、アイデンティティをベースとした完全なゼロトラスト（鍵なし・境界なし）アーキテクチャをインフラ（IaC）および共通GitHub Actionsワークフローによって実現する。
+## 2. システムアーキテクチャ (Architecture)
+システムは以下の2層構造で保護されたコンテナ（Cloud Run）環境として構成する。
+
+[GitHub Actions (CI/CD)]
+       │ ① 認証 (GitHub発行のOIDCトークン)
+       ▼
+[Workload Identity Federation]
+       │ ② 検証・GCPサービスアカウントへの権限委譲
+       ▼
+[1. 認証プロキシ用 Cloud Run] (アクセス制御：認証必須)
+       │ ③ 成功後、Secret Managerから本物のAPIキーをロード
+       ▼ ④ X-Api-Keyヘッダーをインジェクションして転送
+[2. Dependency-Track 本体 (Cloud Run)] (アクセス制御：認証必須)
+
+------------------------------------------------------------------
+[開発者 / 人間 (ブラウザ)] ──> [IAP (Identity-Aware Proxy)] ──> [2. 本体]
+                                      │
+                                      ▼ ⑤ 認証 (Microsoft Entra ID / OIDC)
+
+## 3. ゼロトラスト認証仕様 (Authentication Specs)
+
+* 機械（GitHub Actions）の認証:
+* GitHub Actions側で固定のAPIキーや機密情報は保持しない。
+   * Workload Identity Federation を利用し、GitHubが動的発行するOIDCトークン（JWT）をGCPが直接検証。
+   * 認証成功時、GCPのサービスアカウントに変身し、プロキシ用Cloud Runを呼び出すための一時的なIDトークン（Bearer）を動的取得する。
+* 人間の認証:
+* Cloud Runの手前に IAP（Identity-Aware Proxy） を配置。
+   * 組織の認証基盤である Microsoft Entra ID とOIDC連携し、MFA等を含めたログインを強制する。
+
+## 4. セキュリティ統制要件 (Security Control)
+
+* 最小特権の原則 (Least Privilege):
+* Workload Identityの属性マッピング（Attribute Mapping）により、自組織のGitHub Organization（例: my-org）以外からの認証を遮断する。
+   * assertion.repository_owner == 'my-org'
+* APIキーの秘匿性:
+* Dependency-TrackのAPIキーは GCP Secret Manager で安全に一元管理する。
+   * 各開発チームのリポジトリや、共通GitHub ActionsのログにAPIキーが露出するリスクを根本的に排除する。
+
+------------------------------
+## 5. 実装成果物の要件 (Implementation Deliverables)
+AIに具体的に作成させたい成果物の定義です。
+## 📦 成果物 1: Terraform コード (IaC)
+以下のリソースを含み、変数（Variables）で拡張可能なTerraform構成。
+
+   1. Workload Identity Federation: プールおよびGitHubプロバイダの設定、属性マッピング（repository_ownerによる組織制限）。
+   2. IAM: 専用サービスアカウント（dtrack-github-actions-sa）の作成と、上記プールへの roles/iam.workloadIdentityUser 権限付与。
+   3. Secret Manager: Dependency-Track APIキー用のシークレット定義。
+   4. Cloud Run (本体): dependency-track/apiserver を構築（認証必須、IAP有効化）。
+   5. Cloud Run (プロキシ): 軽量なNginx（またはEnvoy）等で構築。Secret ManagerからAPIキーを読み込み、リクエストヘッダー X-Api-Key に注入して本体にリバースプロキシする設定、およびGitHubサービスアカウントに対する roles/run.invoker 権限の付与。
+
+## 📦 成果物 2: 再利用可能 GitHub Actions (モジュール化)
+各開発チームのリポジトリから汎用的に呼び出せる、中央管理用の「再利用可能ワークフロー（Reusable Workflows）」YAML。
+
+   1. 入力値 (Inputs): project_uuid（各プロジェクト固有のID）、sbom_path（デフォルト: bom.json）。
+   2. 権限 (Permissions): id-token: write, contents: read
+   3. 認証ステップ: 認証情報を一切ハードコードせず、google-github-actions/auth アクションを用いてWIF経由でGCPのIDトークンを取得。
+   4. 送信ステップ: 取得したIDトークンを Authorization: Bearer にセットし、プロキシ用Cloud Runの /api/v1/bom エンドポイントへ curl または公式アクションでSBOMファイルをPOST送信する。
+
+------------------------------
+この定義をCodexやLLMに読み込ませた上で、「まずは『成果物1：Terraformコード』を書いてください」や「『成果物2：NginxプロキシコンテナのDockerfileと設定ファイル』を書いてください」と指示を出すと、非常に精度の高いゼロトラストな実装コードが一発で得られます。
+インフラ構築の自動化（IaC化）やモジュール配布の検証を進める中で、特定のコードスニペットのレビューやデバッグが必要になった際は、いつでもお気軽にお声がけください。
+
