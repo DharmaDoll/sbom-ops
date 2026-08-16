@@ -1,7 +1,4 @@
-https://share.google/aimode/s5eiY0HPY2blvxz2a
 
-これまでの議論をベースに、このままGitHub Copilot（旧CodexベースのAI）や各種LLMに入力してインフラコードや設定ファイルを一撃で出力させるための「システム要件定義・設計プロンプト（Input）」としてまとめました。
-このテキストをそのままAIへの指示（インテカ・インプット）としてご利用ください。
 ------------------------------
 ## 📋 Dependency-Track ゼロトラスト統合インフラ設計書 (AI生成用インプット)## 1. 背景と目的 (Background & Objectives)
 OWASP Dependency-TrackをGCP（Google Cloud）上にデプロイし、各開発チームが安全かつ透過的にSBOM（ソフトウェア部品表）を自動送信できるCI/CDパイプラインを構築する。
@@ -62,7 +59,7 @@ AIに具体的に作成させたい成果物の定義です。
    1. 入力値 (Inputs): project_uuid（各プロジェクト固有のID）、sbom_path（デフォルト: bom.json）。
    2. 権限 (Permissions): id-token: write, contents: read
    3. 認証ステップ: 認証情報を一切ハードコードせず、google-github-actions/auth アクションを用いてWIF経由でGCPのIDトークンを取得。
-   4. 送信ステップ: 取得したIDトークンを Authorization: Bearer にセットし、プロキシ用Cloud Runの /api/v1/bom エンドポイントへ curl または公式アクションでSBOMファイルをPOST送信する。
+   4. 送信ステップ: 取得したIDトークンを Authorization: Bearer にセットし、プロキシ用Cloud Runの /api/v1/bom エンドポイントへ curl または公式アクションでSBOMファイルをPOST送信する。エラーが起きてもワークフローは止めないこと。
 
 ------------------------------
 この定義をCodexやLLMに読み込ませた上で、「まずは『成果物1：Terraformコード』を書いてください」や「『成果物2：NginxプロキシコンテナのDockerfileと設定ファイル』を書いてください」と指示を出すと、非常に精度の高いゼロトラストな実装コードが一発で得られます。
