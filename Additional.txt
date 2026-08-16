@@ -1,8 +1,11 @@
 
 ------------------------------
-## 📋 Dependency-Track ゼロトラスト統合インフラ設計書 (AI生成用インプット)## 1. 背景と目的 (Background & Objectives)
+## 📋 Dependency-Track ゼロトラスト統合インフラ設計書 (AI生成用インプット)
+
+## 1. 背景と目的 (Background & Objectives)
 OWASP Dependency-TrackをGCP（Google Cloud）上にデプロイし、各開発チームが安全かつ透過的にSBOM（ソフトウェア部品表）を自動送信できるCI/CDパイプラインを構築する。
 従来の「静的なAPIキーをGitHubに埋め込む」運用や「境界型のIP制限」を排除し、「GitHub Actionsからのアクセス」と「人間の画面ログイン」の双方において、アイデンティティをベースとした完全なゼロトラスト（鍵なし・境界なし）アーキテクチャをインフラ（IaC）および共通GitHub Actionsワークフローによって実現する。
+
 ## 2. システムアーキテクチャ (Architecture)
 システムは以下の2層構造で保護されたコンテナ（Cloud Run）環境として構成する。
 
