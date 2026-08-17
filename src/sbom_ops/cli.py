@@ -43,8 +43,7 @@ def run_plan(config: AppConfig) -> int:
     print(f"Dependency-Track: {config.dependency_track.base_url}")
     print(f"GitHub repository: {config.github.owner}/{config.github.repo}")
     print(
-        "EPSS source: Dependency-Track "
-        f"(fallback: {config.intelligence.epss_api_url})"
+        f"EPSS source: Dependency-Track (fallback: {config.intelligence.epss_api_url})"
     )
     print(f"KEV feed: {config.intelligence.kev_feed_url}")
     print(f"P1 EPSS threshold: {config.priority.p1_epss_threshold}")
@@ -53,6 +52,10 @@ def run_plan(config: AppConfig) -> int:
     print(f"Projects: {', '.join(config.runtime.project_uuids) or 'all accessible'}")
     print(f"Dry run: {config.runtime.dry_run}")
     print(f"Wait for analysis: {config.runtime.wait_for_analysis}")
+    print(f"Close missing findings: {config.workflow.close_missing_findings}")
+    print(
+        f"Missing confirmations required: {config.workflow.missing_confirmation_runs}"
+    )
     return 0
 
 

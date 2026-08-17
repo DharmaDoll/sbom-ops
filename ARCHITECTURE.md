@@ -98,7 +98,11 @@ Future
 ### Verification Layer
 CI
 - Re-upload SBOM
-- Close issues automatically
+- Wait for Dependency-Track processing
+
+Orchestrator
+- Observe consecutive absence
+- Close issues only under the explicit safe-closure policy
 
 # Repository Structure
 The project follows a layered architecture.
@@ -238,6 +242,15 @@ Responsibilities owned by this repository:
 - Creating remediation tasks
 - Synchronizing workflow state with GitHub Issues
 - Producing operational reports
+
+The reconciliation model keeps three state dimensions separate:
+
+- Finding state: active, missing, resolved, or unknown observation
+- Dependency-Track analysis state: exploitable, in triage, not affected, and so on
+- GitHub remediation state: open or closed workflow task
+
+An absent Finding is not automatically a resolved Finding. Automatic closure
+is opt-in and requires verified reads plus consecutive absence observations.
 
 An external EPSS adapter may be retained as an explicitly configured fallback
 or verification source. It must not silently replace Dependency-Track values.

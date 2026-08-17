@@ -14,9 +14,42 @@
 ## v0.2
 
 - Duplicate detection
-- Auto close
+- Safe, opt-in closure after consecutive verified absence
+- UUID/PURL-based Finding identity and legacy-key migration
+- Separate Finding / Analysis / Remediation states
+- Dependency-Track project to GitHub repository routing
 - Config file
 - Docker
+
+---
+
+## v0.2.x Operations Foundation
+
+- Persistent structured synchronization logs
+- Audit history for Finding, priority, Analysis state, and GitHub Issue changes
+- KEV cache with configurable five-hour default TTL
+- ETag/Last-Modified conditional refresh
+- Stale-cache fallback and forced KEV refresh command
+- Cache freshness and sync failure alerts
+
+---
+
+## v0.2.x Secure GCP Delivery Foundation
+
+- Architecture decision record and proof of concept comparing Cloud Run with a
+  supported, operable alternative such as GKE
+- Separate Dependency-Track API server, frontend, and external PostgreSQL
+- Keyless GitHub Actions authentication with OIDC and Workload Identity Federation
+- Immutable organization/repository and reusable-workflow claim restrictions
+- Least-privilege SBOM upload gateway with repository-to-project authorization
+- Dependency-Track API key storage and rotation through Secret Manager
+- Human access through an independently validated IAP / Microsoft Entra ID design
+- Reusable SBOM upload workflow that fails closed by default and reports failures
+- Terraform, integration tests, observability, backup, restore, and rollback guidance
+
+The upload gateway is limited to the documented BOM upload operation. It must not
+become a general Dependency-Track reverse proxy, and caller-provided project UUIDs
+must be checked against an authoritative repository-to-project mapping.
 
 ---
 
@@ -25,15 +58,6 @@
 - LLM Triage
 - OpenAI
 - Claude
-
-## v0.3.x Operations Foundation
-
-- Persistent structured synchronization logs
-- Audit history for Finding, priority, Analysis state, and GitHub Issue changes
-- KEV cache with configurable five-hour default TTL
-- ETag/Last-Modified conditional refresh
-- Stale-cache fallback and forced KEV refresh command
-- Cache freshness and sync failure alerts
 
 LLM output remains advisory. It may summarize findings, explain impact, propose
 remediation, and identify missing information. It must not change priority,

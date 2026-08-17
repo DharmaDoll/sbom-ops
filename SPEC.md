@@ -12,6 +12,7 @@ MVP includes:
 - EPSS retrieval from Dependency-Track findings
 - Priority calculation
 - GitHub Issue creation and update
+- Safe, opt-in GitHub Issue closure after confirmed absence
 - CLI execution
 - Config-driven thresholds
 - Unit tests and mock-based integration fixtures
@@ -73,14 +74,16 @@ Typical execution modes:
 The process flow is:
 
 1. Load configuration
-2. If a new SBOM is supplied, upload it and wait for the returned Dependency-Track event token
-3. Pull findings from Dependency-Track
-4. Normalize findings into domain models
-5. Read Dependency-Track EPSS and analysis state; enrich findings with KEV
-6. Calculate operational priority
-7. Decide whether an issue should be created or updated
-8. Write issue changes to GitHub
-9. Emit summary and planned actions to stdout and logs
+2. Pull findings from Dependency-Track after the CI upload/analysis stage
+3. Normalize findings into domain models
+4. Read Dependency-Track EPSS and analysis state; enrich findings with KEV
+5. Calculate operational priority
+6. Decide whether an issue should be created, updated, marked missing, or closed
+7. Write issue changes to GitHub
+8. Emit summary and planned actions to stdout and logs
+
+SBOM generation and upload are CI/CD responsibilities. The separate `upload`
+command is an integration helper for CI; `sync` never uploads an SBOM.
 
 ## Configuration Contract
 
@@ -122,6 +125,8 @@ SBOM_OPS_DT_MAX_RETRIES
 SBOM_OPS_DT_ANALYSIS_WAIT_TIMEOUT_SECONDS
 SBOM_OPS_DT_ANALYSIS_POLL_INTERVAL_SECONDS
 SBOM_OPS_WAIT_FOR_ANALYSIS
+SBOM_OPS_CLOSE_MISSING_FINDINGS
+SBOM_OPS_MISSING_CONFIRMATION_RUNS
 SBOM_OPS_GITHUB_TIMEOUT_SECONDS
 SBOM_OPS_GITHUB_MAX_RETRIES
 SBOM_OPS_INTEL_TIMEOUT_SECONDS
@@ -158,6 +163,10 @@ runtime:
   dry_run: false
   project_uuids: []
   log_level: INFO
+
+workflow:
+  close_missing_findings: false
+  missing_confirmation_runs: 2
 ```
 
 Notes:
@@ -203,6 +212,13 @@ Required fields:
 - `dependency_track_finding_id: str | None`
 - `dependency_track_vulnerability_uuid: str | None`
 - `vulnerability_source: str | None`
+- `dependency_track_component_uuid: str | None`
+- `component_purl: str | None`
+
+Finding lifecycle, Dependency-Track analysis, and remediation workflow are
+separate concepts. `FindingState` represents observations such as `ACTIVE`,
+`MISSING`, `RESOLVED`, and `UNKNOWN`. Dependency-Track analysis values such as
+`NOT_AFFECTED` are not GitHub workflow states.
 
 ### Enrichment
 
@@ -211,7 +227,7 @@ Required fields:
 - `in_kev: bool`
 - `epss_score: float | None`
 - `has_known_active_exploitation: bool`
-- `analysis_state: str | None`
+- `analysis_state: AnalysisState`
 - `is_suppressed: bool`
 - `analysis_detail: str | None`
 
@@ -278,10 +294,18 @@ Default is `P0` and `P1`.
 Each finding must map to a stable external key:
 
 ```text
-{project_uuid}:{component_name}:{component_version}:{vulnerability_id}
+v2:{project_uuid}:sha256(machine_identity)
 ```
 
-This key must be stored in the issue body or machine-readable metadata block.
+`machine_identity` prefers `project_uuid + component_uuid + vulnerability_uuid`.
+When those Dependency-Track identifiers are unavailable, it uses
+`project_uuid + purl + vulnerability_source + vulnerability_id`, then falls
+back to display coordinates. The key is opaque; component name/version remain
+separate human-readable fields. The v1 display-derived key is searched during
+migration so an existing issue is updated instead of duplicated.
+
+The key, Finding observation state, and consecutive-missing counter must be
+stored in machine-readable metadata blocks in the issue body.
 
 ### Duplicate handling
 
@@ -291,9 +315,17 @@ This key must be stored in the issue body or machine-readable metadata block.
 
 ### Issue closure
 
-MVP closure rule:
+Absence is not resolution. Automatic closure is disabled by default. When it
+is explicitly enabled, the orchestrator may close an issue only when:
 
-- close the GitHub Issue when the finding is no longer returned by Dependency-Track for that project and vulnerability key
+- the complete synchronization run succeeds
+- the target project used the analysis-wait path (unless an explicit future
+  verified completion signal replaces it)
+- the finding is absent for at least `missing_confirmation_runs` consecutive
+  successful observations (minimum 2)
+
+The first verified absence records `MISSING` in issue metadata and keeps the
+issue open. An unverified or failed read is `UNKNOWN`, not `RESOLVED`.
 
 ### Analysis state
 
@@ -314,9 +346,11 @@ Required methods:
 
 Deferred methods:
 
-- `upload_bom(...)`
 - `get_project(...)`
 - `update_analysis_state(...)`
+
+`upload_bom(...)` is available only to the separate CI upload helper and is
+not called by synchronization orchestration.
 
 ### `KevClient`
 

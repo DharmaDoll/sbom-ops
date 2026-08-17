@@ -34,6 +34,8 @@ class DependencyTrackFinding:
     finding_id: str | None
     vulnerability_uuid: str | None
     vulnerability_source: str | None = None
+    component_uuid: str | None = None
+    component_purl: str | None = None
 
 
 class DependencyTrackApiError(RuntimeError):
@@ -107,6 +109,8 @@ def _finding_from_payload(
         finding_id=payload.get("uuid") or payload.get("id"),
         vulnerability_uuid=vulnerability.get("uuid"),
         vulnerability_source=vulnerability.get("source"),
+        component_uuid=component.get("uuid"),
+        component_purl=component.get("purl") or component.get("purlCoordinates"),
     )
 
 

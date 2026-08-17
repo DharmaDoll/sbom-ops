@@ -51,13 +51,16 @@ Security teamと開発チームが対応を追跡するための作業管理面�
 6. `NOT_AFFECTED`、`FALSE_POSITIVE`、抑制済みを除外する。
 7. 設定された優先度（MVPではP0/P1）のFindingについてIssueを作成・更新する。
 8. 同じFinding keyの既存Issueがあれば重複作成しない。
-9. Dependency-Trackから消えたFindingに対応するIssueをクローズする。
+9. Findingが消えた場合は、分析待機を伴う正常な同期で連続不在を記録する。
+10. 明示的に自動クローズを有効化した環境だけが、設定回数（最低2回）の
+    連続不在後にIssueをクローズする。
 
 ### 結果
 
 - 新規脆弱性はGitHub Issueになる。
 - 既存Issueには最新のEPSS、分析状態、優先度、根拠が反映される。
-- 解消済みFindingのIssueはクローズされる。
+- 単発の欠損や未検証の取得結果ではIssueはクローズされない。
+- 安全な解消条件を満たしたFindingのIssueだけがクローズされる。
 
 ## フロー2: KEV登録による緊急対応
 
@@ -145,7 +148,9 @@ GitHub Issueが作成または更新される。
 4. 修正版SBOMをDependency-Trackへアップロードする。
 5. Dependency-TrackでFindingが消滅または状態変化する。
 6. 次回同期でsbom-opsが差分を確認する。
-7. Findingが消えた場合、対応するGitHub Issueをクローズする。
+7. Findingが消えた場合、最初の正常な同期ではIssueを`MISSING`として開いたままにする。
+8. 分析待機を伴う正常な同期で設定回数の連続不在を確認した場合のみ、
+   自動クローズを有効化した環境でIssueをクローズする。
 
 ## フロー6: Dry-runによる導入・ポリシー検証
 
@@ -163,10 +168,12 @@ GitHub Issueが作成または更新される。
 
 ## 共通ルール
 
-- Finding keyは `project_uuid:component_name:component_version:vulnerability_id` とする。
+- Finding keyはcomponent UUID＋vulnerability UUIDを優先したv2ハッシュとし、
+  PURL＋脆弱性source/idをfallbackにする。名前とversionは表示情報として分離する。
 - Dependency-TrackのEPSS値がある場合、外部EPSS値で上書きしない。
 - Dependency-Trackの分析状態・VEX状態をsbom-opsが自動変更しない。
-- GitHub Issueのクローズは、Finding消滅または明示された業務ルールに基づく。
+- Finding不在は解消と同一視しない。未検証の取得結果は`UNKNOWN`とする。
+- GitHub Issueの自動クローズは既定で無効とし、正常な分析待機と連続不在を必須にする。
 - AIを導入する場合も、説明・要約・修正案の提示に限定する。
 - 優先度変更、例外承認、VEX判断は人または明示的な業務ルールが行う。
 
@@ -177,5 +184,6 @@ GitHub Issueが作成または更新される。
 - KEV登録FindingがP0として扱われる。
 - Dependency-TrackのEPSS値が優先度計算に利用される。
 - VEXで`NOT_AFFECTED`となったFindingから新規Issueが作成されない。
-- Finding消滅後の同期でIssueがクローズされる。
+- Finding消滅の初回同期ではIssueが開いたまま`MISSING`として記録される。
+- 明示的に有効化した場合のみ、設定回数の正常な連続不在後にIssueがクローズされる。
 - Dry-runではGitHubに書き込みが発生しない。

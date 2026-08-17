@@ -36,7 +36,8 @@ The client must expose intent-based methods, not raw endpoint names.
 
 Dependency-Track is the preferred source for EPSS values and VEX-derived
 analysis state. The client should expose normalized finding fields for these
-values. VEX upload and analysis-state mutation require explicit workflow
+values, including component UUID/PURL and vulnerability UUID/source for stable
+machine identity. VEX upload and analysis-state mutation require explicit workflow
 support and permissions; they are not part of the MVP.
 
 The MVP read path uses the following intent-level operations:
@@ -56,7 +57,9 @@ The upload-and-wait path uses:
 
 The event token is the authoritative signal for the tasks created by that BOM
 upload. Finding stability is retained only as a defensive read-side check when
-the sync is started without a token.
+the sync is started without a token. A stable read is not, on its own, proof
+that a missing Finding is resolved; safe closure therefore also requires
+consecutive successful absence observations and explicit opt-in.
 
 The findings API requires the `VIEW_VULNERABILITY` permission. Endpoint details
 must be validated against the target instance's OpenAPI document before

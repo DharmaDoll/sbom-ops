@@ -13,12 +13,15 @@ from sbom_ops.clients.github import GitHubIssuesClient
 from sbom_ops.clients.kev import KevClient
 from sbom_ops.config import AppConfig
 from sbom_ops.domain.models import (
+    AnalysisState,
     Enrichment,
     Finding,
+    FindingState,
     PrioritizedFinding,
     Severity,
 )
 from sbom_ops.domain.priority import prioritize_finding
+from sbom_ops.domain.workflow import MissingFindingAction, decide_missing_finding
 
 
 class DependencyTrackClientProtocol(Protocol):
@@ -61,6 +64,8 @@ class RunResult:
 
 
 _FINDING_KEY_PATTERN = re.compile(r"<!-- sbom-ops:finding-key=(.*?) -->")
+_MISSING_COUNT_PATTERN = re.compile(r"<!-- sbom-ops:missing-count=(\d+) -->")
+_FINDING_STATE_PATTERN = re.compile(r"<!-- sbom-ops:finding-state=(\w+) -->")
 
 
 class Orchestrator:
@@ -108,6 +113,7 @@ class Orchestrator:
         managed_project_uuids = {project.uuid for project in projects}
         created = updated = closed = findings_processed = 0
         actions: list[str] = []
+        touched_issue_numbers: set[int] = set()
 
         for project in projects:
             if self._config.runtime.wait_for_analysis:
@@ -125,6 +131,7 @@ class Orchestrator:
             for raw in raw_findings:
                 prioritized_finding = self._prioritize(raw, kev_ids)
                 current_keys.add(prioritized_finding.finding.finding_key())
+                current_keys.add(prioritized_finding.finding.legacy_finding_key())
                 prioritized.append(prioritized_finding)
 
             for item in prioritized:
@@ -136,9 +143,13 @@ class Orchestrator:
                 key = item.finding.finding_key()
                 existing = self._github.find_open_issue_by_finding_key(key)
                 if existing is None:
+                    existing = self._github.find_open_issue_by_finding_key(
+                        item.finding.legacy_finding_key()
+                    )
+                if existing is None:
                     actions.append(
                         f"create {key} priority={item.priority.value} "
-                        f"analysis={item.enrichment.analysis_state or 'NOT_SET'}"
+                        f"analysis={item.enrichment.analysis_state.value}"
                     )
                     if not self._config.runtime.dry_run:
                         self._github.create_issue(
@@ -162,22 +173,86 @@ class Orchestrator:
                     )
                     if not self._config.runtime.dry_run:
                         self._github.update_issue(int(number), title, body)
+                    touched_issue_numbers.add(int(number))
                     updated += 1
 
         for issue in self._github.list_open_issues(
             self._config.github.issue_label_prefix
         ):
             key = self._finding_key_from_issue(issue)
-            if key is None or key in current_keys:
-                continue
-            if key.split(":", 1)[0] not in managed_project_uuids:
+            if key is None:
                 continue
             number = issue.get("number")
+            if key in current_keys:
+                if (
+                    number is not None
+                    and int(number) not in touched_issue_numbers
+                    and self._missing_count_from_issue(issue) > 0
+                ):
+                    actions.append(
+                        f"mark-active {key} issue=#{number} reason=reappeared"
+                    )
+                    if not self._config.runtime.dry_run:
+                        self._github.update_issue(
+                            int(number),
+                            str(issue.get("title") or "sbom-ops managed finding"),
+                            self._with_active_observation(issue.get("body") or ""),
+                        )
+                    updated += 1
+                continue
+            if self._project_uuid_from_finding_key(key) not in managed_project_uuids:
+                continue
             if number is None:
                 continue
-            actions.append(f"close {key} issue=#{number}")
+            body = issue.get("body") or ""
+            decision = decide_missing_finding(
+                self._missing_count_from_issue(issue),
+                automatic_closure_enabled=(
+                    self._config.workflow.close_missing_findings
+                ),
+                scan_verified=self._config.runtime.wait_for_analysis,
+                confirmations_required=(
+                    self._config.workflow.missing_confirmation_runs
+                ),
+            )
+            if decision.action == MissingFindingAction.NOOP:
+                actions.append(
+                    f"keep-open {key} issue=#{number} reason={decision.reason}"
+                )
+                continue
+            if decision.action == MissingFindingAction.MARK_MISSING:
+                actions.append(
+                    f"mark-missing {key} issue=#{number} "
+                    f"count={decision.missing_count} reason={decision.reason}"
+                )
+                if not self._config.runtime.dry_run:
+                    self._github.update_issue(
+                        int(number),
+                        str(issue.get("title") or "sbom-ops managed finding"),
+                        self._with_finding_observation(
+                            body,
+                            decision.finding_state,
+                            decision.missing_count,
+                        ),
+                    )
+                updated += 1
+                continue
+            actions.append(
+                f"close {key} issue=#{number} count={decision.missing_count} "
+                f"reason={decision.reason}"
+            )
             if not self._config.runtime.dry_run:
+                self._github.update_issue(
+                    int(number),
+                    str(issue.get("title") or "sbom-ops managed finding"),
+                    self._with_finding_observation(
+                        body,
+                        decision.finding_state,
+                        decision.missing_count,
+                    ),
+                )
                 self._github.close_issue(int(number))
+            updated += 1
             closed += 1
 
         return RunResult(
@@ -206,12 +281,14 @@ class Orchestrator:
             dependency_track_finding_id=raw.finding_id,
             dependency_track_vulnerability_uuid=raw.vulnerability_uuid,
             vulnerability_source=raw.vulnerability_source,
+            dependency_track_component_uuid=raw.component_uuid,
+            component_purl=raw.component_purl,
         )
         enrichment = Enrichment(
             in_kev=raw.vulnerability_id in kev_ids,
             epss_score=raw.epss_score,
             has_known_active_exploitation=raw.vulnerability_id in kev_ids,
-            analysis_state=raw.analysis_state,
+            analysis_state=self._analysis_state(raw.analysis_state),
             is_suppressed=raw.is_suppressed,
             analysis_detail=raw.analysis_detail,
         )
@@ -225,10 +302,19 @@ class Orchestrator:
             return Severity.UNKNOWN
 
     @staticmethod
+    def _analysis_state(value: str | None) -> AnalysisState:
+        if value is None:
+            return AnalysisState.NOT_SET
+        try:
+            return AnalysisState(value.upper())
+        except ValueError:
+            return AnalysisState.UNKNOWN
+
+    @staticmethod
     def _excluded_by_analysis(item: PrioritizedFinding) -> bool:
         return item.enrichment.is_suppressed or item.enrichment.analysis_state in {
-            "NOT_AFFECTED",
-            "FALSE_POSITIVE",
+            AnalysisState.NOT_AFFECTED,
+            AnalysisState.FALSE_POSITIVE,
         }
 
     @staticmethod
@@ -236,6 +322,42 @@ class Orchestrator:
         body = issue.get("body") or ""
         match = _FINDING_KEY_PATTERN.search(body)
         return match.group(1) if match else None
+
+    @staticmethod
+    def _project_uuid_from_finding_key(finding_key: str) -> str:
+        if finding_key.startswith("v2:"):
+            parts = finding_key.split(":", 2)
+            return parts[1] if len(parts) == 3 else ""
+        return finding_key.split(":", 1)[0]
+
+    @staticmethod
+    def _missing_count_from_issue(issue: dict) -> int:
+        body = issue.get("body") or ""
+        match = _MISSING_COUNT_PATTERN.search(body)
+        return int(match.group(1)) if match else 0
+
+    @staticmethod
+    def _with_finding_observation(
+        body: str, finding_state: FindingState, missing_count: int
+    ) -> str:
+        state_marker = f"<!-- sbom-ops:finding-state={finding_state.value} -->"
+        count_marker = f"<!-- sbom-ops:missing-count={missing_count} -->"
+        if _FINDING_STATE_PATTERN.search(body):
+            body = _FINDING_STATE_PATTERN.sub(state_marker, body, count=1)
+        else:
+            body = f"{body.rstrip()}\n\n{state_marker}\n"
+        if _MISSING_COUNT_PATTERN.search(body):
+            return _MISSING_COUNT_PATTERN.sub(count_marker, body, count=1)
+        return f"{body.rstrip()}\n{count_marker}\n"
+
+    @staticmethod
+    def _with_active_observation(body: str) -> str:
+        state_marker = f"<!-- sbom-ops:finding-state={FindingState.ACTIVE.value} -->"
+        if _FINDING_STATE_PATTERN.search(body):
+            body = _FINDING_STATE_PATTERN.sub(state_marker, body, count=1)
+        else:
+            body = f"{body.rstrip()}\n\n{state_marker}\n"
+        return _MISSING_COUNT_PATTERN.sub("", body, count=1).rstrip() + "\n"
 
     @staticmethod
     def _issue_content(item: PrioritizedFinding) -> tuple[str, str]:
@@ -247,19 +369,22 @@ class Orchestrator:
         )
         rationale = ", ".join(item.rationale)
         body = f"""<!-- sbom-ops:finding-key={finding.finding_key()} -->
+<!-- sbom-ops:finding-state={FindingState.ACTIVE.value} -->
 
 ## Vulnerability
 
 - Project: `{finding.project_name}` (`{finding.project_uuid}`)
-- Component: `{finding.component_name}` `{finding.component_version or 'unknown'}`
+- Component: `{finding.component_name}` `{finding.component_version or "unknown"}`
+- Component UUID: `{finding.dependency_track_component_uuid or "unknown"}`
+- Package URL: `{finding.component_purl or "unknown"}`
 - Vulnerability: `{finding.vulnerability_id}`
-- Vulnerability source: `{finding.vulnerability_source or 'unknown'}`
+- Vulnerability source: `{finding.vulnerability_source or "unknown"}`
 - Priority: `{item.priority.value}`
-- CVSS: `{finding.cvss_score if finding.cvss_score is not None else 'unknown'}`
-- EPSS: `{enrichment.epss_score if enrichment.epss_score is not None else 'unknown'}`
-- KEV: `{'yes' if enrichment.in_kev else 'no'}`
-- Dependency-Track analysis: `{enrichment.analysis_state or 'NOT_SET'}`
-- Analysis detail: {enrichment.analysis_detail or 'None'}
+- CVSS: `{finding.cvss_score if finding.cvss_score is not None else "unknown"}`
+- EPSS: `{enrichment.epss_score if enrichment.epss_score is not None else "unknown"}`
+- KEV: `{"yes" if enrichment.in_kev else "no"}`
+- Dependency-Track analysis: `{enrichment.analysis_state.value}`
+- Analysis detail: {enrichment.analysis_detail or "None"}
 
 ## Rationale
 
@@ -267,7 +392,7 @@ class Orchestrator:
 
 ## Description
 
-{finding.description or 'No description provided by Dependency-Track.'}
+{finding.description or "No description provided by Dependency-Track."}
 
 This issue is synchronized from Dependency-Track by sbom-ops.
 """
