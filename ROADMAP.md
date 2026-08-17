@@ -7,7 +7,7 @@
 - Dependency-Track EPSS retrieval
 - Priority Engine
 - GitHub Issues
-- GitHub Actions
+- Basic GitHub Actions sync example
 
 ---
 
@@ -45,6 +45,7 @@
 - Dependency-Track API key storage and rotation through Secret Manager
 - Human access through an independently validated IAP / Microsoft Entra ID design
 - Reusable SBOM upload workflow that fails closed by default and reports failures
+- Minimum production-gate logs, audit events, failure alerts, and upload metrics
 - Terraform, integration tests, observability, backup, restore, and rollback guidance
 
 The upload gateway is limited to the documented BOM upload operation. It must not
@@ -55,14 +56,15 @@ must be checked against an authoritative repository-to-project mapping.
 
 ## v0.3
 
-- LLM Triage
-- OpenAI
-- Claude
+- VEX candidate queue
+- Human-reviewed Draft / Review / Approve / Publish workflow
+- CycloneDX validation, diff preview, expiry, and re-evaluation
+- Dependency-Track VEX ingestion after explicit approval
 
-LLM output remains advisory. It may summarize findings, explain impact, propose
-remediation, and identify missing information. It must not change priority,
-approve exceptions, suppress findings, change VEX/Analysis state, or close
-GitHub Issues automatically.
+VEX ingestion remains owned by Dependency-Track. sbom-ops reads the resulting
+analysis state and uses it for workflow decisions; it does not independently
+approve, suppress, or mark findings as not affected. VEX publication requires
+explicit Security team approval.
 
 ---
 
@@ -73,21 +75,22 @@ GitHub Issues automatically.
 - pip-audit
 - osv-scanner
 
+Reachability is advisory evidence for human review. It must not suppress findings,
+change priority, or publish VEX decisions automatically.
+
 ---
 
 ## v0.5
 
-- VEX
-- Suppression Sync
+- LLM Triage
+- OpenAI
+- Claude
 
-VEX ingestion remains owned by Dependency-Track. sbom-ops reads the resulting
-analysis state and uses it for workflow decisions; it does not independently
-approve, suppress, or mark findings as not affected.
-
-Future VEX operations will support Security team candidate queues, evidence
-collection, structured rationale, draft/review/approval/publish workflow,
-validation, diff preview, expiry, and re-evaluation. LLM assistance remains
-advisory and cannot approve VEX decisions or mutate Dependency-Track state.
+LLM output remains advisory. It may summarize findings, explain impact, propose
+remediation, and identify missing information. It must not change priority,
+approve exceptions, suppress findings, change VEX/Analysis state, or close
+GitHub Issues automatically. Reachability and approved VEX context should be
+available as evidence before LLM triage is introduced.
 
 ---
 

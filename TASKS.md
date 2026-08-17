@@ -1,16 +1,26 @@
 # Tasks
 
+## Implemented Foundation
+
+- API retry and timeout controls are implemented; production failure behavior still needs validation
+- Dependency-Track project pagination is implemented; portfolio-scale validation is pending
+- BOM processing wait and safe, opt-in closure are implemented; real analysis timing and partial-failure validation is pending
+- Finding, Analysis, and Remediation state types are implemented; broader transition rules remain planned
+- A basic repository-local GitHub Actions sync example exists; it is not the reusable WIF upload workflow
+
 ## Near Term
 
 - Implement YAML config loader compatible with `SPEC.md`
+- Add Dependency-Track project to GitHub repository routing
 - Validate safe closure against real Dependency-Track timeout, analysis-in-progress,
   pagination failure, and project-filter scenarios
 - Validate component UUID/PURL and vulnerability UUID/source against the target
   Dependency-Track OpenAPI response
-- Add Dependency-Track project to GitHub repository routing
-- Define Finding, Analysis, and Remediation state transitions independently
+- Validate GitHub Issue creation, update, duplicate migration, and closure after a dry-run
+- Complete Finding, Analysis, and Remediation transition rules independently
 - Keep external EPSS client as an explicit fallback/verification path only
-- Add GitHub Actions example workflow
+- Harden the existing sync workflow with commit-SHA-pinned actions, timeouts,
+  concurrency control, and an explicit distinction from SBOM upload
 
 ## Secure GCP Delivery
 
@@ -31,8 +41,10 @@
   frontend-to-API browser requests, CORS, logout, group authorization, and break-glass access
 - Publish a reusable GitHub Actions workflow using OIDC/WIF, pinned actions,
   explicit minimal permissions, timeouts, retries, and fail-closed default behavior
-- Add Terraform validation, policy checks, integration tests, audit logs, upload
-  metrics, failure alerts, disaster recovery tests, and cost estimates
+- Add minimum production-gate structured logs, audit events, upload metrics, and
+  failure alerts before exposing the upload path to development teams
+- Add Terraform validation, policy checks, integration tests, disaster recovery
+  tests, and cost estimates
 
 ## Future Operations
 
@@ -45,14 +57,6 @@
 - Add `PriorityContext` inputs for asset criticality, exposure, reachability,
   and compensating controls without changing priority automatically
 
-## Future LLM Triage
-
-- Add optional LLM triage adapter for summaries, impact explanations, remediation proposals, and follow-up questions
-- Require structured LLM output with evidence references and confidence
-- Store LLM suggestions separately from authoritative Dependency-Track analysis decisions
-- Add human review workflow before publishing LLM suggestions to GitHub Issues
-- Ensure LLM cannot change priority, suppress findings, approve exceptions, change VEX state, or close Issues
-
 ## Future VEX Operations
 
 - Add Security team VEX candidate queue across projects
@@ -63,3 +67,19 @@
 - Add VEX diff preview before Dependency-Track import
 - Add VEX expiry and re-evaluation triggers
 - Add VEX artifact versioning and reviewer audit trail
+
+## Future Reachability
+
+- Add reachability as advisory evidence without allowing it to suppress findings automatically
+- Integrate `govulncheck`, `pip-audit`, and `osv-scanner` through independent adapters
+- Record tool version, inputs, outputs, timestamps, and confidence for auditability
+- Feed reachability results into VEX review and later LLM triage as evidence
+
+## Future LLM Triage
+
+- Add optional LLM triage adapter after VEX and reachability evidence are available
+- Generate summaries, impact explanations, remediation proposals, and follow-up questions
+- Require structured LLM output with evidence references and confidence
+- Store LLM suggestions separately from authoritative Dependency-Track analysis decisions
+- Add human review workflow before publishing LLM suggestions to GitHub Issues
+- Ensure LLM cannot change priority, suppress findings, approve exceptions, change VEX state, or close Issues
