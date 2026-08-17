@@ -34,6 +34,25 @@
 
 ---
 
+## v0.2.x Secure GCP Delivery Foundation
+
+- Architecture decision record and proof of concept comparing Cloud Run with a
+  supported, operable alternative such as GKE
+- Separate Dependency-Track API server, frontend, and external PostgreSQL
+- Keyless GitHub Actions authentication with OIDC and Workload Identity Federation
+- Immutable organization/repository and reusable-workflow claim restrictions
+- Least-privilege SBOM upload gateway with repository-to-project authorization
+- Dependency-Track API key storage and rotation through Secret Manager
+- Human access through an independently validated IAP / Microsoft Entra ID design
+- Reusable SBOM upload workflow that fails closed by default and reports failures
+- Terraform, integration tests, observability, backup, restore, and rollback guidance
+
+The upload gateway is limited to the documented BOM upload operation. It must not
+become a general Dependency-Track reverse proxy, and caller-provided project UUIDs
+must be checked against an authoritative repository-to-project mapping.
+
+---
+
 ## v0.3
 
 - LLM Triage

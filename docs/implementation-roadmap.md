@@ -40,6 +40,49 @@
 | GitHub Actions実行例 | 定期同期を自動化 | 定期実行・Dry-run・Secrets設定例がある |
 | 権限分離ドキュメント | API keyの最小権限化 | DT read用、SBOM upload用、GitHub用を分離できる |
 
+## Phase 0.5: GCPゼロトラスト配信基盤（P0/P1）
+
+`Additional.txt`の提案は、GitHub Actionsに長期秘密情報を置かない方針と
+Identityベースのアクセス制御を採用する。一方、Cloud Run、認証プロキシ、IAPを
+確定アーキテクチャとはせず、公式仕様に基づくADRと本番相当PoCを通過してから
+Terraform実装へ進む。
+
+| タスク | 目的 | 完了条件 |
+| --- | --- | --- |
+| 実行基盤ADR / PoC | Cloud Runへの先行固定を避ける | Cloud RunとGKE/Helmを、DTの推奨リソース、常駐バックグラウンド処理、起動時間、可用性、費用、運用負荷で比較し選定できる |
+| DTサービス分離 | 公式配布形態に合わせる | API server、browser-facing frontend、外部PostgreSQLを分離し、接続、migration、upgradeを再現できる |
+| データ保護 | Inventoryの正本を保護 | PostgreSQLの暗号化、backup/restore、PITR、DR演習、RPO/RTOを定義し復旧試験に合格する |
+| GitHub OIDC / WIF | GitHubに長期GCP鍵を置かない | 固定的なorganization/repository ID、ref/environment、承認済み`job_workflow_ref`で信頼を制限し、想定外repo/workflowのtoken exchangeが拒否される |
+| SBOM upload gateway | DT API keyをCIへ渡さない | gatewayだけがSecret Managerのupload専用keyを参照し、rotationと監査ができる |
+| Repository/project認可 | 他ProjectへのSBOM上書きを防ぐ | 検証済みOIDC callerからDT project UUIDをサーバー側で解決し、不一致・未知repo・caller指定UUIDを拒否する |
+| Gateway面の縮小 | 汎用proxy化を防ぐ | 許可するmethod/path/content type/body sizeをBOM uploadに限定し、issuer、audience、期限、caller identityを検証する |
+| Service-to-service認証 | 内部経路を最小権限化 | gateway固有service accountだけがbackendをinvokeでき、ID token audienceとegress/ingress制約を統合試験で確認する |
+| 人間向け認証PoC | Entra ID利用者の画面アクセスを保護 | IAP/Identity PlatformまたはDT native OIDCを比較し、SPAからAPIへの認証、CORS、group認可、logout、break-glassをE2E確認する |
+| Reusable workflow | 各repoへ安全な共通送信経路を提供 | `id-token: write`と`contents: read`だけを付与し、actionをcommit SHAで固定し、timeout/retry/concurrencyを設定する |
+| 失敗ポリシー | SBOM欠落を見逃さない | upload失敗は既定でjobを失敗させ、明示的な非blockingモードでも監視可能なwarning、metric、alertを必須とする |
+| IaC検証 | 権限逸脱と設定差分を防ぐ | Terraform format/validate/plan、policy check、権限negative test、環境別変数、rollback手順をCIで検証する |
+| 運用可視性 | 認証・送信障害を検知する | WIF拒否、gateway 4xx/5xx、upload token、分析遅延、Secret rotationを相関できるaudit log、metric、alertを備える |
+
+### 採用しない前提
+
+- `repository_owner`名だけでは認可しない。再利用されない数値IDとrepo/workflow単位の条件を使う。
+- callerが渡した`project_uuid`を無条件に転送しない。
+- Nginx等へ全Dependency-Track APIを透過させない。
+- SBOM upload errorを無条件に握りつぶさない。既定はfail-closedとする。
+- API serverだけをデプロイして人間向けUIが成立すると仮定しない。
+
+### 設計時に参照する公式仕様
+
+- [Dependency-Track: Deploying Docker Container](https://docs.dependencytrack.org/getting-started/deploy-docker/)
+- [Dependency-Track: REST API](https://docs.dependencytrack.org/integrations/rest-api/)
+- [Dependency-Track: Continuous Integration & Delivery](https://docs.dependencytrack.org/usage/cicd/)
+- [Google Cloud: Workload Identity Federation with deployment pipelines](https://cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines)
+- [Google Cloud: Authenticating service-to-service](https://cloud.google.com/run/docs/authenticating/service-to-service)
+- [Google Cloud: Configure IAP for Cloud Run](https://cloud.google.com/run/docs/securing/identity-aware-proxy-cloud-run)
+- [Google Cloud: IAP external identities](https://cloud.google.com/iap/docs/external-identities)
+- [GitHub: Configuring OIDC in Google Cloud Platform](https://docs.github.com/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-google-cloud-platform)
+- [GitHub: OIDC with reusable workflows](https://docs.github.com/actions/how-tos/secure-your-work/security-harden-deployments/oidc-with-reusable-workflows)
+
 ## Phase 1: 運用ログ・監査・キャッシュ（P1）
 
 | タスク | 目的 | 完了条件 |
@@ -110,6 +153,8 @@
 
 ```text
 Phase 0: 実接続・ハードニング
+    ↓
+Phase 0.5: GCP基盤ADR・PoC・安全なSBOM upload
     ↓
 Phase 1: ログ・監査・KEVキャッシュ
     ↓
