@@ -117,3 +117,15 @@ class PrioritizedFinding:
     enrichment: Enrichment
     priority: Priority
     rationale: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class FindingAssessment:
+    """Action-neutral assessment produced before any external workflow action."""
+
+    project_uuid: str
+    finding_key: str
+    vulnerability_id: str
+    priority: Priority
+    analysis_state: AnalysisState
+    rationale: tuple[str, ...]

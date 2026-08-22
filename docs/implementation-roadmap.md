@@ -26,6 +26,10 @@
 | Project pagination | MVP完了 | DT Projectのoffset/limit処理。大規模Portfolio検証待ち |
 | 非同期分析待機 | MVP完了 | BOM processing完了待機。実環境の分析時間検証待ち |
 | GitHub Actions sync例 | MVP完了 | repository-localな同期例。WIF SBOM upload workflowとは別物 |
+| YAML config loader | MVP完了 | `SPEC.md`準拠、`env:`参照、環境変数・CLI優先、未知キー検出 |
+| Project/repository routing | MVP完了 | Project UUIDごとのGitHub owner/repository/label解決、重複・未知Project拒否 |
+| Contract / failure-path tests | MVP完了 | DT/GitHub fixture、pagination境界、malformed response、HTTP failureを検証 |
+| Sync workflow hardening | MVP完了 | action SHA固定、checkout credential無効化、timeout、concurrency、最小権限 |
 | Mock fixtures / tests | MVP完了 | 外部クライアントと同期処理 |
 | 業務フロー・責務文書 | 完了 | 情報源、トリアージ、VEX運用を文書化 |
 
@@ -40,8 +44,9 @@
 | 非同期分析待機実環境検証 | SBOM登録直後の欠損防止 | 実装済みBOM upload token待機で`processing=false`を確認し、timeout時にcloseへ進まない |
 | 実環境での安全なClose検証 | 誤クローズ防止 | timeout、部分取得、分析中、filter変更でcloseされない |
 | Finding identity実レスポンス検証 | 重複・衝突防止 | component UUID/PURLとvulnerability UUID/sourceを確認 |
-| YAML設定 | 環境変数以外の運用設定 | `SPEC.md`の設定例を読み込める |
-| GitHub Actions sync例のhardening | 定期同期を安全に自動化 | 既存例のactionをcommit SHAで固定し、timeout、concurrency、Dry-run、権限を検証できる。WIF upload workflowとは明確に分離する |
+| YAML設定の運用検証 | 環境変数以外の運用設定 | `SPEC.md`と`examples/config.yaml`を使い、環境別override、secret参照、未知キー拒否を確認できる |
+| Project/repository routing実環境検証 | Projectごとの作業場所へ連携 | 複数Project fixtureまたは実環境で、正しいrepositoryへのIssue同期と未知Project拒否を確認できる |
+| GitHub Actions sync例の実行検証 | 定期同期を安全に自動化 | SHA固定済みの既存例をGitHub Actions上で実行し、timeout、concurrency、Dry-run、権限、Secretsを検証できる。WIF upload workflowとは明確に分離する |
 | 権限分離ドキュメント | API keyの最小権限化 | DT read用、SBOM upload用、GitHub用を分離できる |
 
 ### 直近のPR単位
@@ -106,8 +111,8 @@ Terraform実装へ進む。
 | KEV強制更新 | 緊急対応 | `kev-refresh --force`相当の操作ができる |
 | キャッシュロック | 同時実行競合を防止 | 並列同期でキャッシュが破損しない |
 | 同期失敗アラート | 運用停止を検知 | 連続失敗・キャッシュ期限切れを通知できる |
-| 3状態のライフサイクル | 状態混同を防止 | Finding、Analysis、Remediationを独立遷移として扱える |
-| Multi-repository routing | Projectごとの作業場所へ連携 | DT ProjectからGitHub repositoryを設定で解決できる |
+| 3状態のライフサイクル | 状態混同を防止 | Finding、Analysis、Remediationを独立遷移として扱える（domain rule実装済み） |
+| 3状態の永続化・監査 | 状態混同を防止 | Finding、Analysis、Remediationの独立遷移とIssue操作履歴を検索できる |
 
 ## Phase 2: VEX作成・レビュー・公開（P1）
 

@@ -5,22 +5,34 @@
 - API retry and timeout controls are implemented; production failure behavior still needs validation
 - Dependency-Track project pagination is implemented; portfolio-scale validation is pending
 - BOM processing wait and safe, opt-in closure are implemented; real analysis timing and partial-failure validation is pending
-- Finding, Analysis, and Remediation state types are implemented; broader transition rules remain planned
+- Finding, Analysis, and Remediation states have independent domain transitions; persistence/audit remains planned
 - A basic repository-local GitHub Actions sync example exists; it is not the reusable WIF upload workflow
+- YAML config loader with `SPEC.md` validation and `env:` references is implemented
+- Project→GitHub repository routing with duplicate and unknown-project rejection is implemented
+- Dependency-Track/GitHub contract fixtures and failure-path tests are implemented
+- Existing sync Workflow actions are SHA-pinned with timeout, concurrency, and checkout credential hardening
+- Action-neutral Finding assessments are returned before optional GitHub Issue actions
+- JSON sync output is available for downstream action adapters
+- Sync results include a run ID and duration for future log/audit correlation
+- Optional JSONL persistence is available for completed sync results
+- Handled sync failures are recorded as structured JSONL events
+- JSONL sync persistence is isolated behind a replaceable service adapter
+- Optional TTL-based KEV cache is implemented; conditional HTTP refresh remains planned
+- Explicit stale KEV fallback and ETag/Last-Modified conditional refresh are implemented
 
 ## Near Term
 
-- Implement YAML config loader compatible with `SPEC.md`
-- Add Dependency-Track project to GitHub repository routing
+- Validate YAML config loader behavior across representative environments
+- Validate Project→repository routing against a multi-project fixture
 - Validate safe closure against real Dependency-Track timeout, analysis-in-progress,
   pagination failure, and project-filter scenarios
 - Validate component UUID/PURL and vulnerability UUID/source against the target
   Dependency-Track OpenAPI response
 - Validate GitHub Issue creation, update, duplicate migration, and closure after a dry-run
-- Complete Finding, Analysis, and Remediation transition rules independently
+- Validate the independent Finding, Analysis, and Remediation transitions against real Dependency-Track and GitHub fixtures
 - Keep external EPSS client as an explicit fallback/verification path only
-- Harden the existing sync workflow with commit-SHA-pinned actions, timeouts,
-  concurrency control, and an explicit distinction from SBOM upload
+- Validate the hardened sync workflow in GitHub Actions and confirm the required
+  repository permissions and secrets
 
 ## Secure GCP Delivery
 

@@ -1,0 +1,46 @@
+dependency_track:
+  base_url: https://dtrack.example.com
+  api_key: env:SBOM_OPS_DT_API_KEY
+  page_size: 100
+  timeout_seconds: 30
+  max_retries: 3
+  analysis_wait_timeout_seconds: 120
+  analysis_poll_interval_seconds: 5
+
+github:
+  enabled: true
+  token: env:SBOM_OPS_GITHUB_TOKEN
+  owner: acme
+  repo: service-a
+  issue_label_prefix: sbom
+
+intelligence:
+  kev_feed_url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+  epss_api_url: https://api.first.org/data/v1/epss
+  # Optional local cache; disabled when omitted.
+  # kev_cache_file: var/kev.json
+  kev_cache_ttl_seconds: 18000
+  kev_cache_allow_stale: false
+
+priority:
+  p1_epss_threshold: 0.7
+  p2_cvss_threshold: 7.0
+  create_issues_for:
+    - P0
+    - P1
+
+runtime:
+  dry_run: false
+  project_uuids: []
+  log_level: INFO
+  wait_for_analysis: false
+  # Optional JSONL audit trail for completed sync runs.
+  # sync_log_file: var/sbom-ops-sync.jsonl
+
+workflow:
+  close_missing_findings: false
+  missing_confirmation_runs: 2
+
+routing:
+  # Add one entry per Dependency-Track Project when multiple repositories are used.
+  projects: []

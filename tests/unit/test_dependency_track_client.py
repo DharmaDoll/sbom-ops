@@ -3,8 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from sbom_ops.clients import dependency_track as dependency_track_module
-from sbom_ops.clients.dependency_track import DependencyTrackClient
+from sbom_ops.clients.dependency_track import (
+    DependencyTrackApiError,
+    DependencyTrackClient,
+)
 
 FIXTURES = Path(__file__).parents[1] / "fixtures"
 
@@ -95,3 +100,36 @@ def test_project_listing_uses_offset_limit_pagination() -> None:
         {"offset": "0", "limit": "2"},
         {"offset": "2", "limit": "2"},
     ]
+
+
+def test_project_listing_rejects_a_repeated_pagination_page() -> None:
+    client = DependencyTrackClient("https://dtrack.example", "api-key", page_size=1)
+    client._request_json = lambda path, params=None: [  # type: ignore[method-assign]
+        {"uuid": "project-1", "name": "one"}
+    ]
+
+    with pytest.raises(DependencyTrackApiError, match="pagination did not advance"):
+        client.list_projects()
+
+
+def test_finding_without_vulnerability_identifier_is_rejected() -> None:
+    client = DependencyTrackClient("https://dtrack.example", "api-key")
+    payloads = {
+        "/api/v1/project/project-1": {"uuid": "project-1", "name": "service-a"},
+        "/api/v1/finding/project/project-1": [{"component": {"name": "openssl"}}],
+        "/api/v1/vulnerability/project/project-1": [],
+    }
+    client._request_json = lambda path, params=None: payloads[path]  # type: ignore[method-assign]
+
+    with pytest.raises(DependencyTrackApiError, match="no vulnerability identifier"):
+        client.get_project_findings("project-1")
+
+
+def test_dependency_track_http_failure_is_normalized(monkeypatch) -> None:
+    def fail_request(*args, **kwargs):
+        raise dependency_track_module.HttpApiError("upstream", status=503)
+
+    monkeypatch.setattr(dependency_track_module, "request_json", fail_request)
+
+    with pytest.raises(DependencyTrackApiError, match="HTTP 503"):
+        DependencyTrackClient("https://dtrack.example", "api-key").list_projects()

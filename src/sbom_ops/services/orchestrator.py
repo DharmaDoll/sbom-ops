@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from typing import Protocol
+from uuid import uuid4
 
 from sbom_ops.clients.dependency_track import (
     DependencyTrackClient,
@@ -16,11 +18,13 @@ from sbom_ops.domain.models import (
     AnalysisState,
     Enrichment,
     Finding,
+    FindingAssessment,
     FindingState,
     PrioritizedFinding,
     Severity,
 )
 from sbom_ops.domain.priority import prioritize_finding
+from sbom_ops.domain.routing import ProjectRouter
 from sbom_ops.domain.workflow import MissingFindingAction, decide_missing_finding
 
 
@@ -54,6 +58,9 @@ class GitHubIssuesClientProtocol(Protocol):
 
 @dataclass(frozen=True)
 class RunResult:
+    run_id: str
+    duration_seconds: float
+    kev_used_stale_cache: bool
     projects_processed: int
     findings_processed: int
     issues_created: int
@@ -61,6 +68,34 @@ class RunResult:
     issues_closed: int
     dry_run: bool
     actions: tuple[str, ...] = ()
+    assessments: tuple[FindingAssessment, ...] = ()
+
+    def as_dict(self) -> dict[str, object]:
+        """Return an enum-free payload for CLI and downstream adapters."""
+        return {
+            "status": "succeeded",
+            "run_id": self.run_id,
+            "duration_seconds": self.duration_seconds,
+            "kev_used_stale_cache": self.kev_used_stale_cache,
+            "projects_processed": self.projects_processed,
+            "findings_processed": self.findings_processed,
+            "issues_created": self.issues_created,
+            "issues_updated": self.issues_updated,
+            "issues_closed": self.issues_closed,
+            "dry_run": self.dry_run,
+            "actions": list(self.actions),
+            "assessments": [
+                {
+                    "project_uuid": item.project_uuid,
+                    "finding_key": item.finding_key,
+                    "vulnerability_id": item.vulnerability_id,
+                    "priority": item.priority.value,
+                    "analysis_state": item.analysis_state.value,
+                    "rationale": list(item.rationale),
+                }
+                for item in self.assessments
+            ],
+        }
 
 
 _FINDING_KEY_PATTERN = re.compile(r"<!-- sbom-ops:finding-key=(.*?) -->")
@@ -90,17 +125,55 @@ class Orchestrator:
             timeout=config.intelligence.timeout_seconds,
             max_retries=config.intelligence.max_retries,
             retry_backoff_seconds=config.intelligence.retry_backoff_seconds,
+            cache_path=config.intelligence.kev_cache_file,
+            cache_ttl_seconds=config.intelligence.kev_cache_ttl_seconds,
+            allow_stale_cache=config.intelligence.kev_cache_allow_stale,
         )
-        self._github = github or GitHubIssuesClient(
-            config.github.token,
-            config.github.owner,
-            config.github.repo,
-            timeout=config.github.timeout_seconds,
-            max_retries=config.github.max_retries,
-            retry_backoff_seconds=config.github.retry_backoff_seconds,
+        self._github = github
+        if config.github.enabled and self._github is None:
+            self._github = GitHubIssuesClient(
+                config.github.token,
+                config.github.owner,
+                config.github.repo,
+                timeout=config.github.timeout_seconds,
+                max_retries=config.github.max_retries,
+                retry_backoff_seconds=config.github.retry_backoff_seconds,
+            )
+        self._project_router = ProjectRouter(config.routing.routes)
+        self._github_cache: dict[tuple[str, str, str], GitHubIssuesClientProtocol] = {}
+        self._injected_github = github is not None
+
+    def _github_target(
+        self, project_uuid: str
+    ) -> tuple[GitHubIssuesClientProtocol, str, tuple[str, str, str]]:
+        route = self._project_router.resolve(project_uuid)
+        owner = route.owner if route else self._config.github.owner
+        repo = route.repo if route else self._config.github.repo
+        label = (
+            route.issue_label_prefix or self._config.github.issue_label_prefix
+            if route
+            else self._config.github.issue_label_prefix
         )
+        target_key = (owner, repo, label)
+        if self._injected_github:
+            assert self._github is not None
+            return self._github, label, target_key
+        client = self._github_cache.get(target_key)
+        if client is None:
+            client = GitHubIssuesClient(
+                self._config.github.token,
+                owner,
+                repo,
+                timeout=self._config.github.timeout_seconds,
+                max_retries=self._config.github.max_retries,
+                retry_backoff_seconds=self._config.github.retry_backoff_seconds,
+            )
+            self._github_cache[target_key] = client
+        return client, label, target_key
 
     def run(self) -> RunResult:
+        run_id = str(uuid4())
+        started_at = time.monotonic()
         projects = self._dependency_track.list_projects()
         project_filter = set(self._config.runtime.project_uuids)
         if project_filter:
@@ -109,13 +182,20 @@ class Orchestrator:
             ]
 
         kev_ids = self._kev.get_known_exploited_vulnerabilities()
+        kev_used_stale_cache = bool(getattr(self._kev, "used_stale_cache", False))
         current_keys: set[str] = set()
-        managed_project_uuids = {project.uuid for project in projects}
         created = updated = closed = findings_processed = 0
         actions: list[str] = []
-        touched_issue_numbers: set[int] = set()
+        assessments: list[FindingAssessment] = []
+        touched_issue_numbers: dict[tuple[str, str, str], set[int]] = {}
+        target_clients: dict[tuple[str, str, str], GitHubIssuesClientProtocol] = {}
+        target_projects: dict[tuple[str, str, str], set[str]] = {}
 
         for project in projects:
+            if self._config.github.enabled:
+                github, issue_label, target_key = self._github_target(project.uuid)
+                target_clients[target_key] = github
+                target_projects.setdefault(target_key, set()).add(project.uuid)
             if self._config.runtime.wait_for_analysis:
                 raw_findings = self._dependency_track.wait_for_analysis(
                     project.uuid,
@@ -133,17 +213,29 @@ class Orchestrator:
                 current_keys.add(prioritized_finding.finding.finding_key())
                 current_keys.add(prioritized_finding.finding.legacy_finding_key())
                 prioritized.append(prioritized_finding)
+                assessments.append(
+                    FindingAssessment(
+                        project_uuid=project.uuid,
+                        finding_key=prioritized_finding.finding.finding_key(),
+                        vulnerability_id=prioritized_finding.finding.vulnerability_id,
+                        priority=prioritized_finding.priority,
+                        analysis_state=prioritized_finding.enrichment.analysis_state,
+                        rationale=prioritized_finding.rationale,
+                    )
+                )
 
             for item in prioritized:
                 if self._excluded_by_analysis(item):
                     continue
                 if item.priority.value not in self._config.priority.create_issues_for:
                     continue
+                if not self._config.github.enabled:
+                    continue
                 title, body = self._issue_content(item)
                 key = item.finding.finding_key()
-                existing = self._github.find_open_issue_by_finding_key(key)
+                existing = github.find_open_issue_by_finding_key(key)
                 if existing is None:
-                    existing = self._github.find_open_issue_by_finding_key(
+                    existing = github.find_open_issue_by_finding_key(
                         item.finding.legacy_finding_key()
                     )
                 if existing is None:
@@ -152,15 +244,12 @@ class Orchestrator:
                         f"analysis={item.enrichment.analysis_state.value}"
                     )
                     if not self._config.runtime.dry_run:
-                        self._github.create_issue(
+                        github.create_issue(
                             title,
                             body,
                             [
-                                self._config.github.issue_label_prefix,
-                                (
-                                    f"{self._config.github.issue_label_prefix}-"
-                                    f"{item.priority.value}"
-                                ),
+                                issue_label,
+                                (f"{issue_label}-{item.priority.value}"),
                             ],
                         )
                     created += 1
@@ -172,61 +261,79 @@ class Orchestrator:
                         f"update {key} issue=#{number} priority={item.priority.value}"
                     )
                     if not self._config.runtime.dry_run:
-                        self._github.update_issue(int(number), title, body)
-                    touched_issue_numbers.add(int(number))
+                        github.update_issue(int(number), title, body)
+                    touched_issue_numbers.setdefault(target_key, set()).add(int(number))
                     updated += 1
 
-        for issue in self._github.list_open_issues(
-            self._config.github.issue_label_prefix
-        ):
-            key = self._finding_key_from_issue(issue)
-            if key is None:
-                continue
-            number = issue.get("number")
-            if key in current_keys:
-                if (
-                    number is not None
-                    and int(number) not in touched_issue_numbers
-                    and self._missing_count_from_issue(issue) > 0
-                ):
+        for target_key, github in target_clients.items():
+            issue_label = target_key[2]
+            managed_for_target = target_projects[target_key]
+            touched_for_target = touched_issue_numbers.get(target_key, set())
+            for issue in github.list_open_issues(issue_label):
+                key = self._finding_key_from_issue(issue)
+                if key is None:
+                    continue
+                number = issue.get("number")
+                if key in current_keys:
+                    if (
+                        number is not None
+                        and int(number) not in touched_for_target
+                        and self._missing_count_from_issue(issue) > 0
+                    ):
+                        actions.append(
+                            f"mark-active {key} issue=#{number} reason=reappeared"
+                        )
+                        if not self._config.runtime.dry_run:
+                            github.update_issue(
+                                int(number),
+                                str(issue.get("title") or "sbom-ops managed finding"),
+                                self._with_active_observation(issue.get("body") or ""),
+                            )
+                        updated += 1
+                    continue
+                if self._project_uuid_from_finding_key(key) not in managed_for_target:
+                    continue
+                if number is None:
+                    continue
+                body = issue.get("body") or ""
+                decision = decide_missing_finding(
+                    self._missing_count_from_issue(issue),
+                    automatic_closure_enabled=(
+                        self._config.workflow.close_missing_findings
+                    ),
+                    scan_verified=self._config.runtime.wait_for_analysis,
+                    confirmations_required=(
+                        self._config.workflow.missing_confirmation_runs
+                    ),
+                )
+                if decision.action == MissingFindingAction.NOOP:
                     actions.append(
-                        f"mark-active {key} issue=#{number} reason=reappeared"
+                        f"keep-open {key} issue=#{number} reason={decision.reason}"
+                    )
+                    continue
+                if decision.action == MissingFindingAction.MARK_MISSING:
+                    actions.append(
+                        f"mark-missing {key} issue=#{number} "
+                        f"count={decision.missing_count} reason={decision.reason}"
                     )
                     if not self._config.runtime.dry_run:
-                        self._github.update_issue(
+                        github.update_issue(
                             int(number),
                             str(issue.get("title") or "sbom-ops managed finding"),
-                            self._with_active_observation(issue.get("body") or ""),
+                            self._with_finding_observation(
+                                body,
+                                decision.finding_state,
+                                decision.missing_count,
+                            ),
                         )
                     updated += 1
-                continue
-            if self._project_uuid_from_finding_key(key) not in managed_project_uuids:
-                continue
-            if number is None:
-                continue
-            body = issue.get("body") or ""
-            decision = decide_missing_finding(
-                self._missing_count_from_issue(issue),
-                automatic_closure_enabled=(
-                    self._config.workflow.close_missing_findings
-                ),
-                scan_verified=self._config.runtime.wait_for_analysis,
-                confirmations_required=(
-                    self._config.workflow.missing_confirmation_runs
-                ),
-            )
-            if decision.action == MissingFindingAction.NOOP:
+                    continue
                 actions.append(
-                    f"keep-open {key} issue=#{number} reason={decision.reason}"
-                )
-                continue
-            if decision.action == MissingFindingAction.MARK_MISSING:
-                actions.append(
-                    f"mark-missing {key} issue=#{number} "
-                    f"count={decision.missing_count} reason={decision.reason}"
+                    f"close {key} issue=#{number} count={decision.missing_count} "
+                    f"reason={decision.reason}"
                 )
                 if not self._config.runtime.dry_run:
-                    self._github.update_issue(
+                    github.update_issue(
                         int(number),
                         str(issue.get("title") or "sbom-ops managed finding"),
                         self._with_finding_observation(
@@ -235,27 +342,14 @@ class Orchestrator:
                             decision.missing_count,
                         ),
                     )
+                    github.close_issue(int(number))
                 updated += 1
-                continue
-            actions.append(
-                f"close {key} issue=#{number} count={decision.missing_count} "
-                f"reason={decision.reason}"
-            )
-            if not self._config.runtime.dry_run:
-                self._github.update_issue(
-                    int(number),
-                    str(issue.get("title") or "sbom-ops managed finding"),
-                    self._with_finding_observation(
-                        body,
-                        decision.finding_state,
-                        decision.missing_count,
-                    ),
-                )
-                self._github.close_issue(int(number))
-            updated += 1
-            closed += 1
+                closed += 1
 
         return RunResult(
+            run_id=run_id,
+            duration_seconds=round(time.monotonic() - started_at, 6),
+            kev_used_stale_cache=kev_used_stale_cache,
             projects_processed=len(projects),
             findings_processed=findings_processed,
             issues_created=created,
@@ -263,6 +357,7 @@ class Orchestrator:
             issues_closed=closed,
             dry_run=self._config.runtime.dry_run,
             actions=tuple(actions),
+            assessments=tuple(assessments),
         )
 
     def _prioritize(

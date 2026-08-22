@@ -1,7 +1,12 @@
 import pytest
 
-from sbom_ops.domain.models import FindingState, RemediationState
-from sbom_ops.domain.workflow import MissingFindingAction, decide_missing_finding
+from sbom_ops.domain.models import AnalysisState, FindingState, RemediationState
+from sbom_ops.domain.workflow import (
+    MissingFindingAction,
+    decide_missing_finding,
+    observe_workflow_state,
+    transition_remediation_state,
+)
 
 
 def test_missing_finding_stays_open_when_automatic_closure_is_disabled() -> None:
@@ -58,3 +63,34 @@ def test_missing_finding_never_allows_one_run_closure() -> None:
             scan_verified=True,
             confirmations_required=1,
         )
+
+
+def test_analysis_observation_does_not_close_remediation() -> None:
+    state = observe_workflow_state(
+        finding_state=FindingState.ACTIVE,
+        analysis_state=AnalysisState.NOT_AFFECTED,
+    )
+
+    assert state.analysis_state == AnalysisState.NOT_AFFECTED
+    assert state.finding_state == FindingState.ACTIVE
+    assert state.remediation_state == RemediationState.OPEN
+
+
+def test_remediation_closes_only_after_verified_finding_resolution() -> None:
+    assert transition_remediation_state(FindingState.RESOLVED) == RemediationState.OPEN
+    assert (
+        transition_remediation_state(
+            FindingState.RESOLVED,
+            resolution_confirmed=True,
+        )
+        == RemediationState.CLOSED
+    )
+
+
+def test_reappeared_finding_reopens_remediation() -> None:
+    state = observe_workflow_state(
+        finding_state=FindingState.ACTIVE,
+        analysis_state=AnalysisState.IN_TRIAGE,
+    )
+
+    assert state.remediation_state == RemediationState.OPEN
