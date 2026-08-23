@@ -37,6 +37,12 @@ MVP excludes:
 - Dependency-Track remains the source of truth for inventory and finding state
 - Dependency-Track is the preferred source of truth for EPSS and VEX-derived analysis state
 - GitHub Issues remain the source of truth for remediation workflow state
+- The orchestrator produces an action-neutral Finding assessment first; GitHub
+  Issue synchronization is an optional final action and may be disabled.
+- `sync --output json` exposes the same assessment and action summary for
+  downstream adapters without requiring GitHub access.
+- Every sync result includes a unique `run_id` and `duration_seconds` for
+  correlation with future audit and structured-log records.
 
 ## Repository Layout
 
@@ -94,17 +100,20 @@ Configuration source order:
 3. Optional YAML config file
 4. Code defaults
 
-The initial implementation may support environment variables first, with YAML added in a compatible shape.
+The implementation supports environment variables and the compatible YAML shape.
 
-### Required environment variables
+### Required settings (environment variables or YAML)
 
 ```text
 SBOM_OPS_DT_BASE_URL
 SBOM_OPS_DT_API_KEY
-SBOM_OPS_GITHUB_TOKEN
 SBOM_OPS_GITHUB_OWNER
 SBOM_OPS_GITHUB_REPO
 ```
+
+`SBOM_OPS_GITHUB_TOKEN` or `GH_TOKEN` is required when `github.token` is not
+provided in YAML. The Dependency-Track URL and API key may likewise be supplied
+by YAML instead of environment variables.
 
 ### Optional environment variables
 
@@ -113,6 +122,9 @@ SBOM_OPS_CONFIG_FILE
 SBOM_OPS_LOG_LEVEL
 SBOM_OPS_EPSS_API_URL
 SBOM_OPS_KEV_FEED_URL
+SBOM_OPS_KEV_CACHE_FILE
+SBOM_OPS_KEV_CACHE_TTL_SECONDS
+SBOM_OPS_KEV_CACHE_ALLOW_STALE
 SBOM_OPS_PRIORITY_P1_EPSS_THRESHOLD
 SBOM_OPS_PRIORITY_P2_CVSS_THRESHOLD
 SBOM_OPS_CREATE_ISSUES_FOR
@@ -125,10 +137,12 @@ SBOM_OPS_DT_MAX_RETRIES
 SBOM_OPS_DT_ANALYSIS_WAIT_TIMEOUT_SECONDS
 SBOM_OPS_DT_ANALYSIS_POLL_INTERVAL_SECONDS
 SBOM_OPS_WAIT_FOR_ANALYSIS
+SBOM_OPS_SYNC_LOG_FILE
 SBOM_OPS_CLOSE_MISSING_FINDINGS
 SBOM_OPS_MISSING_CONFIRMATION_RUNS
 SBOM_OPS_GITHUB_TIMEOUT_SECONDS
 SBOM_OPS_GITHUB_MAX_RETRIES
+SBOM_OPS_GITHUB_ENABLED
 SBOM_OPS_INTEL_TIMEOUT_SECONDS
 SBOM_OPS_INTEL_MAX_RETRIES
 ```
@@ -142,6 +156,8 @@ dependency_track:
   page_size: 100
 
 github:
+  # Set false to run collection and prioritization without Issue operations.
+  enabled: true
   token: env:SBOM_OPS_GITHUB_TOKEN
   owner: acme
   repo: service-a
@@ -151,6 +167,10 @@ intelligence:
   kev_feed_url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
   # Optional fallback/verification source. Dependency-Track EPSS is preferred.
   epss_api_url: https://api.first.org/data/v1/epss
+  # Optional local KEV cache.
+  # kev_cache_file: var/kev.json
+  kev_cache_ttl_seconds: 18000
+  kev_cache_allow_stale: false
 
 priority:
   p1_epss_threshold: 0.7
@@ -163,10 +183,20 @@ runtime:
   dry_run: false
   project_uuids: []
   log_level: INFO
+  wait_for_analysis: false
+  # Optional JSONL output for completed sync results.
+  # sync_log_file: var/sbom-ops-sync.jsonl
 
 workflow:
   close_missing_findings: false
   missing_confirmation_runs: 2
+
+routing:
+  projects:
+    - project_uuid: project-uuid
+      owner: acme
+      repo: service-a
+      issue_label_prefix: sbom
 ```
 
 Notes:
@@ -174,6 +204,13 @@ Notes:
 - P0 remains rule-based from KEV or explicit active exploitation input.
 - `p1_epss_threshold` and `p2_cvss_threshold` must be configurable.
 - Project filtering is optional and defaults to all accessible projects.
+- `routing.projects` is optional. When it is configured, every processed
+  Dependency-Track Project must have exactly one route; an unknown Project is
+  rejected rather than sent to the default repository.
+- `api_key` and `token` may use `env:VARIABLE_NAME` references. Environment
+  variables override file values, and CLI flags override both.
+- `SBOM_OPS_CONFIG_FILE` selects the YAML file when `--config` is not provided.
+- Unknown sections and keys are rejected to prevent silent configuration typos.
 
 ## Domain Model
 
@@ -219,6 +256,17 @@ Finding lifecycle, Dependency-Track analysis, and remediation workflow are
 separate concepts. `FindingState` represents observations such as `ACTIVE`,
 `MISSING`, `RESOLVED`, and `UNKNOWN`. Dependency-Track analysis values such as
 `NOT_AFFECTED` are not GitHub workflow states.
+
+The domain workflow keeps these transitions independent:
+
+- Finding absence becomes `MISSING` and then `RESOLVED` only after the configured
+  consecutive, verified absence confirmations.
+- Analysis is an observation read from Dependency-Track; sbom-ops does not
+  transition or write it as part of remediation.
+- Remediation remains `OPEN` for `ACTIVE`, `MISSING`, and `UNKNOWN` findings and
+  becomes `CLOSED` only for an explicitly confirmed `RESOLVED` finding. A
+  reappeared finding therefore returns to `OPEN` regardless of its analysis
+  observation.
 
 ### Enrichment
 

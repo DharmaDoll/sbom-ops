@@ -12,7 +12,9 @@ license = { text = "MIT" }
 authors = [
   { name = "sbom-ops contributors" }
 ]
-dependencies = []
+dependencies = [
+  "PyYAML>=6.0",
+]
 
 [project.optional-dependencies]
 dev = [

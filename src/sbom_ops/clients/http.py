@@ -22,6 +22,8 @@ def request_json(
     backoff_seconds: float,
     error_message: str,
     opener: Any = urlopen,
+    allow_not_modified: bool = False,
+    return_headers: bool = False,
 ) -> Any:
     """Fetch JSON with bounded retries for transient failures only."""
     retryable_statuses = {408, 429, 500, 502, 503, 504}
@@ -29,8 +31,14 @@ def request_json(
     for attempt in range(attempts):
         try:
             with opener(request, timeout=timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
+                payload = json.loads(response.read().decode("utf-8"))
+                if return_headers:
+                    response_headers = getattr(response, "headers", {})
+                    return payload, dict(response_headers.items())
+                return payload
         except HTTPError as exc:
+            if allow_not_modified and exc.code == 304:
+                raise HttpApiError(error_message, status=304) from exc
             if exc.code not in retryable_statuses or attempt == attempts - 1:
                 raise HttpApiError(error_message, status=exc.code) from exc
             retry_after = exc.headers.get("Retry-After")

@@ -144,6 +144,9 @@ def test_orchestrator_keeps_stale_issue_open_by_default() -> None:
 
     assert result.projects_processed == 1
     assert result.findings_processed == 2
+    assert result.run_id
+    assert result.duration_seconds >= 0
+    assert result.kev_used_stale_cache is False
     assert result.issues_created == 0
     assert result.issues_updated == 1
     assert result.issues_closed == 0
@@ -155,6 +158,15 @@ def test_orchestrator_keeps_stale_issue_open_by_default() -> None:
         "keep-open project-1:old:1:CVE-2025-0001 issue=#12 "
         "reason=automatic_closure_disabled"
     )
+    assert len(result.assessments) == 2
+    assert result.assessments[0].priority.value == "P0"
+    assert result.assessments[0].analysis_state.value == "NOT_SET"
+    payload = result.as_dict()
+    assert payload["status"] == "succeeded"
+    assert payload["run_id"] == result.run_id
+    assert payload["kev_used_stale_cache"] is False
+    assert payload["assessments"][0]["priority"] == "P0"
+    assert payload["actions"] == list(result.actions)
 
 
 def test_orchestrator_marks_first_verified_absence_without_closing() -> None:
@@ -239,5 +251,24 @@ def test_orchestrator_dry_run_does_not_mutate_github() -> None:
     assert result.dry_run is True
     assert result.issues_updated == 1
     assert result.issues_closed == 0
+    assert github.updated == []
+    assert github.closed == []
+
+
+def test_orchestrator_can_disable_github_issue_actions() -> None:
+    github = FakeGitHub()
+    disabled_config = replace(config(), github=replace(config().github, enabled=False))
+
+    result = Orchestrator(
+        disabled_config, FakeDependencyTrack(), FakeKev(), github
+    ).run()
+
+    assert result.findings_processed == 2
+    assert result.issues_created == 0
+    assert result.issues_updated == 0
+    assert result.issues_closed == 0
+    assert result.actions == ()
+    assert len(result.assessments) == 2
+    assert github.created == []
     assert github.updated == []
     assert github.closed == []
