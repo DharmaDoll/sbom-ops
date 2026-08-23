@@ -251,13 +251,19 @@ GitHubはFindingの検出元ではない。Remediation workflowの一次情報�
 - Finding keyを含むOpen Issueを検索
 - 既存Issueがあればタイトル・本文を更新
 - なければP0/P1等の設定対象だけ作成
-- Dependency-TrackからFindingが消えた場合、対応Issueをクローズ
+- Dependency-TrackからFindingが消えた場合、連続した検証済み不在を記録し、
+  明示的に有効化された安全なクローズ条件を満たしたときだけ対応Issueをクローズ
 
 Finding keyは次の形式でIssue本文に保存する。
 
 ```text
-{project_uuid}:{component_name}:{component_version}:{vulnerability_id}
+v2:{project_uuid}:sha256(machine_identity)
 ```
+
+`machine_identity`はcomponent UUIDとvulnerability UUIDを優先する。これらが
+取得できない場合はPURL、vulnerability source、vulnerability IDを使い、最後に
+表示用のcomponent name/versionへfallbackする。旧形式の表示由来keyは移行期間中
+の重複検索に使うが、新規Issue本文に保存する正本はv2 keyである。
 
 ## 優先度計算への入力関係
 
@@ -284,11 +290,12 @@ Analysis stateによる除外は、優先度計算後かつIssue作成前に行�
 - 情報源・取得失敗・欠損値はログとIssue本文で追跡可能にする。
 - 情報源の値を根拠なく上書きしない。
 
-## 将来の永続化とLLM利用
+## キャッシュ、永続化、LLM利用
 
-KEVは将来的に5時間を初期値とする設定可能なTTLキャッシュへ保存する。
+KEVは任意で5時間を初期値とする設定可能なTTLキャッシュへ保存できる。
 キャッシュはCISA feedの代替の正本ではなく、ETag／Last-Modified、取得時刻、
-ハッシュ、stale状態を持つ運用補助データとする。
+stale状態を持つ運用補助データとする。stale cacheの利用は明示設定が必要で、
+JSON/JSONL結果には`kev_used_stale_cache`として記録する。
 
 同期結果とFinding／Analysis state／Priority／Issueの変化は、将来的に監査用
 ストアへ保存する。Dependency-Trackのトリアージ判断とGitHubの対応状態は、

@@ -207,6 +207,28 @@ routing:
     assert config.routing.routes[0].issue_label_prefix == "security"
 
 
+def test_example_config_file_is_valid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SBOM_OPS_DT_API_KEY", "dt-key-from-env")
+    monkeypatch.delenv("SBOM_OPS_GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+
+    config = load_config(
+        Namespace(
+            config="examples/config.yaml",
+            dry_run=False,
+            no_github=True,
+            project_uuid=None,
+            log_level=None,
+            wait_for_analysis=False,
+            sync_log_file=None,
+        )
+    )
+
+    assert config.github.enabled is False
+    assert config.intelligence.kev_cache_ttl_seconds == 18_000
+    assert config.intelligence.kev_cache_allow_stale is False
+
+
 def test_environment_overrides_yaml_and_cli_overrides_projects(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

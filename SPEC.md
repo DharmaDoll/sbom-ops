@@ -42,7 +42,7 @@ MVP excludes:
 - `sync --output json` exposes the same assessment and action summary for
   downstream adapters without requiring GitHub access.
 - Every sync result includes a unique `run_id` and `duration_seconds` for
-  correlation with future audit and structured-log records.
+  correlation with audit and structured-log records.
 
 ## Repository Layout
 
@@ -53,8 +53,10 @@ src/sbom_ops/
   domain/
     models.py
     priority.py
+    routing.py
   services/
     orchestrator.py
+    sync_log.py
   clients/
     dependency_track.py
     epss.py
@@ -438,6 +440,7 @@ Subcommands for MVP:
 
 - `sync`
 - `plan`
+- `upload`
 
 ### `sync`
 
@@ -450,15 +453,45 @@ Supported options:
 --project UUID           # repeatable later, single value acceptable for now
 --dry-run
 --log-level LEVEL
+--wait-for-analysis
+--no-github
+--output text|json
+--sync-log-file PATH
 ```
 
 ### `plan`
 
 Validates configuration and prints the effective runtime plan without writing to external systems.
 
+Supported options:
+
+```text
+--config PATH
+--project UUID
+--dry-run
+--log-level LEVEL
+--no-github
+--sync-log-file PATH
+```
+
+### `upload`
+
+Uploads a CycloneDX BOM to an existing Dependency-Track project and optionally
+waits for the upload processing token to complete. This command is a CI helper;
+`sync` does not upload SBOMs.
+
+Supported options:
+
+```text
+bom_path
+--project UUID
+--no-wait
+```
+
 ## Logging
 
-Structured logging is preferred, but MVP may start with standard logging.
+The CLI prints a run summary and can optionally append completed sync results
+to a JSONL file through `runtime.sync_log_file` or `--sync-log-file`.
 
 Each run should log:
 
@@ -496,7 +529,6 @@ Fixtures should cover:
 
 These are intentionally deferred, not blockers for the first implementation:
 
-- YAML config file loader
 - issue reopen policy
 - analysis-state read mapping
 - VEX upload and ingestion workflow

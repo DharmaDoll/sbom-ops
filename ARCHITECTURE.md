@@ -119,22 +119,19 @@ dependency-track-sbom-ops/
 ├── CONTRIBUTING.md
 ├── CHANGELOG.md
 ├── pyproject.toml
-├── .env.example
 ├── docs/
-│   ├── architecture/
-│   │   ├── overview.md
-│   │   ├── sequence.md
-│   │   └── decisions/
 │   ├── operations.md
 │   ├── workflow.md
 │   ├── priority-policy.md
 │   ├── vex.md
-│   └── api.md
+│   ├── use-cases.md
+│   ├── data-sources.md
+│   ├── implementation-roadmap.md
+│   └── dependency-track/
 ├── src/
 │   └── sbom_ops/
-│       ├── main.py
+│       ├── cli.py
 │       ├── config.py
-│       ├── models.py
 │       ├── clients/
 │       ├── services/
 │       ├── domain/
@@ -192,8 +189,6 @@ Reusable helper functions.
 
 Examples
 - logging
-- retry
-- cache
 - datetime
 
 ---

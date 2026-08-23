@@ -46,7 +46,8 @@ Platform team owns:
 - Admin account secured
 - API access restricted by team permissions
 - Separate API key for SBOM upload
-- Separate API key for orchestrator read/write operations
+- Separate API key for orchestrator read operations
+- Separate future key for analysis-write operations, only if explicit workflow support is implemented
 - Vulnerability data sources configured
 - Backup policy defined
 - Upgrade policy defined

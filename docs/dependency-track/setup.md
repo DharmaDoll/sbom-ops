@@ -299,8 +299,8 @@ Run a safe connectivity check and preview:
 
 ```bash
 set -a; source .env; set +a
-sbom-ops plan
-sbom-ops sync --dry-run --project "$SBOM_OPS_DT_PROJECT_UUID" --wait-for-analysis
+sbom-ops plan --no-github
+sbom-ops sync --dry-run --no-github --project "$SBOM_OPS_DT_PROJECT_UUID" --wait-for-analysis
 ```
 
 `--wait-for-analysis` is intended for the first sync after an SBOM upload. It

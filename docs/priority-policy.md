@@ -28,7 +28,6 @@ Planned remediation
 Medium
 Low
 Monitor only
-```
 
 ## Triage ownership
 

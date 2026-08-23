@@ -8,10 +8,11 @@ dependency_track:
   analysis_poll_interval_seconds: 5
 
 github:
-  enabled: true
-  token: env:SBOM_OPS_GITHUB_TOKEN
-  owner: acme
-  repo: service-a
+  enabled: false
+  # Enable these after reviewing dry-run output and granting Issue permissions.
+  # token: env:SBOM_OPS_GITHUB_TOKEN
+  # owner: acme
+  # repo: service-a
   issue_label_prefix: sbom
 
 intelligence:

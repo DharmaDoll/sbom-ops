@@ -17,8 +17,8 @@
 - Optional JSONL persistence is available for completed sync results
 - Handled sync failures are recorded as structured JSONL events
 - JSONL sync persistence is isolated behind a replaceable service adapter
-- Optional TTL-based KEV cache is implemented; conditional HTTP refresh remains planned
-- Explicit stale KEV fallback and ETag/Last-Modified conditional refresh are implemented
+- Optional TTL-based KEV cache, explicit stale fallback, and ETag/Last-Modified
+  conditional refresh are implemented
 
 ## Near Term
 
@@ -60,9 +60,9 @@
 
 ## Future Operations
 
-- Add persistent structured sync logs (`run_id`, counts, failures, duration)
+- Expand structured sync logs from local JSONL to a queryable operational store
 - Add an audit store for observed Finding, priority, Analysis state, and Issue changes
-- Add a persistent KEV cache with configurable TTL, ETag/Last-Modified support, stale fallback, and forced refresh
+- Add forced KEV refresh command and cache integrity metadata
 - Add cache locking to prevent concurrent KEV refreshes
 - Add KEV cache freshness and synchronization failure alerts
 - Add a remediation policy model that keeps priority separate from SLA dates

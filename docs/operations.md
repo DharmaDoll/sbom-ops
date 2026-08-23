@@ -99,6 +99,5 @@ without downloading the feed body.
 
 ```bash
 export SBOM_OPS_DT_API_KEY=replace-me
-export SBOM_OPS_GITHUB_TOKEN=replace-me
-sbom-ops plan --config examples/config.yaml
+sbom-ops plan --config examples/config.yaml --no-github
 ```

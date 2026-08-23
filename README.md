@@ -1,70 +1,198 @@
 # Dependency-Track SBOM Operations
 
-## Overview
-This project builds an operational framework around OWASP Dependency-Track.
+Security-as-a-Task orchestration for OWASP Dependency-Track SBOM workflows.
 
-Dependency-Track is treated as the **SBOM inventory and vulnerability analysis platform**.
-GitHub Issues (or Jira) is treated as the **remediation workflow platform**.
+Dependency-Track owns inventory, vulnerability correlation, EPSS, and
+VEX-derived analysis state. GitHub Issues own remediation workflow. `sbom-ops`
+connects the two: it reads Dependency-Track findings, enriches them with CISA
+KEV, calculates an operational priority, and optionally creates or updates
+remediation issues.
 
-An orchestrator connects these systems, uses Dependency-Track-provided EPSS and
-VEX/analysis state, enriches findings with CISA KEV data, and creates actionable
-engineering tasks.
+The important boundary is intentional: sbom-ops can recommend and synchronize
+work, but it must not approve exceptions, suppress findings, or overwrite
+Dependency-Track analysis state automatically.
 
-## Goals
-- Centralize SBOM management
-- Prioritize vulnerabilities using threat intelligence
-- Reduce alert fatigue
-- Automate issue creation and lifecycle
-- Support VEX and future reachability analysis
+## What It Does Today
 
-## High-Level Architecture
-CI/CD → CycloneDX SBOM → Dependency-Track (EPSS/VEX) → Orchestrator (KEV/priority) → GitHub Issues → Developers → CI → Dependency-Track
+- Reads projects, findings, EPSS, suppression, and analysis state from Dependency-Track
+- Uploads CycloneDX SBOMs to an existing Dependency-Track project as a CI helper
+- Enriches findings with the CISA KEV catalog
+- Calculates deterministic `P0` to `P3` priorities from configurable thresholds
+- Produces action-neutral finding assessments before any GitHub write
+- Can run with GitHub Issue operations disabled via `--no-github`
+- Supports YAML config, environment overrides, project-to-repository routing, JSON output, and optional JSONL sync logs
+- Uses safe, opt-in issue closure after verified consecutive absence observations
 
-## Repository Documentation
-- AGENTS.md — AI development guide
-- ARCHITECTURE.md — system design
-- SPEC.md — implementation specification
-- docs/use-cases.md — concrete operational flows and usage scenarios
-- docs/data-sources.md — Finding情報源と取得方法
-- docs/implementation-roadmap.md — 今後の実装予定一覧
-- docs/dependency-track/setup.md — local Dependency-Track bootstrap
+## Quick Start
 
-## Design Principles
-1. SBOM is the source of truth for software composition.
-2. Dependency-Track is the source of truth for inventory.
-3. GitHub Issues is the source of truth for remediation workflow.
-4. Threat intelligence drives operational prioritization.
-5. AI assists triage but never replaces security decisions.
+Prerequisites:
+
+- Python 3.12 or newer
+- Docker Engine and the Docker Compose plugin
+- GitHub CLI only if you want to exercise GitHub Issue synchronization
+
+Install locally:
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
+```
+
+Run the local test suite:
+
+```bash
+ruff check .
+pytest
+```
+
+Start the local Dependency-Track evaluation stack:
+
+```bash
+docker compose -f examples/dependency-track/docker-compose.yml up -d
+curl -fsS -o /dev/null http://localhost:8080/api/openapi.json
+```
+
+Open `http://localhost:8080`, sign in with the initial local credentials, and
+change the password immediately:
 
 ```text
-dependency-track-sbom-ops/
-├── README.md
-├── AGENTS.md              ← AIエージェント向け開発ガイド
-├── ARCHITECTURE.md        ← システム・リポジトリ構成
-├── SPEC.md                ← 実装仕様
-├── ROADMAP.md             ← 開発計画
-├── TASKS.md               ← 実装バックログ
-├── CONTRIBUTING.md
-├── CHANGELOG.md
-├── docs/
-│   ├── operations.md
-│   ├── workflow.md
-│   ├── priority-policy.md
-│   ├── vex.md
-│   ├── api.md
-│   ├── dependency-track/
-│   │   ├── README.md
-│   │   ├── setup.md
-│   │   ├── project-model.md
-│   │   ├── sbom-upload.md
-│   │   ├── api.md
-│   │   ├── analysis-states.md
-│   │   ├── permissions.md
-│   │   ├── operations.md
-│   │   ├── vex.md
-│   │   └── troubleshooting.md
-│   └── adr/
-│       ├── 0001-use-dependency-track.md
-│       ├── 0002-priority-engine.md
-│       └── 0003-github-issues.md
+admin / admin
 ```
+
+Create two local API keys in Dependency-Track:
+
+- SBOM upload key: `BOM_UPLOAD`, plus `PROJECT_CREATION_UPLOAD` if you use demo auto-create
+- Orchestrator read key: `VIEW_PORTFOLIO` and `VIEW_VULNERABILITY`
+
+Keep the keys in your shell or a local uncommitted `.env` file:
+
+```bash
+export SBOM_OPS_DT_BASE_URL=http://localhost:8080
+export SBOM_OPS_DT_API_KEY=replace-with-orchestrator-read-key
+export SBOM_OPS_SBOM_UPLOAD_API_KEY=replace-with-upload-key
+```
+
+Upload the demo SBOM:
+
+```bash
+SBOM_OPS_DT_PROJECT_NAME=sbom-ops-vulnerable-demo \
+SBOM_OPS_DT_PROJECT_VERSION=0.1.0 \
+scripts/upload_bom.sh examples/sboms/vulnerable-demo.cdx.json
+```
+
+Copy the created project UUID from the Dependency-Track UI, then preview the
+runtime plan without enabling GitHub writes:
+
+```bash
+export SBOM_OPS_DT_PROJECT_UUID=replace-with-project-uuid
+sbom-ops plan --config examples/config.yaml --project "$SBOM_OPS_DT_PROJECT_UUID" --no-github
+```
+
+Run the first synchronization as a safe local preview:
+
+```bash
+sbom-ops sync \
+  --config examples/config.yaml \
+  --project "$SBOM_OPS_DT_PROJECT_UUID" \
+  --wait-for-analysis \
+  --dry-run \
+  --no-github
+```
+
+For machine-readable output:
+
+```bash
+sbom-ops sync \
+  --config examples/config.yaml \
+  --project "$SBOM_OPS_DT_PROJECT_UUID" \
+  --wait-for-analysis \
+  --dry-run \
+  --no-github \
+  --output json
+```
+
+At this point you should be able to see the core idea without granting GitHub
+write access: Dependency-Track provides the inventory and analysis facts,
+sbom-ops calculates the operational priority, and the Issue step remains an
+explicit final action.
+
+## Enabling GitHub Issue Sync
+
+After reviewing dry-run output, provide GitHub repository settings and a token.
+For local use, the GitHub CLI credential store is convenient:
+
+```bash
+export SBOM_OPS_GITHUB_OWNER=your-org
+export SBOM_OPS_GITHUB_REPO=your-repo
+export GH_TOKEN="$(gh auth token)"
+```
+
+Then remove `--no-github`. Keep `--dry-run` until labels, issue body, and
+routing behavior are confirmed:
+
+```bash
+sbom-ops sync \
+  --config examples/config.yaml \
+  --project "$SBOM_OPS_DT_PROJECT_UUID" \
+  --wait-for-analysis \
+  --dry-run
+```
+
+`SBOM_OPS_GITHUB_TOKEN` is also supported. Do not commit tokens or place real
+secrets in documentation.
+
+## Configuration
+
+`sync` and `plan` accept `--config PATH`. If omitted, `SBOM_OPS_CONFIG_FILE` is
+used. Precedence is:
+
+1. CLI flags
+2. Environment variables
+3. YAML config file
+4. Code defaults
+
+Use `env:VARIABLE_NAME` in YAML for secrets:
+
+```yaml
+dependency_track:
+  base_url: http://localhost:8080
+  api_key: env:SBOM_OPS_DT_API_KEY
+
+github:
+  enabled: false
+  # token: env:SBOM_OPS_GITHUB_TOKEN
+  # owner: acme
+  # repo: service-a
+```
+
+See [`examples/config.yaml`](examples/config.yaml) for a complete example and
+[`SPEC.md`](SPEC.md) for the full configuration contract.
+
+## Core Commands
+
+```bash
+sbom-ops plan --config examples/config.yaml --no-github
+sbom-ops sync --config examples/config.yaml --dry-run --no-github
+sbom-ops sync --config examples/config.yaml --dry-run --no-github --output json
+sbom-ops upload path/to/bom.cdx.json --project "$SBOM_OPS_DT_PROJECT_UUID"
+```
+
+## Documentation
+
+- [`ARCHITECTURE.md`](ARCHITECTURE.md): system boundaries and repository layout
+- [`SPEC.md`](SPEC.md): MVP implementation contract
+- [`docs/use-cases.md`](docs/use-cases.md): operational flows and acceptance conditions
+- [`docs/data-sources.md`](docs/data-sources.md): finding data sources and ownership
+- [`docs/operations.md`](docs/operations.md): day-to-day operating guidance
+- [`docs/dependency-track/setup.md`](docs/dependency-track/setup.md): local Dependency-Track bootstrap
+- [`docs/implementation-roadmap.md`](docs/implementation-roadmap.md): implementation phases
+- [`TASKS.md`](TASKS.md): current backlog and validation work
+
+## Design Principles
+
+1. SBOM is the source of truth for software composition.
+2. Dependency-Track is the source of truth for inventory and vulnerability analysis state.
+3. GitHub Issues are the source of truth for remediation workflow.
+4. Threat intelligence drives operational prioritization.
+5. AI can assist triage, but must not replace security decisions.
