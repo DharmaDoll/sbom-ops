@@ -63,6 +63,13 @@ Identityベースのアクセス制御を採用する。一方、Cloud Run、認
 確定アーキテクチャとはせず、公式仕様に基づくADRと本番相当PoCを通過してから
 Terraform実装へ進む。
 
+Google Cloudインフラ、Terraform/IaC、WIF、Secret Manager、Cloud Run、GKE、
+IAP、監査ログ、SBOM upload gatewayを実装・変更するときは、事前に
+[`google/skills`](https://github.com/google/skills) の該当Google skillsを確認し、
+利用可能でタスクに合うものは参照または利用する。Google skillsは設計・実装時の
+補助として扱い、最終的なサービス仕様、IAM、OIDC/WIF claim、権限、制約は
+Google Cloud/GitHub/Dependency-Trackの公式ドキュメントで確認する。
+
 | タスク | 目的 | 完了条件 |
 | --- | --- | --- |
 | 実行基盤ADR / PoC | Cloud Runへの先行固定を避ける | Cloud RunとGKE/Helmを、DTの推奨リソース、常駐バックグラウンド処理、起動時間、可用性、費用、運用負荷で比較し選定できる |
@@ -89,6 +96,7 @@ Terraform実装へ進む。
 
 ### 設計時に参照する公式仕様
 
+- [Google Skills](https://github.com/google/skills)
 - [Dependency-Track: Deploying Docker Container](https://docs.dependencytrack.org/getting-started/deploy-docker/)
 - [Dependency-Track: REST API](https://docs.dependencytrack.org/integrations/rest-api/)
 - [Dependency-Track: Continuous Integration & Delivery](https://docs.dependencytrack.org/usage/cicd/)

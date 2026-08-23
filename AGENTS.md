@@ -165,6 +165,27 @@ Rules:
 8. All Dependency-Track API changes require integration tests or documented mock fixtures.
 
 
+## Google Cloud Infrastructure Development Rule
+
+Google Cloud infrastructure is part of the secure delivery boundary for this project.
+
+Before implementing or modifying Google Cloud infrastructure, deployment
+pipelines, Terraform/IaC, Workload Identity Federation, Secret Manager, Cloud
+Run, GKE, IAP, logging, monitoring, or SBOM upload gateway code, agents must
+review the relevant guidance from:
+
+- https://github.com/google/skills
+
+Rules:
+
+1. Use relevant Google skills when available and applicable to the infrastructure task.
+2. Treat Google Cloud and GitHub official documentation as the source of truth for service behavior, IAM, OIDC/WIF claims, permissions, and deployment constraints.
+3. Do not assume Cloud Run is the final architecture; compare it with supported alternatives such as GKE/Helm when Dependency-Track runtime characteristics require it.
+4. Do not introduce long-lived Google Cloud credentials into GitHub Actions.
+5. Prefer Workload Identity Federation, Secret Manager, least privilege, immutable repository/workflow identity checks, and auditable infrastructure changes.
+6. All infrastructure changes require documentation of the threat model impact, rollback path, and validation method.
+
+
 # Future Features
 
 - VEX
