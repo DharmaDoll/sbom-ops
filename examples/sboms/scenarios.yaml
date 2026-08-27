@@ -1,0 +1,171 @@
+schema_version: 1
+
+target:
+  dependency_track_version: 4.14.3
+  cyclonedx_versions:
+    - "1.5"
+
+scenarios:
+  - id: lifecycle-vulnerable-to-updated
+    category: lifecycle
+    status: implemented
+    purpose: Observe identity and Finding changes when vulnerable components are updated or replaced.
+    project:
+      name: sbom-ops-vulnerable-demo
+      version: 0.1.0
+    steps:
+      - id: vulnerable
+        bom: vulnerable-demo.cdx.json
+        observe:
+          - project
+          - components
+          - dependency-graph
+          - findings
+          - vulnerabilities
+          - metrics
+          - bom-export
+      - id: updated
+        bom: vulnerable-demo-updated.cdx.json
+        observe:
+          - project
+          - components
+          - dependency-graph
+          - findings
+          - vulnerabilities
+          - metrics
+          - bom-export
+
+  - id: identity-same-name-different-purl
+    category: identity
+    status: planned
+    purpose: Distinguish components with identical display coordinates but different ecosystems or PURLs.
+    project:
+      name: dt-lab-identity-purl
+      version: 1.0.0
+    steps: []
+
+  - id: identity-missing-purl
+    category: identity
+    status: planned
+    purpose: Measure matching and UUID stability when PURL is absent and hashes or CPEs are present.
+    project:
+      name: dt-lab-identity-fallback
+      version: 1.0.0
+    steps: []
+
+  - id: identity-duplicate-dependency-paths
+    category: identity
+    status: planned
+    purpose: Observe one component reached through multiple dependency paths without duplicate remediation work.
+    project:
+      name: dt-lab-identity-paths
+      version: 1.0.0
+    steps: []
+
+  - id: lifecycle-add-remove-components
+    category: lifecycle
+    status: planned
+    purpose: Record Component, Finding, and Metrics transitions across add and remove uploads.
+    project:
+      name: dt-lab-lifecycle-components
+      version: 1.0.0
+    steps: []
+
+  - id: lifecycle-project-versions
+    category: lifecycle
+    status: planned
+    purpose: Compare UUID and Finding behavior across releases of the same named Project.
+    project:
+      name: dt-lab-lifecycle-versions
+      version: 1.0.0
+    steps: []
+
+  - id: portfolio-parent-child
+    category: portfolio
+    status: planned
+    purpose: Measure inherited risk and API responses across parent and child Projects.
+    project:
+      name: dt-lab-portfolio-parent
+      version: 1.0.0
+    steps: []
+
+  - id: portfolio-tags-properties
+    category: portfolio
+    status: planned
+    purpose: Evaluate tags and properties as routing and ownership metadata.
+    project:
+      name: dt-lab-portfolio-metadata
+      version: 1.0.0
+    steps: []
+
+  - id: portfolio-direct-transitive-graph
+    category: portfolio
+    status: planned
+    purpose: Compare direct and transitive dependency graph representation.
+    project:
+      name: dt-lab-dependency-graph
+      version: 1.0.0
+    steps: []
+
+  - id: triage-multiple-sources-aliases
+    category: triage
+    status: planned
+    purpose: Compare CVE, GHSA, OSV, aliases, and vulnerability source identity.
+    project:
+      name: dt-lab-triage-aliases
+      version: 1.0.0
+    steps: []
+
+  - id: triage-analysis-states
+    category: triage
+    status: planned
+    purpose: Observe every Analysis state separately from Finding and remediation state.
+    project:
+      name: dt-lab-triage-analysis
+      version: 1.0.0
+    steps: []
+
+  - id: triage-vex-round-trip
+    category: triage
+    status: planned
+    purpose: Validate VEX import, Analysis projection, export, and human approval boundaries.
+    project:
+      name: dt-lab-triage-vex
+      version: 1.0.0
+    steps: []
+
+  - id: triage-policy-violations
+    category: triage
+    status: planned
+    purpose: Keep vulnerability findings and policy violations as independent workflows.
+    project:
+      name: dt-lab-triage-policy
+      version: 1.0.0
+    steps: []
+
+  - id: robustness-invalid-cyclonedx
+    category: robustness
+    status: planned
+    purpose: Capture synchronous schema validation and asynchronous processing failure contracts.
+    project:
+      name: dt-lab-invalid-cyclonedx
+      version: 1.0.0
+    steps: []
+
+  - id: robustness-json-xml-equivalence
+    category: robustness
+    status: planned
+    purpose: Compare equivalent supported CycloneDX JSON and XML ingestion results.
+    project:
+      name: dt-lab-format-equivalence
+      version: 1.0.0
+    steps: []
+
+  - id: robustness-large-bom
+    category: robustness
+    status: planned
+    purpose: Measure upload, processing, query latency, and response size at controlled scales.
+    project:
+      name: dt-lab-large-bom
+      version: 1.0.0
+    steps: []

@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from enum import StrEnum
+
+
+class LabManifestError(ValueError):
+    """Raised when a Dependency-Track lab manifest is invalid."""
+
+
+class ScenarioCategory(StrEnum):
+    IDENTITY = "identity"
+    LIFECYCLE = "lifecycle"
+    PORTFOLIO = "portfolio"
+    TRIAGE = "triage"
+    ROBUSTNESS = "robustness"
+
+
+class ScenarioStatus(StrEnum):
+    IMPLEMENTED = "implemented"
+    PLANNED = "planned"
+
+
+class Observation(StrEnum):
+    PROJECT = "project"
+    COMPONENTS = "components"
+    SERVICES = "services"
+    DEPENDENCY_GRAPH = "dependency-graph"
+    FINDINGS = "findings"
+    VULNERABILITIES = "vulnerabilities"
+    METRICS = "metrics"
+    VIOLATIONS = "violations"
+    BOM_EXPORT = "bom-export"
+    VEX_EXPORT = "vex-export"
+
+
+_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def _require_slug(value: str, field_name: str) -> None:
+    if not _SLUG_PATTERN.fullmatch(value):
+        raise LabManifestError(
+            f"{field_name} must be a lowercase hyphenated identifier: {value!r}"
+        )
+
+
+@dataclass(frozen=True)
+class LabTarget:
+    dependency_track_version: str
+    cyclonedx_versions: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.dependency_track_version.strip():
+            raise LabManifestError("target.dependency_track_version is required")
+        if not self.cyclonedx_versions:
+            raise LabManifestError("target.cyclonedx_versions must not be empty")
+
+
+@dataclass(frozen=True)
+class ScenarioStep:
+    id: str
+    bom: str
+    observations: tuple[Observation, ...]
+
+    def __post_init__(self) -> None:
+        _require_slug(self.id, "scenario step id")
+        if not self.bom.strip():
+            raise LabManifestError(f"scenario step {self.id!r} requires a BOM path")
+        if not self.observations:
+            raise LabManifestError(
+                f"scenario step {self.id!r} requires at least one observation"
+            )
+
+
+@dataclass(frozen=True)
+class LabScenario:
+    id: str
+    category: ScenarioCategory
+    status: ScenarioStatus
+    purpose: str
+    project_name: str
+    project_version: str
+    steps: tuple[ScenarioStep, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_slug(self.id, "scenario id")
+        if not self.purpose.strip():
+            raise LabManifestError(f"scenario {self.id!r} requires a purpose")
+        if not self.project_name.strip() or not self.project_version.strip():
+            raise LabManifestError(
+                f"scenario {self.id!r} requires project name and version"
+            )
+        if self.status is ScenarioStatus.IMPLEMENTED and not self.steps:
+            raise LabManifestError(
+                f"implemented scenario {self.id!r} requires at least one step"
+            )
+        step_ids = [step.id for step in self.steps]
+        if len(step_ids) != len(set(step_ids)):
+            raise LabManifestError(f"scenario {self.id!r} has duplicate step ids")
+
+
+@dataclass(frozen=True)
+class LabManifest:
+    schema_version: int
+    target: LabTarget
+    scenarios: tuple[LabScenario, ...]
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise LabManifestError(
+                f"unsupported lab manifest schema version: {self.schema_version}"
+            )
+        if not self.scenarios:
+            raise LabManifestError("lab manifest requires at least one scenario")
+        scenario_ids = [scenario.id for scenario in self.scenarios]
+        if len(scenario_ids) != len(set(scenario_ids)):
+            raise LabManifestError("lab manifest has duplicate scenario ids")
+
+
+@dataclass(frozen=True)
+class OpenApiOperation:
+    method: str
+    path: str
+    operation_id: str | None
+    tags: tuple[str, ...]
+    summary: str | None
+    permissions: tuple[str, ...]
+    query_parameters: tuple[str, ...]
+    response_statuses: tuple[str, ...]
+    response_headers: tuple[str, ...]
+    response_media_types: tuple[str, ...]
+    deprecated: bool
+
+
+@dataclass(frozen=True)
+class OpenApiInventory:
+    title: str | None
+    api_version: str | None
+    openapi_version: str | None
+    contract_sha256: str
+    path_count: int
+    operation_count: int
+    tag_count: int
+    selected_tags: tuple[str, ...]
+    operations: tuple[OpenApiOperation, ...]

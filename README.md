@@ -176,6 +176,8 @@ sbom-ops plan --config examples/config.yaml --no-github
 sbom-ops sync --config examples/config.yaml --dry-run --no-github
 sbom-ops sync --config examples/config.yaml --dry-run --no-github --output json
 sbom-ops upload path/to/bom.cdx.json --project "$SBOM_OPS_DT_PROJECT_UUID"
+make dt-lab-validate
+make dt-lab-openapi
 make infra-gcp-poc-fmt-check
 make infra-gcp-poc-validate
 ```
@@ -194,6 +196,7 @@ Supporting guides are grouped by purpose:
 - Operations: [`use cases`](docs/use-cases.md), [`data sources`](docs/data-sources.md),
   [`runbook`](docs/operations.md), and
   [`Dependency-Track setup`](docs/dependency-track/setup.md)
+- Dependency-Track development: [`API contract and behavior lab`](docs/dependency-track/api.md)
 - Policies: [`priority`](docs/priority-policy.md) and
   [`VEX`](docs/vex.md)
 - Decisions and infrastructure: [`ADRs`](docs/adr/README.md) and the

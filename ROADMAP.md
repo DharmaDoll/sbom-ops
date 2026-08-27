@@ -24,12 +24,16 @@ The repository has a working MVP with:
 - YAML configuration and Dependency-Track Project to GitHub repository routing
 - retry, timeout, pagination, contract fixtures, and failure-path tests
 - a hardened repository-local GitHub Actions sync example
+- a versioned DT lab scenario manifest and OpenAPI contract inventory tool
 - a proposed GCP runtime ADR and static Terraform evaluation harness
 
 ## Phase 0: Production Validation (P0)
 
 - Validate Dependency-Track Project, Finding, EPSS, Analysis, pagination, and
   processing-token behavior against a representative environment.
+- Implement the planned Identity, Lifecycle, Portfolio, Triage, and Robustness
+  scenarios in `examples/sboms/scenarios.yaml`; capture stable observations and
+  promote only reviewed contracts to test fixtures.
 - Validate GitHub Issue create, update, migration, and safe closure after a
   reviewed dry-run.
 - Exercise timeout, `429`, `5xx`, partial reads, analysis-in-progress, and

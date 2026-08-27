@@ -561,6 +561,12 @@ Fixtures should cover:
 - GitHub issue search response
 - GitHub issue create/update payloads
 
+Dependency-Track behavior exploration uses the versioned scenario manifest in
+`examples/sboms/scenarios.yaml`. Raw OpenAPI and API observations remain ignored
+under `var/dt-lab/`; only stable, reviewed contract examples belong in test
+fixtures. Live vulnerability counts, EPSS values, and datasource timing must not
+be treated as deterministic assertions.
+
 ## Open Items
 
 These are intentionally deferred, not blockers for the first implementation:

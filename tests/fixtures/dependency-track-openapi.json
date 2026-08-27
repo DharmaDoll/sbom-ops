@@ -1,0 +1,52 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "Dependency-Track API",
+    "version": "4.14.3"
+  },
+  "paths": {
+    "/v1/finding/project/{uuid}": {
+      "get": {
+        "operationId": "getFindingsByProject",
+        "tags": ["finding"],
+        "summary": "Returns findings for a project",
+        "description": "<p>Requires permission <strong>VIEW_VULNERABILITY</strong></p>",
+        "parameters": [
+          {"name": "uuid", "in": "path", "required": true},
+          {"name": "suppressed", "in": "query"},
+          {"name": "source", "in": "query"}
+        ],
+        "responses": {
+          "200": {
+            "headers": {"X-Total-Count": {}},
+            "content": {
+              "application/json": {},
+              "application/sarif+json": {}
+            }
+          },
+          "403": {"description": "Forbidden"}
+        }
+      }
+    },
+    "/v1/analysis": {
+      "put": {
+        "operationId": "updateAnalysis",
+        "tags": ["analysis"],
+        "description": "<p>Requires permission <strong>VULNERABILITY_ANALYSIS</strong></p>",
+        "deprecated": false,
+        "responses": {
+          "200": {"content": {"application/json": {}}},
+          "401": {"description": "Unauthorized"}
+        }
+      }
+    },
+    "/v1/user": {
+      "get": {
+        "operationId": "getUsers",
+        "tags": ["user"],
+        "description": "<p>Requires permission <strong>ACCESS_MANAGEMENT</strong></p>",
+        "responses": {"200": {"content": {"application/json": {}}}}
+      }
+    }
+  }
+}
