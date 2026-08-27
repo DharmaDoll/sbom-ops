@@ -176,18 +176,28 @@ sbom-ops plan --config examples/config.yaml --no-github
 sbom-ops sync --config examples/config.yaml --dry-run --no-github
 sbom-ops sync --config examples/config.yaml --dry-run --no-github --output json
 sbom-ops upload path/to/bom.cdx.json --project "$SBOM_OPS_DT_PROJECT_UUID"
+make infra-gcp-poc-fmt-check
+make infra-gcp-poc-validate
 ```
 
 ## Documentation
 
-- [`ARCHITECTURE.md`](ARCHITECTURE.md): system boundaries and repository layout
-- [`SPEC.md`](SPEC.md): MVP implementation contract
-- [`docs/use-cases.md`](docs/use-cases.md): operational flows and acceptance conditions
-- [`docs/data-sources.md`](docs/data-sources.md): finding data sources and ownership
-- [`docs/operations.md`](docs/operations.md): day-to-day operating guidance
-- [`docs/dependency-track/setup.md`](docs/dependency-track/setup.md): local Dependency-Track bootstrap
-- [`docs/implementation-roadmap.md`](docs/implementation-roadmap.md): implementation phases
-- [`TASKS.md`](TASKS.md): current backlog and validation work
+The active documentation has four primary entry points:
+
+- [`README.md`](README.md): local quick start and command overview
+- [`SPEC.md`](SPEC.md): normative product and Google Cloud deployment contract
+- [`ARCHITECTURE.md`](ARCHITECTURE.md): stable boundaries and repository layout
+- [`ROADMAP.md`](ROADMAP.md): current status, backlog, and delivery order
+
+Supporting guides are grouped by purpose:
+
+- Operations: [`use cases`](docs/use-cases.md), [`data sources`](docs/data-sources.md),
+  [`runbook`](docs/operations.md), and
+  [`Dependency-Track setup`](docs/dependency-track/setup.md)
+- Policies: [`priority`](docs/priority-policy.md) and
+  [`VEX`](docs/vex.md)
+- Decisions and infrastructure: [`ADRs`](docs/adr/README.md) and the
+  [`GCP PoC`](infra/gcp/poc/README.md)
 
 ## Design Principles
 

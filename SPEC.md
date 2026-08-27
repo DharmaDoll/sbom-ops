@@ -93,6 +93,42 @@ The process flow is:
 SBOM generation and upload are CI/CD responsibilities. The separate `upload`
 command is an integration helper for CI; `sync` never uploads an SBOM.
 
+## Google Cloud Deployment Contract
+
+The core orchestrator remains deployable as a stateless CLI job and does not
+require Google Cloud. When the project is deployed on Google Cloud, the
+following requirements are part of the supported deployment profile.
+
+- The Dependency-Track API server, browser frontend, and persistent PostgreSQL
+  database must be modeled as separate runtime concerns.
+- The final runtime must be selected through the proof of concept recorded in
+  [`ADR 0001`](docs/adr/0001-gcp-secure-delivery-runtime.md). Cloud Run and GKE
+  remain candidates until that ADR is accepted.
+- GitHub Actions must authenticate to Google Cloud with OIDC and Workload
+  Identity Federation. Long-lived Google Cloud service-account keys must not be
+  stored in GitHub.
+- Workload Identity trust must be restricted with immutable organization and
+  repository IDs, protected refs or environments, and the approved reusable
+  workflow identity.
+- Dependency-Track API keys must be held in Secret Manager or an equivalent
+  managed secret store and must not be exposed to calling repositories or logs.
+- CI uploads must pass through a least-privilege boundary that only permits the
+  documented BOM upload operation. It must not become a general
+  Dependency-Track reverse proxy.
+- The upload target must be resolved from an authoritative
+  repository-to-Dependency-Track-project mapping. A caller-provided
+  `project_uuid` alone is not authorization.
+- Service-to-service authentication and browser authentication are separate
+  controls and must be validated independently.
+- Production readiness requires structured logs, authentication and upload
+  audit events, failure alerts, backup and restore validation, and a documented
+  rollback path.
+
+The ADR owns the runtime decision and its rationale. The
+[`infra/gcp/poc`](infra/gcp/poc/README.md) directory owns executable evaluation
+artifacts. This specification owns the security and behavior requirements that
+must remain true regardless of the selected runtime.
+
 ## Configuration Contract
 
 Configuration source order:
@@ -530,7 +566,7 @@ Fixtures should cover:
 These are intentionally deferred, not blockers for the first implementation:
 
 - issue reopen policy
-- analysis-state read mapping
 - VEX upload and ingestion workflow
-- multi-repo routing
 - Jira adapter
+- live Dependency-Track and GitHub contract validation
+- provider-backed Google Cloud runtime proof of concept

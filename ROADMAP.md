@@ -1,103 +1,124 @@
 # Roadmap
 
-## MVP
+This is the single source of truth for implementation status and planned work.
+Behavioral requirements belong in [`SPEC.md`](SPEC.md); architecture decisions
+belong in [`docs/adr/`](docs/adr/README.md).
 
-- Dependency-Track API
-- KEV lookup
-- Dependency-Track EPSS retrieval
-- Priority Engine
-- GitHub Issues
-- Basic GitHub Actions sync example
+Priority labels mean:
 
----
+- P0: required before production use
+- P1: operational reliability and Security team workflow
+- P2: advanced analysis and efficiency
+- P3: ecosystem expansion
 
-## v0.2
+## Current State
 
-- Duplicate detection
-- Safe, opt-in closure after consecutive verified absence
-- UUID/PURL-based Finding identity and legacy-key migration
-- Separate Finding / Analysis / Remediation states
-- Dependency-Track project to GitHub repository routing
-- Config file
-- Docker
+The repository has a working MVP with:
 
----
+- Dependency-Track project, Finding, EPSS, Analysis state, and SBOM upload clients
+- deterministic KEV/EPSS/CVSS priority calculation
+- action-neutral assessments before optional GitHub Issue synchronization
+- `--no-github`, dry-run, JSON output, and optional JSONL sync records
+- safe, opt-in closure after consecutive verified absence observations
+- UUID/PURL-based Finding identity with legacy-key migration
+- YAML configuration and Dependency-Track Project to GitHub repository routing
+- retry, timeout, pagination, contract fixtures, and failure-path tests
+- a hardened repository-local GitHub Actions sync example
+- a proposed GCP runtime ADR and static Terraform evaluation harness
 
-## v0.2.x Operations Foundation
+## Phase 0: Production Validation (P0)
 
-- Persistent structured synchronization logs
-- Audit history for Finding, priority, Analysis state, and GitHub Issue changes
-- KEV cache with configurable five-hour default TTL
-- ETag/Last-Modified conditional refresh
-- Stale-cache fallback and forced KEV refresh command
-- Cache freshness and sync failure alerts
+- Validate Dependency-Track Project, Finding, EPSS, Analysis, pagination, and
+  processing-token behavior against a representative environment.
+- Validate GitHub Issue create, update, migration, and safe closure after a
+  reviewed dry-run.
+- Exercise timeout, `429`, `5xx`, partial reads, analysis-in-progress, and
+  project-filter failure paths without incorrectly closing Issues.
+- Validate YAML overrides, secret references, and multi-project routing in
+  representative environments.
+- Confirm minimum permissions for separate Dependency-Track read/upload keys and
+  GitHub Issue access.
+- Run the hardened sync workflow in GitHub Actions and document its required
+  permissions and secrets.
 
----
+## Phase 0.5: Secure GCP Delivery (P0/P1)
 
-## v0.2.x Secure GCP Delivery Foundation
+The normative controls are in the
+[`Google Cloud Deployment Contract`](SPEC.md#google-cloud-deployment-contract).
+The runtime decision and PoC gates are in
+[`ADR 0001`](docs/adr/0001-gcp-secure-delivery-runtime.md).
 
-- Architecture decision record and proof of concept comparing Cloud Run with a
-  supported, operable alternative such as GKE
-- Separate Dependency-Track API server, frontend, and external PostgreSQL
-- Keyless GitHub Actions authentication with OIDC and Workload Identity Federation
-- Immutable organization/repository and reusable-workflow claim restrictions
-- Least-privilege SBOM upload gateway with repository-to-project authorization
-- Dependency-Track API key storage and rotation through Secret Manager
-- Human access through an independently validated IAP / Microsoft Entra ID design
-- Reusable SBOM upload workflow that fails closed by default and reports failures
-- Minimum production-gate logs, audit events, failure alerts, and upload metrics
-- Terraform, integration tests, observability, backup, restore, and rollback guidance
+- Expand [`infra/gcp/poc`](infra/gcp/poc/README.md) into a provider-backed PoC
+  comparing GKE Autopilot and Cloud Run against Dependency-Track's runtime needs.
+- Validate separate Dependency-Track API, frontend, and external PostgreSQL
+  deployment, including migrations, backup, restore, upgrade, and rollback.
+- Implement tightly scoped GitHub OIDC and Workload Identity Federation trust.
+- Implement a least-privilege SBOM upload gateway with server-side
+  repository-to-project authorization and Secret Manager integration.
+- Validate service-to-service authentication and human browser access separately.
+- Publish a pinned, reusable GitHub Actions upload workflow that fails closed by
+  default and exposes actionable failures.
+- Add Terraform plan/policy checks, negative authorization tests, structured
+  audit events, metrics, alerts, and cost estimates before production exposure.
 
-The upload gateway is limited to the documented BOM upload operation. It must not
-become a general Dependency-Track reverse proxy, and caller-provided project UUIDs
-must be checked against an authoritative repository-to-project mapping.
+## Phase 1: Operations Foundation (P1)
 
----
+- Move local JSONL sync records to a queryable operational store.
+- Record an audit history for Finding, priority, Analysis, and Issue changes.
+- Add KEV forced refresh, cache integrity metadata, concurrent refresh locking,
+  freshness monitoring, and synchronization failure alerts.
+- Add a remediation policy model that keeps priority separate from SLA dates.
+- Extend `PriorityContext` with asset criticality, exposure, reachability, and
+  compensating controls without allowing them to mutate priority implicitly.
 
-## v0.3
+## Phase 2: Human-reviewed VEX (P1)
 
-- VEX candidate queue
-- Human-reviewed Draft / Review / Approve / Publish workflow
-- CycloneDX validation, diff preview, expiry, and re-evaluation
-- Dependency-Track VEX ingestion after explicit approval
+- Add a Security team candidate queue and cross-project context view.
+- Add mandatory rationale/evidence templates and Draft / Review / Approve /
+  Publish states.
+- Validate CycloneDX schema and SBOM/VEX identity, show a publication diff, and
+  require explicit approval before Dependency-Track ingestion.
+- Add VEX versioning, expiry, re-evaluation triggers, and reviewer audit history.
 
-VEX ingestion remains owned by Dependency-Track. sbom-ops reads the resulting
-analysis state and uses it for workflow decisions; it does not independently
-approve, suppress, or mark findings as not affected. VEX publication requires
-explicit Security team approval.
+## Phase 3: Reachability Evidence (P2)
 
----
+- Integrate `govulncheck`, `pip-audit`, and `osv-scanner` through independent
+  adapters with mock fixtures and explicit failure behavior.
+- Store tool version, inputs, output, timestamp, and confidence as advisory
+  evidence for human VEX review.
+- Never use reachability alone to suppress a Finding or publish a VEX decision.
 
-## v0.4
+## Phase 4: LLM Triage Assistance (P2)
 
-- Reachability
-- govulncheck
-- pip-audit
-- osv-scanner
+- Generate structured summaries, impact explanations, remediation proposals,
+  evidence references, confidence, and follow-up questions.
+- Keep model output separate from authoritative Dependency-Track Analysis state.
+- Require human review before publishing suggestions to work-management systems.
+- Prevent the LLM from changing priority, accepting risk, suppressing Findings,
+  changing VEX state, or closing Issues.
 
-Reachability is advisory evidence for human review. It must not suppress findings,
-change priority, or publish VEX decisions automatically.
+## Phase 5: Integrations and Visibility (P3)
 
----
+- Jira adapter
+- Slack and Teams notifications
+- Security team dashboard and operational metrics
+- SARIF and Dependency Graph integrations
+- Multi-tenancy
 
-## v0.5
+## Delivery Order
 
-- LLM Triage
-- OpenAI
-- Claude
-
-LLM output remains advisory. It may summarize findings, explain impact, propose
-remediation, and identify missing information. It must not change priority,
-approve exceptions, suppress findings, change VEX/Analysis state, or close
-GitHub Issues automatically. Reachability and approved VEX context should be
-available as evidence before LLM triage is introduced.
-
----
-
-## v1.0
-
-- Jira
-- Slack
-- Teams
-- Dashboard
-- Metrics
+```text
+Phase 0: production validation
+    ↓
+Phase 0.5: GCP runtime PoC and secure SBOM delivery
+    ↓
+Phase 1: durable operations and audit
+    ↓
+Phase 2: human-reviewed VEX
+    ↓
+Phase 3: reachability evidence
+    ↓
+Phase 4: LLM assistance
+    ↓
+Phase 5: integrations and visibility
+```

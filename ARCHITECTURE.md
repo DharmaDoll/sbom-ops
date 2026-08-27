@@ -115,19 +115,17 @@ dependency-track-sbom-ops/
 ├── ARCHITECTURE.md
 ├── ROADMAP.md
 ├── SPEC.md
-├── TASKS.md
 ├── CONTRIBUTING.md
 ├── CHANGELOG.md
 ├── pyproject.toml
 ├── docs/
 │   ├── operations.md
-│   ├── workflow.md
 │   ├── priority-policy.md
 │   ├── vex.md
 │   ├── use-cases.md
 │   ├── data-sources.md
-│   ├── implementation-roadmap.md
-│   └── dependency-track/
+│   ├── dependency-track/
+│   └── adr/
 ├── src/
 │   └── sbom_ops/
 │       ├── cli.py
@@ -145,7 +143,9 @@ dependency-track-sbom-ops/
 ## Layer Responsibilities
 
 ### docs/
-Project documentation.
+Focused operating guides, policy explanations, external-integration notes, and
+architecture decision records. Project status and backlog belong only in
+`ROADMAP.md`; normative behavior belongs only in `SPEC.md`.
 No executable code.
 
 ---
