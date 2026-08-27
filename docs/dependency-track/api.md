@@ -143,8 +143,31 @@ client contract may be promoted into `tests/fixtures/`. Do not turn live
 vulnerability counts or EPSS values into fixed assertions because intelligence
 feeds change over time.
 
-For each implemented SBOM scenario, the later execution runner must follow this
-observation loop:
+Run all implemented scenarios against an isolated local Dependency-Track
+instance after exporting separate upload and read keys:
+
+```bash
+export SBOM_OPS_DT_BASE_URL=http://localhost:8080
+export SBOM_OPS_SBOM_UPLOAD_API_KEY=replace-with-upload-key
+export SBOM_OPS_DT_API_KEY=replace-with-read-key
+make dt-lab-run
+```
+
+Use `--scenario` with the lab CLI to limit an execution:
+
+```bash
+sbom-ops-dt-lab run-scenarios \
+  --scenario identity-same-name-different-purl \
+  --scenario lifecycle-add-remove-components
+```
+
+Every run adds a unique suffix to the declared Project version. This prevents a
+prior Analysis or suppression decision from contaminating a structural test and
+avoids deleting existing Projects. The generated run directory contains the raw
+observation envelopes, a stable-field summary, and a Component delta for each
+step after the first.
+
+For each implemented SBOM scenario, the runner follows this observation loop:
 
 1. Upload one declared step to its isolated lab Project.
 2. Wait for the returned event token to report `processing=false`.

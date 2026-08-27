@@ -144,3 +144,19 @@ class OpenApiInventory:
     tag_count: int
     selected_tags: tuple[str, ...]
     operations: tuple[OpenApiOperation, ...]
+
+
+@dataclass(frozen=True)
+class LabStepResult:
+    scenario_id: str
+    step_id: str
+    project_uuid: str
+    snapshot_directory: str
+    observation_count: int
+
+
+@dataclass(frozen=True)
+class LabRunResult:
+    run_id: str
+    output_directory: str
+    steps: tuple[LabStepResult, ...]

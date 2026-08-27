@@ -37,39 +37,87 @@ scenarios:
 
   - id: identity-same-name-different-purl
     category: identity
-    status: planned
+    status: implemented
     purpose: Distinguish components with identical display coordinates but different ecosystems or PURLs.
     project:
       name: dt-lab-identity-purl
       version: 1.0.0
-    steps: []
+    steps:
+      - id: initial
+        bom: identity-same-name-different-purl.cdx.json
+        observe:
+          - project
+          - components
+          - dependency-graph
+          - findings
+          - vulnerabilities
+          - bom-export
 
   - id: identity-missing-purl
     category: identity
-    status: planned
+    status: implemented
     purpose: Measure matching and UUID stability when PURL is absent and hashes or CPEs are present.
     project:
       name: dt-lab-identity-fallback
       version: 1.0.0
-    steps: []
+    steps:
+      - id: initial
+        bom: identity-missing-purl.cdx.json
+        observe:
+          - project
+          - components
+          - dependency-graph
+          - findings
+          - vulnerabilities
+          - bom-export
 
   - id: identity-duplicate-dependency-paths
     category: identity
-    status: planned
+    status: implemented
     purpose: Observe one component reached through multiple dependency paths without duplicate remediation work.
     project:
       name: dt-lab-identity-paths
       version: 1.0.0
-    steps: []
+    steps:
+      - id: initial
+        bom: identity-duplicate-dependency-paths.cdx.json
+        observe:
+          - project
+          - components
+          - dependency-graph
+          - findings
+          - vulnerabilities
+          - metrics
+          - bom-export
 
   - id: lifecycle-add-remove-components
     category: lifecycle
-    status: planned
+    status: implemented
     purpose: Record Component, Finding, and Metrics transitions across add and remove uploads.
     project:
       name: dt-lab-lifecycle-components
       version: 1.0.0
-    steps: []
+    steps:
+      - id: initial
+        bom: lifecycle-add-remove-initial.cdx.json
+        observe:
+          - project
+          - components
+          - dependency-graph
+          - findings
+          - vulnerabilities
+          - metrics
+          - bom-export
+      - id: updated
+        bom: lifecycle-add-remove-updated.cdx.json
+        observe:
+          - project
+          - components
+          - dependency-graph
+          - findings
+          - vulnerabilities
+          - metrics
+          - bom-export
 
   - id: lifecycle-project-versions
     category: lifecycle

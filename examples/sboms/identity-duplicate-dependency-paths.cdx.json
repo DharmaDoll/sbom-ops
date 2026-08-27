@@ -1,0 +1,67 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:6d48c1dd-2050-4e61-ab27-3cb095eb4f8c",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-08-27T00:00:00Z",
+    "tools": [
+      {
+        "vendor": "sbom-ops",
+        "name": "dt-lab",
+        "version": "1"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:generic/dt-lab-identity-paths@1.0.0",
+      "name": "dt-lab-identity-paths",
+      "version": "1.0.0",
+      "purl": "pkg:generic/dt-lab-identity-paths@1.0.0"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/direct-a@1.0.0",
+      "name": "direct-a",
+      "version": "1.0.0",
+      "purl": "pkg:npm/direct-a@1.0.0"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/direct-b@1.0.0",
+      "name": "direct-b",
+      "version": "1.0.0",
+      "purl": "pkg:npm/direct-b@1.0.0"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/lodash@4.17.20",
+      "name": "lodash",
+      "version": "4.17.20",
+      "purl": "pkg:npm/lodash@4.17.20"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:generic/dt-lab-identity-paths@1.0.0",
+      "dependsOn": [
+        "pkg:npm/direct-a@1.0.0",
+        "pkg:npm/direct-b@1.0.0"
+      ]
+    },
+    {
+      "ref": "pkg:npm/direct-a@1.0.0",
+      "dependsOn": ["pkg:npm/lodash@4.17.20"]
+    },
+    {
+      "ref": "pkg:npm/direct-b@1.0.0",
+      "dependsOn": ["pkg:npm/lodash@4.17.20"]
+    },
+    {
+      "ref": "pkg:npm/lodash@4.17.20",
+      "dependsOn": []
+    }
+  ]
+}

@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
+from sbom_ops.clients.dependency_track import (
+    DependencyTrackApiError,
+    DependencyTrackClient,
+)
 from sbom_ops.domain.dt_lab import LabManifestError, ScenarioStatus
 from sbom_ops.services.dt_lab import (
     RELEVANT_OPENAPI_TAGS,
     build_openapi_inventory,
     load_lab_manifest,
     openapi_inventory_dict,
+    run_lab_scenarios,
 )
 
 
@@ -34,6 +40,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--all-tags",
         action="store_true",
         help="include every operation instead of the sbom-ops-relevant tags",
+    )
+
+    run_parser = subparsers.add_parser("run-scenarios")
+    run_parser.add_argument("--manifest", default="examples/sboms/scenarios.yaml")
+    run_parser.add_argument("--output-dir", default="var/dt-lab/runs")
+    run_parser.add_argument("--scenario", action="append", default=[])
+    run_parser.add_argument(
+        "--openapi-inventory", default="var/dt-lab/openapi-inventory.json"
+    )
+    run_parser.add_argument(
+        "--processing-timeout",
+        type=float,
+        default=float(os.getenv("SBOM_OPS_DT_ANALYSIS_WAIT_TIMEOUT_SECONDS", "120")),
+    )
+    run_parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=float(os.getenv("SBOM_OPS_DT_ANALYSIS_POLL_INTERVAL_SECONDS", "5")),
     )
     return parser
 
@@ -89,6 +113,68 @@ def _run_openapi_inventory(
     return 0
 
 
+def _openapi_hash(path: str | None) -> str | None:
+    if not path:
+        return None
+    inventory_path = Path(path)
+    if not inventory_path.is_file():
+        return None
+    payload = _load_openapi(inventory_path)
+    source = payload.get("source")
+    if not isinstance(source, dict):
+        return None
+    value = source.get("contract_sha256")
+    return str(value) if value else None
+
+
+def _dependency_track_client(api_key: str) -> DependencyTrackClient:
+    base_url = os.getenv("SBOM_OPS_DT_BASE_URL")
+    if not base_url:
+        raise ValueError("run-scenarios requires SBOM_OPS_DT_BASE_URL")
+    return DependencyTrackClient(
+        base_url,
+        api_key,
+        timeout=float(os.getenv("SBOM_OPS_DT_TIMEOUT_SECONDS", "30")),
+        page_size=int(os.getenv("SBOM_OPS_DT_PAGE_SIZE", "100")),
+        max_retries=int(os.getenv("SBOM_OPS_DT_MAX_RETRIES", "3")),
+        retry_backoff_seconds=float(
+            os.getenv("SBOM_OPS_DT_RETRY_BACKOFF_SECONDS", "1")
+        ),
+    )
+
+
+def _run_scenarios(args: argparse.Namespace) -> int:
+    upload_key = os.getenv("SBOM_OPS_SBOM_UPLOAD_API_KEY")
+    read_key = os.getenv("SBOM_OPS_DT_API_KEY")
+    if not upload_key or not read_key:
+        raise ValueError(
+            "run-scenarios requires SBOM_OPS_SBOM_UPLOAD_API_KEY and "
+            "SBOM_OPS_DT_API_KEY"
+        )
+    manifest = load_lab_manifest(args.manifest)
+    result = run_lab_scenarios(
+        manifest,
+        manifest_path=args.manifest,
+        upload_client=_dependency_track_client(upload_key),
+        read_client=_dependency_track_client(read_key),
+        output_directory=args.output_dir,
+        scenario_ids=tuple(args.scenario),
+        processing_timeout=args.processing_timeout,
+        poll_interval=args.poll_interval,
+        openapi_contract_sha256=_openapi_hash(args.openapi_inventory),
+    )
+    print(
+        f"DT lab run completed: run_id={result.run_id} "
+        f"steps={len(result.steps)} output={result.output_directory}"
+    )
+    for step in result.steps:
+        print(
+            f"{step.scenario_id}/{step.step_id}: project={step.project_uuid} "
+            f"observations={step.observation_count}"
+        )
+    return 0
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -97,8 +183,16 @@ def main() -> int:
             return _run_validate_manifest(args.manifest)
         if args.command == "openapi-inventory":
             return _run_openapi_inventory(args.openapi_path, args.output, args.all_tags)
+        if args.command == "run-scenarios":
+            return _run_scenarios(args)
         parser.error(f"unsupported command: {args.command}")
-    except (json.JSONDecodeError, LabManifestError, OSError, ValueError) as exc:
+    except (
+        DependencyTrackApiError,
+        json.JSONDecodeError,
+        LabManifestError,
+        OSError,
+        ValueError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     return 2

@@ -178,6 +178,7 @@ sbom-ops sync --config examples/config.yaml --dry-run --no-github --output json
 sbom-ops upload path/to/bom.cdx.json --project "$SBOM_OPS_DT_PROJECT_UUID"
 make dt-lab-validate
 make dt-lab-openapi
+make dt-lab-run
 make infra-gcp-poc-fmt-check
 make infra-gcp-poc-validate
 ```

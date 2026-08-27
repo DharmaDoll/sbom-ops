@@ -1,0 +1,57 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:d946cb97-6738-4701-a869-16a151c400cb",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-08-27T01:00:00Z",
+    "tools": [
+      {
+        "vendor": "sbom-ops",
+        "name": "dt-lab",
+        "version": "1"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:generic/dt-lab-lifecycle-components@1.0.0",
+      "name": "dt-lab-lifecycle-components",
+      "version": "1.0.0",
+      "purl": "pkg:generic/dt-lab-lifecycle-components@1.0.0"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1",
+      "group": "org.apache.logging.log4j",
+      "name": "log4j-core",
+      "version": "2.14.1",
+      "purl": "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/requests@2.31.0",
+      "name": "requests",
+      "version": "2.31.0",
+      "purl": "pkg:pypi/requests@2.31.0"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:generic/dt-lab-lifecycle-components@1.0.0",
+      "dependsOn": [
+        "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1",
+        "pkg:pypi/requests@2.31.0"
+      ]
+    },
+    {
+      "ref": "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/requests@2.31.0",
+      "dependsOn": []
+    }
+  ]
+}

@@ -5,12 +5,14 @@ from pathlib import Path
 
 import pytest
 
+from sbom_ops.clients.dependency_track import BomUpload, DependencyTrackObservation
 from sbom_ops.domain.dt_lab import LabManifestError, ScenarioStatus
 from sbom_ops.dt_lab_cli import main
 from sbom_ops.services.dt_lab import (
     build_openapi_inventory,
     load_lab_manifest,
     openapi_inventory_dict,
+    run_lab_scenarios,
 )
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
@@ -29,9 +31,13 @@ def test_repository_lab_manifest_is_valid() -> None:
         if scenario.status is ScenarioStatus.IMPLEMENTED
     ]
     assert [scenario.id for scenario in implemented] == [
-        "lifecycle-vulnerable-to-updated"
+        "lifecycle-vulnerable-to-updated",
+        "identity-same-name-different-purl",
+        "identity-missing-purl",
+        "identity-duplicate-dependency-paths",
+        "lifecycle-add-remove-components",
     ]
-    assert [step.id for step in implemented[0].steps] == ["vulnerable", "updated"]
+    assert sum(len(scenario.steps) for scenario in implemented) == 7
 
 
 def test_lab_manifest_rejects_missing_implemented_bom(tmp_path: Path) -> None:
@@ -57,6 +63,53 @@ scenarios:
     )
 
     with pytest.raises(LabManifestError, match="BOM does not exist"):
+        load_lab_manifest(manifest_path)
+
+
+def test_lab_manifest_rejects_unknown_dependency_reference(tmp_path: Path) -> None:
+    (tmp_path / "invalid.cdx.json").write_text(
+        json.dumps(
+            {
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.5",
+                "serialNumber": "urn:uuid:5ada1c0d-5249-40f0-aeea-20ebc9ba6a75",
+                "version": 1,
+                "metadata": {
+                    "component": {
+                        "type": "application",
+                        "bom-ref": "root",
+                        "name": "root",
+                        "version": "1",
+                    }
+                },
+                "components": [],
+                "dependencies": [{"ref": "root", "dependsOn": ["missing"]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "scenarios.yaml"
+    manifest_path.write_text(
+        """
+schema_version: 1
+target:
+  dependency_track_version: 4.14.3
+  cyclonedx_versions: ["1.5"]
+scenarios:
+  - id: invalid-graph
+    category: robustness
+    status: implemented
+    purpose: Reject an invalid dependency graph.
+    project: {name: invalid, version: 1.0.0}
+    steps:
+      - id: upload
+        bom: invalid.cdx.json
+        observe: [project]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(LabManifestError, match="unknown dependency references"):
         load_lab_manifest(manifest_path)
 
 
@@ -120,7 +173,7 @@ def test_lab_cli_validates_repository_manifest(
     )
 
     assert main() == 0
-    assert "scenarios=16 implemented=1 planned=15 steps=2" in capsys.readouterr().out
+    assert "scenarios=16 implemented=5 planned=11 steps=7" in capsys.readouterr().out
 
 
 def test_lab_cli_writes_openapi_inventory(
@@ -168,3 +221,125 @@ def test_lab_cli_writes_openapi_inventory(
     assert "OpenAPI inventory: paths=3 operations=3 selected=2 tags=3" in (
         capsys.readouterr().out
     )
+
+
+class FakeLabClient:
+    def __init__(self) -> None:
+        self.last_bom = ""
+
+    def upload_bom_by_project_coordinates(
+        self, project_name: str, project_version: str, bom_path: str | Path
+    ) -> BomUpload:
+        self.last_bom = Path(bom_path).name
+        return BomUpload(token=f"token-{self.last_bom}")
+
+    def wait_for_bom_processing(
+        self,
+        token: str,
+        *,
+        timeout: float = 120.0,
+        poll_interval: float = 5.0,
+    ) -> None:
+        return None
+
+    def _observation(self, path: str, payload: object) -> DependencyTrackObservation:
+        return DependencyTrackObservation(
+            method="GET",
+            path=path,
+            query=(),
+            status=200,
+            headers=(("Content-Type", "application/json"),),
+            duration_seconds=0.01,
+            payload=payload,
+        )
+
+    def observe_project_lookup(
+        self, project_name: str, project_version: str
+    ) -> DependencyTrackObservation:
+        return self._observation(
+            "/api/v1/project/lookup",
+            {"uuid": "project-1", "name": project_name, "version": project_version},
+        )
+
+    def observe_project(self, project_uuid: str) -> DependencyTrackObservation:
+        return self._observation(
+            f"/api/v1/project/{project_uuid}", {"uuid": project_uuid}
+        )
+
+    def observe_project_components(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation:
+        retained = {
+            "uuid": "component-retained",
+            "name": "log4j-core",
+            "version": "2.14.1",
+            "purl": "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1",
+        }
+        if self.last_bom.endswith("initial.cdx.json"):
+            changed = {
+                "uuid": "component-removed",
+                "name": "lodash",
+                "version": "4.17.20",
+                "purl": "pkg:npm/lodash@4.17.20",
+            }
+        else:
+            changed = {
+                "uuid": "component-added",
+                "name": "requests",
+                "version": "2.31.0",
+                "purl": "pkg:pypi/requests@2.31.0",
+            }
+        return self._observation(
+            f"/api/v1/component/project/{project_uuid}", [retained, changed]
+        )
+
+    def observe_project_dependency_graph(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation:
+        return self._observation(
+            f"/api/v1/dependencyGraph/project/{project_uuid}/directDependencies", []
+        )
+
+    def observe_project_findings(self, project_uuid: str) -> DependencyTrackObservation:
+        return self._observation(f"/api/v1/finding/project/{project_uuid}", [])
+
+    def observe_project_vulnerabilities(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation:
+        return self._observation(f"/api/v1/vulnerability/project/{project_uuid}", [])
+
+    def observe_project_metrics(self, project_uuid: str) -> DependencyTrackObservation:
+        return self._observation(f"/api/v1/metrics/project/{project_uuid}/current", {})
+
+    def observe_project_bom_export(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation:
+        return self._observation(f"/api/v1/bom/cyclonedx/project/{project_uuid}", {})
+
+
+def test_lab_runner_captures_step_delta(tmp_path: Path) -> None:
+    manifest_path = REPOSITORY_ROOT / "examples" / "sboms" / "scenarios.yaml"
+    client = FakeLabClient()
+
+    result = run_lab_scenarios(
+        load_lab_manifest(manifest_path),
+        manifest_path=manifest_path,
+        upload_client=client,
+        read_client=client,
+        output_directory=tmp_path,
+        scenario_ids=("lifecycle-add-remove-components",),
+        poll_interval=0,
+        openapi_contract_sha256="abc123",
+    )
+
+    assert len(result.steps) == 2
+    run_metadata = json.loads(
+        (Path(result.output_directory) / "run.json").read_text(encoding="utf-8")
+    )
+    assert run_metadata["status"] == "completed"
+    assert run_metadata["step_count"] == 2
+    updated_directory = Path(result.steps[1].snapshot_directory)
+    delta = json.loads((updated_directory / "delta.json").read_text(encoding="utf-8"))
+    assert delta["components_added"] == ["pkg:pypi/requests@2.31.0"]
+    assert delta["components_removed"] == ["pkg:npm/lodash@4.17.20"]
+    assert delta["retained_uuid_changes"] == []

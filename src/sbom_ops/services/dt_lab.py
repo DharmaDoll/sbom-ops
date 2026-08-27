@@ -3,15 +3,24 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
+from uuid import uuid4
 
 import yaml
 
+from sbom_ops.clients.dependency_track import (
+    BomUpload,
+    DependencyTrackObservation,
+)
 from sbom_ops.domain.dt_lab import (
     LabManifest,
     LabManifestError,
+    LabRunResult,
     LabScenario,
+    LabStepResult,
     LabTarget,
     Observation,
     OpenApiInventory,
@@ -127,6 +136,89 @@ def _load_scenario(payload: Any) -> LabScenario:
     )
 
 
+def _validate_json_bom(
+    bom_path: Path,
+    *,
+    cyclonedx_versions: tuple[str, ...],
+    scenario_id: str,
+    step_id: str,
+) -> str:
+    try:
+        payload = json.loads(bom_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} BOM is not valid JSON"
+        ) from exc
+    if not isinstance(payload, dict) or payload.get("bomFormat") != "CycloneDX":
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} is not a CycloneDX BOM"
+        )
+    spec_version = str(payload.get("specVersion") or "")
+    if spec_version not in cyclonedx_versions:
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} uses undeclared "
+            f"CycloneDX version {spec_version!r}"
+        )
+    serial_number = payload.get("serialNumber")
+    if not isinstance(serial_number, str) or not serial_number.startswith("urn:uuid:"):
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} requires a UUID serialNumber"
+        )
+    metadata = payload.get("metadata")
+    root_component = metadata.get("component") if isinstance(metadata, dict) else None
+    root_ref = (
+        root_component.get("bom-ref") if isinstance(root_component, dict) else None
+    )
+    components = payload.get("components", [])
+    if not isinstance(components, list):
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} components must be a list"
+        )
+    component_refs = [
+        component.get("bom-ref")
+        for component in components
+        if isinstance(component, dict) and component.get("bom-ref")
+    ]
+    if len(component_refs) != len(components):
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} requires bom-ref on every "
+            "component"
+        )
+    known_refs = set(component_refs)
+    if root_ref:
+        known_refs.add(str(root_ref))
+    if len(component_refs) != len(set(component_refs)):
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} has duplicate bom-ref values"
+        )
+    dependencies = payload.get("dependencies", [])
+    if not isinstance(dependencies, list):
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} dependencies must be a list"
+        )
+    referenced: set[str] = set()
+    for dependency in dependencies:
+        if not isinstance(dependency, dict) or not dependency.get("ref"):
+            raise LabManifestError(
+                f"scenario {scenario_id!r} step {step_id!r} has an invalid "
+                "dependency entry"
+            )
+        referenced.add(str(dependency["ref"]))
+        depends_on = dependency.get("dependsOn", [])
+        if not isinstance(depends_on, list):
+            raise LabManifestError(
+                f"scenario {scenario_id!r} step {step_id!r} dependsOn must be a list"
+            )
+        referenced.update(str(item) for item in depends_on)
+    unknown_refs = sorted(referenced - known_refs)
+    if unknown_refs:
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} has unknown dependency "
+            f"references: {', '.join(unknown_refs)}"
+        )
+    return serial_number
+
+
 def load_lab_manifest(path: str | Path) -> LabManifest:
     manifest_path = Path(path)
     payload = _mapping(
@@ -163,6 +255,7 @@ def load_lab_manifest(path: str | Path) -> LabManifest:
         ),
     )
     manifest_root = manifest_path.resolve().parent
+    serial_numbers: set[str] = set()
     for scenario in manifest.scenarios:
         for step in scenario.steps:
             bom_path = (manifest_root / step.bom).resolve()
@@ -175,6 +268,19 @@ def load_lab_manifest(path: str | Path) -> LabManifest:
                 raise LabManifestError(
                     f"scenario {scenario.id!r} BOM does not exist: {step.bom}"
                 )
+            if bom_path.suffix == ".json":
+                serial_number = _validate_json_bom(
+                    bom_path,
+                    cyclonedx_versions=manifest.target.cyclonedx_versions,
+                    scenario_id=scenario.id,
+                    step_id=step.id,
+                )
+                if serial_number in serial_numbers:
+                    raise LabManifestError(
+                        f"duplicate CycloneDX serialNumber in lab corpus: "
+                        f"{serial_number}"
+                    )
+                serial_numbers.add(serial_number)
     return manifest
 
 
@@ -331,3 +437,292 @@ def openapi_inventory_dict(inventory: OpenApiInventory) -> dict[str, Any]:
             for operation in inventory.operations
         ],
     }
+
+
+class DependencyTrackLabApi(Protocol):
+    def upload_bom_by_project_coordinates(
+        self, project_name: str, project_version: str, bom_path: str | Path
+    ) -> BomUpload: ...
+
+    def wait_for_bom_processing(
+        self,
+        token: str,
+        *,
+        timeout: float = 120.0,
+        poll_interval: float = 5.0,
+    ) -> None: ...
+
+    def observe_project_lookup(
+        self, project_name: str, project_version: str
+    ) -> DependencyTrackObservation: ...
+
+    def observe_project(self, project_uuid: str) -> DependencyTrackObservation: ...
+
+    def observe_project_components(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation: ...
+
+    def observe_project_dependency_graph(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation: ...
+
+    def observe_project_findings(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation: ...
+
+    def observe_project_vulnerabilities(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation: ...
+
+    def observe_project_metrics(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation: ...
+
+    def observe_project_bom_export(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation: ...
+
+
+def _observation_dict(observation: DependencyTrackObservation) -> dict[str, Any]:
+    return {
+        "request": {
+            "method": observation.method,
+            "path": observation.path,
+            "query": dict(observation.query),
+        },
+        "response": {
+            "status": observation.status,
+            "headers": dict(observation.headers),
+            "duration_seconds": observation.duration_seconds,
+            "payload": observation.payload,
+        },
+    }
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.write_text(
+        f"{json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)}\n",
+        encoding="utf-8",
+    )
+
+
+def _payload_list(observation: DependencyTrackObservation | None) -> list[Any]:
+    if observation is None or not isinstance(observation.payload, list):
+        return []
+    return observation.payload
+
+
+def _component_identity(component: Any) -> str:
+    if not isinstance(component, dict):
+        return str(component)
+    purl = component.get("purl") or component.get("purlCoordinates")
+    if purl:
+        return str(purl)
+    if component.get("cpe"):
+        return str(component["cpe"])
+    return ":".join(
+        str(component.get(key) or "") for key in ("group", "name", "version")
+    )
+
+
+def _step_summary(
+    observations: dict[Observation, DependencyTrackObservation],
+) -> dict[str, Any]:
+    components = _payload_list(observations.get(Observation.COMPONENTS))
+    findings = _payload_list(observations.get(Observation.FINDINGS))
+    vulnerabilities = _payload_list(observations.get(Observation.VULNERABILITIES))
+    component_projection = [
+        {
+            "identity": _component_identity(component),
+            "uuid": component.get("uuid") if isinstance(component, dict) else None,
+            "group": component.get("group") if isinstance(component, dict) else None,
+            "name": component.get("name") if isinstance(component, dict) else None,
+            "version": (
+                component.get("version") if isinstance(component, dict) else None
+            ),
+            "purl": (
+                component.get("purl") or component.get("purlCoordinates")
+                if isinstance(component, dict)
+                else None
+            ),
+            "cpe": component.get("cpe") if isinstance(component, dict) else None,
+        }
+        for component in components
+    ]
+    component_projection.sort(key=lambda component: str(component["identity"]))
+    return {
+        "component_count": len(components),
+        "finding_count": len(findings),
+        "vulnerability_count": len(vulnerabilities),
+        "components": component_projection,
+    }
+
+
+def _step_delta(
+    previous_summary: dict[str, Any] | None, current_summary: dict[str, Any]
+) -> dict[str, Any] | None:
+    if previous_summary is None:
+        return None
+    previous = {
+        str(component["identity"]): component
+        for component in previous_summary.get("components", [])
+    }
+    current = {
+        str(component["identity"]): component
+        for component in current_summary.get("components", [])
+    }
+    retained = sorted(previous.keys() & current.keys())
+    return {
+        "components_added": sorted(current.keys() - previous.keys()),
+        "components_removed": sorted(previous.keys() - current.keys()),
+        "components_retained": retained,
+        "retained_uuid_changes": [
+            {
+                "identity": identity,
+                "before": previous[identity].get("uuid"),
+                "after": current[identity].get("uuid"),
+            }
+            for identity in retained
+            if previous[identity].get("uuid") != current[identity].get("uuid")
+        ],
+        "finding_count_before": previous_summary.get("finding_count"),
+        "finding_count_after": current_summary.get("finding_count"),
+    }
+
+
+def _capture_observation(
+    client: DependencyTrackLabApi,
+    observation: Observation,
+    project_uuid: str,
+) -> DependencyTrackObservation:
+    observers: dict[Observation, Callable[[str], DependencyTrackObservation]] = {
+        Observation.PROJECT: client.observe_project,
+        Observation.COMPONENTS: client.observe_project_components,
+        Observation.DEPENDENCY_GRAPH: client.observe_project_dependency_graph,
+        Observation.FINDINGS: client.observe_project_findings,
+        Observation.VULNERABILITIES: client.observe_project_vulnerabilities,
+        Observation.METRICS: client.observe_project_metrics,
+        Observation.BOM_EXPORT: client.observe_project_bom_export,
+    }
+    observer = observers.get(observation)
+    if observer is None:
+        raise LabManifestError(
+            f"observation {observation.value!r} is not implemented by the lab runner"
+        )
+    return observer(project_uuid)
+
+
+def _selected_scenarios(
+    manifest: LabManifest, scenario_ids: tuple[str, ...]
+) -> tuple[LabScenario, ...]:
+    implemented = tuple(
+        scenario
+        for scenario in manifest.scenarios
+        if scenario.status is ScenarioStatus.IMPLEMENTED
+    )
+    if not scenario_ids:
+        return implemented
+    available = {scenario.id: scenario for scenario in implemented}
+    unknown = sorted(set(scenario_ids) - set(available))
+    if unknown:
+        raise LabManifestError(
+            f"unknown or unimplemented lab scenarios: {', '.join(unknown)}"
+        )
+    return tuple(available[scenario_id] for scenario_id in scenario_ids)
+
+
+def run_lab_scenarios(
+    manifest: LabManifest,
+    *,
+    manifest_path: str | Path,
+    upload_client: DependencyTrackLabApi,
+    read_client: DependencyTrackLabApi,
+    output_directory: str | Path,
+    scenario_ids: tuple[str, ...] = (),
+    processing_timeout: float = 120.0,
+    poll_interval: float = 5.0,
+    openapi_contract_sha256: str | None = None,
+) -> LabRunResult:
+    run_id = str(uuid4())
+    run_directory = Path(output_directory) / run_id
+    run_directory.mkdir(parents=True, exist_ok=False)
+    manifest_root = Path(manifest_path).resolve().parent
+    results: list[LabStepResult] = []
+    selected = _selected_scenarios(manifest, scenario_ids)
+    started_at = datetime.now(UTC).isoformat()
+    run_metadata = {
+        "run_id": run_id,
+        "status": "running",
+        "started_at": started_at,
+        "dependency_track_version": manifest.target.dependency_track_version,
+        "openapi_contract_sha256": openapi_contract_sha256,
+        "scenarios": [scenario.id for scenario in selected],
+    }
+    _write_json(
+        run_directory / "run.json",
+        run_metadata,
+    )
+    for scenario in selected:
+        project_version = f"{scenario.project_version}-lab-{run_id[:8]}"
+        previous_summary: dict[str, Any] | None = None
+        for index, step in enumerate(scenario.steps, start=1):
+            upload = upload_client.upload_bom_by_project_coordinates(
+                scenario.project_name,
+                project_version,
+                manifest_root / step.bom,
+            )
+            upload_client.wait_for_bom_processing(
+                upload.token,
+                timeout=processing_timeout,
+                poll_interval=poll_interval,
+            )
+            lookup = read_client.observe_project_lookup(
+                scenario.project_name, project_version
+            )
+            if not isinstance(lookup.payload, dict) or not lookup.payload.get("uuid"):
+                raise LabManifestError(
+                    f"scenario {scenario.id!r} Project lookup returned no UUID"
+                )
+            project_uuid = str(lookup.payload["uuid"])
+            step_directory = run_directory / scenario.id / f"{index:02d}-{step.id}"
+            step_directory.mkdir(parents=True, exist_ok=False)
+            _write_json(
+                step_directory / "project-lookup.json", _observation_dict(lookup)
+            )
+            captured: dict[Observation, DependencyTrackObservation] = {}
+            for observation in step.observations:
+                result = _capture_observation(read_client, observation, project_uuid)
+                captured[observation] = result
+                _write_json(
+                    step_directory / f"{observation.value}.json",
+                    _observation_dict(result),
+                )
+            summary = _step_summary(captured)
+            _write_json(step_directory / "summary.json", summary)
+            delta = _step_delta(previous_summary, summary)
+            if delta is not None:
+                _write_json(step_directory / "delta.json", delta)
+            previous_summary = summary
+            results.append(
+                LabStepResult(
+                    scenario_id=scenario.id,
+                    step_id=step.id,
+                    project_uuid=project_uuid,
+                    snapshot_directory=str(step_directory),
+                    observation_count=len(captured) + 1,
+                )
+            )
+    _write_json(
+        run_directory / "run.json",
+        {
+            **run_metadata,
+            "status": "completed",
+            "completed_at": datetime.now(UTC).isoformat(),
+            "step_count": len(results),
+        },
+    )
+    return LabRunResult(
+        run_id=run_id,
+        output_directory=str(run_directory),
+        steps=tuple(results),
+    )

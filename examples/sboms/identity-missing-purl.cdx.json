@@ -1,0 +1,67 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:24a40287-7a44-4319-9525-19480077284c",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-08-27T00:00:00Z",
+    "tools": [
+      {
+        "vendor": "sbom-ops",
+        "name": "dt-lab",
+        "version": "1"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:generic/dt-lab-identity-fallback@1.0.0",
+      "name": "dt-lab-identity-fallback",
+      "version": "1.0.0",
+      "purl": "pkg:generic/dt-lab-identity-fallback@1.0.0"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "openssl-3.0.0-cpe-only",
+      "name": "openssl",
+      "version": "3.0.0",
+      "cpe": "cpe:2.3:a:openssl:openssl:3.0.0:*:*:*:*:*:*:*",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8f3c7fa01189df6f38c6f8f8d4b104f79a7c37b67a2f2a2d4c93f60fc68f6766"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "legacy-lib-1.0.0-hash-only",
+      "name": "legacy-lib",
+      "version": "1.0.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "44a052d739d55e1b491bfc5969c29d4c5d4364b90a47d07f0969036341eafab7"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:generic/dt-lab-identity-fallback@1.0.0",
+      "dependsOn": [
+        "openssl-3.0.0-cpe-only",
+        "legacy-lib-1.0.0-hash-only"
+      ]
+    },
+    {
+      "ref": "openssl-3.0.0-cpe-only",
+      "dependsOn": []
+    },
+    {
+      "ref": "legacy-lib-1.0.0-hash-only",
+      "dependsOn": []
+    }
+  ]
+}

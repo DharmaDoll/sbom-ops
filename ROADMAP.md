@@ -24,7 +24,8 @@ The repository has a working MVP with:
 - YAML configuration and Dependency-Track Project to GitHub repository routing
 - retry, timeout, pagination, contract fixtures, and failure-path tests
 - a hardened repository-local GitHub Actions sync example
-- a versioned DT lab scenario manifest and OpenAPI contract inventory tool
+- a versioned DT lab scenario manifest, OpenAPI contract inventory, and isolated
+  scenario runner with raw observations and Component delta reports
 - a proposed GCP runtime ADR and static Terraform evaluation harness
 
 ## Phase 0: Production Validation (P0)

@@ -1,0 +1,56 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:1c16d974-069f-4cff-b8c4-e5ec293adf92",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-08-27T00:00:00Z",
+    "tools": [
+      {
+        "vendor": "sbom-ops",
+        "name": "dt-lab",
+        "version": "1"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:generic/dt-lab-identity-purl@1.0.0",
+      "name": "dt-lab-identity-purl",
+      "version": "1.0.0",
+      "purl": "pkg:generic/dt-lab-identity-purl@1.0.0"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/shared-utils@1.0.0",
+      "name": "shared-utils",
+      "version": "1.0.0",
+      "purl": "pkg:npm/shared-utils@1.0.0"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/shared-utils@1.0.0",
+      "name": "shared-utils",
+      "version": "1.0.0",
+      "purl": "pkg:pypi/shared-utils@1.0.0"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:generic/dt-lab-identity-purl@1.0.0",
+      "dependsOn": [
+        "pkg:npm/shared-utils@1.0.0",
+        "pkg:pypi/shared-utils@1.0.0"
+      ]
+    },
+    {
+      "ref": "pkg:npm/shared-utils@1.0.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/shared-utils@1.0.0",
+      "dependsOn": []
+    }
+  ]
+}

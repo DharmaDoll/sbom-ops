@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -12,6 +13,14 @@ class HttpApiError(RuntimeError):
     def __init__(self, message: str, *, status: int | None = None) -> None:
         super().__init__(message)
         self.status = status
+
+
+@dataclass(frozen=True)
+class HttpJsonResponse:
+    payload: Any
+    status: int
+    headers: dict[str, str]
+    duration_seconds: float
 
 
 def request_json(
@@ -24,17 +33,32 @@ def request_json(
     opener: Any = urlopen,
     allow_not_modified: bool = False,
     return_headers: bool = False,
+    return_response: bool = False,
 ) -> Any:
     """Fetch JSON with bounded retries for transient failures only."""
+    if return_headers and return_response:
+        raise ValueError("return_headers and return_response are mutually exclusive")
     retryable_statuses = {408, 429, 500, 502, 503, 504}
     attempts = max(0, max_retries) + 1
+    started = time.monotonic()
     for attempt in range(attempts):
         try:
             with opener(request, timeout=timeout) as response:
                 payload = json.loads(response.read().decode("utf-8"))
+                response_headers = dict(getattr(response, "headers", {}).items())
+                if return_response:
+                    status = getattr(response, "status", None)
+                    if status is None:
+                        getcode = getattr(response, "getcode", None)
+                        status = getcode() if callable(getcode) else 200
+                    return HttpJsonResponse(
+                        payload=payload,
+                        status=int(status),
+                        headers=response_headers,
+                        duration_seconds=time.monotonic() - started,
+                    )
                 if return_headers:
-                    response_headers = getattr(response, "headers", {})
-                    return payload, dict(response_headers.items())
+                    return payload, response_headers
                 return payload
         except HTTPError as exc:
             if allow_not_modified and exc.code == 304:

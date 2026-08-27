@@ -5,13 +5,21 @@ import json
 from sbom_ops.clients import github as github_module
 from sbom_ops.clients import kev as kev_module
 from sbom_ops.clients.github import GitHubIssuesClient
-from sbom_ops.clients.http import HttpApiError
+from sbom_ops.clients.http import HttpApiError, HttpJsonResponse, request_json
 from sbom_ops.clients.kev import KevClient
 
 
 class FakeResponse:
-    def __init__(self, payload: object) -> None:
+    def __init__(
+        self,
+        payload: object,
+        *,
+        status: int = 200,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self._payload = json.dumps(payload).encode()
+        self.status = status
+        self.headers = headers or {}
 
     def __enter__(self) -> FakeResponse:
         return self
@@ -21,6 +29,28 @@ class FakeResponse:
 
     def read(self) -> bytes:
         return self._payload
+
+
+def test_http_json_response_includes_status_headers_and_duration() -> None:
+    response = request_json(
+        request=kev_module.Request("https://example.test/data"),
+        timeout=1,
+        max_retries=0,
+        backoff_seconds=0,
+        error_message="failed",
+        opener=lambda request, timeout: FakeResponse(
+            {"ok": True},
+            status=201,
+            headers={"X-Test": "value"},
+        ),
+        return_response=True,
+    )
+
+    assert isinstance(response, HttpJsonResponse)
+    assert response.payload == {"ok": True}
+    assert response.status == 201
+    assert response.headers == {"X-Test": "value"}
+    assert response.duration_seconds >= 0
 
 
 def test_kev_client_reads_cve_ids(monkeypatch) -> None:
