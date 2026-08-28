@@ -65,6 +65,19 @@ The findings API requires the `VIEW_VULNERABILITY` permission. Endpoint details
 must be validated against the target instance's OpenAPI document before
 production deployment.
 
+The behavior lab also reads the following v4.14 portfolio surfaces with a
+`VIEW_PORTFOLIO` key:
+
+- `GET /api/v1/component/project/{uuid}` for all Components
+- `GET /api/v1/component/project/{uuid}?onlyDirect=true` for direct Components
+- `GET /api/v1/service/project/{uuid}` for CycloneDX Services
+- `GET /api/v1/dependencyGraph/project/{uuid}/directDependencies` for the
+  dependency graph
+
+These methods only preserve raw observations and stable counts. Interpreting a
+Component as reachable, affected, or safe belongs in reviewed domain workflow,
+not in the API client.
+
 The v4.14 OpenAPI document exposes `offset`/`limit` pagination for project
 listing. Finding and project-vulnerability endpoints return their documented
 collections without pagination parameters in that version, so the client only
@@ -97,6 +110,11 @@ The scenario source of truth is
 scenario has a purpose, isolated Project identity, implementation status, ordered
 BOM steps, and the API areas that must be observed. Planned scenarios may omit
 steps; implemented scenarios must reference existing BOM files.
+
+The manifest validator checks repository-level invariants, including unique
+CycloneDX references and valid dependency references. New or changed valid SBOM
+samples must also pass the official CycloneDX schema for their declared version;
+this corpus currently targets CycloneDX 1.5.
 
 Validate the corpus without contacting Dependency-Track:
 
@@ -161,11 +179,19 @@ sbom-ops-dt-lab run-scenarios \
   --scenario lifecycle-add-remove-components
 ```
 
-Every run adds a unique suffix to the declared Project version. This prevents a
-prior Analysis or suppression decision from contaminating a structural test and
-avoids deleting existing Projects. The generated run directory contains the raw
-observation envelopes, a stable-field summary, and a Component delta for each
-step after the first.
+Every run adds a unique suffix to the declared Project version. A step may
+override the scenario's declared version so the same scenario can compare
+separate releases of one named Project. This prevents prior Analysis or
+suppression decisions from contaminating a structural test and avoids deleting
+existing Projects. The generated run directory contains the raw observation
+envelopes, a stable-field summary, and a Component delta for each step after the
+first. Summaries distinguish all Components, direct Components, and Services;
+raw dependency-graph responses remain available for contract discovery.
+
+A failed run rewrites `run.json` with `status=failed`, the failure timestamp,
+the number of completed steps, and a sanitized exception type and message. A
+consumer must not treat an old `status=running` file as a successful or complete
+observation.
 
 For each implemented SBOM scenario, the runner follows this observation loop:
 
@@ -181,3 +207,31 @@ For each implemented SBOM scenario, the runner follows this observation loop:
 The lab does not write Analysis, VEX, suppression, policy, or administrative
 state until a scenario explicitly requires the operation and uses a disposable
 lab key with the documented permission.
+
+### Observed v4.14.3 behavior
+
+The following results were reproduced against the repository's local v4.14.3
+container on 2026-08-27. They are behavior observations, not substitutes for the
+OpenAPI contract, and must be rechecked during an upgrade:
+
+- CycloneDX Project export returns `406` for a generic `Accept: application/json`.
+  `Accept: application/vnd.cyclonedx+json` is required for the JSON export used
+  by the lab.
+- A retained Component with the same PURL receives a different Component UUID
+  in different Project versions. Cross-Project remediation identity therefore
+  cannot rely on Component UUID alone.
+- `onlyDirect=true` returned only the two root dependencies from a four-Component
+  graph. The unfiltered Component endpoint returned all four.
+- Component-to-Service edges appeared in Component `directDependencies` and the
+  dependency-graph response. The Project CycloneDX re-export preserved Service
+  objects but omitted those Service edges from `dependencies`.
+- With the current datasource configuration, PURL-only samples produced no NVD
+  Findings. Adding matching CPEs to the same Components produced NVD Findings,
+  demonstrating that match results depend on both datasource and supplied
+  identity types.
+- NVD Findings included EPSS score and percentile plus CVSS fields. GitHub and
+  OSV records were not present in this local instance, so alias and cross-source
+  behavior remains intentionally unasserted until those datasources are ready.
+
+Live Finding counts and scores are volatile. Tests assert the projection shape,
+not the values observed in one run.

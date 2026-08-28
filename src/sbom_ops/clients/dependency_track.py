@@ -168,12 +168,16 @@ class DependencyTrackClient:
             ) from exc
 
     def _observe_json(
-        self, path: str, params: dict[str, str] | None = None
+        self,
+        path: str,
+        params: dict[str, str] | None = None,
+        *,
+        accept: str = "application/json",
     ) -> DependencyTrackObservation:
         query = f"?{urlencode(params)}" if params else ""
         request = Request(
             f"{self._base_url}{path}{query}",
-            headers={"Accept": "application/json", "X-Api-Key": self._api_key},
+            headers={"Accept": accept, "X-Api-Key": self._api_key},
         )
         try:
             response = request_json(
@@ -305,6 +309,16 @@ class DependencyTrackClient:
     ) -> DependencyTrackObservation:
         return self._observe_json(f"/api/v1/component/project/{project_uuid}")
 
+    def observe_project_direct_components(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation:
+        return self._observe_json(
+            f"/api/v1/component/project/{project_uuid}", {"onlyDirect": "true"}
+        )
+
+    def observe_project_services(self, project_uuid: str) -> DependencyTrackObservation:
+        return self._observe_json(f"/api/v1/service/project/{project_uuid}")
+
     def observe_project_dependency_graph(
         self, project_uuid: str
     ) -> DependencyTrackObservation:
@@ -334,6 +348,7 @@ class DependencyTrackClient:
                 "download": "false",
                 "version": "1.5",
             },
+            accept="application/vnd.cyclonedx+json",
         )
 
     def wait_for_bom_processing(

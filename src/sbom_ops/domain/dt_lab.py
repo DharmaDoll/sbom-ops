@@ -25,6 +25,7 @@ class ScenarioStatus(StrEnum):
 class Observation(StrEnum):
     PROJECT = "project"
     COMPONENTS = "components"
+    DIRECT_COMPONENTS = "direct-components"
     SERVICES = "services"
     DEPENDENCY_GRAPH = "dependency-graph"
     FINDINGS = "findings"
@@ -62,6 +63,7 @@ class ScenarioStep:
     id: str
     bom: str
     observations: tuple[Observation, ...]
+    project_version: str | None = None
 
     def __post_init__(self) -> None:
         _require_slug(self.id, "scenario step id")
@@ -70,6 +72,10 @@ class ScenarioStep:
         if not self.observations:
             raise LabManifestError(
                 f"scenario step {self.id!r} requires at least one observation"
+            )
+        if self.project_version is not None and not self.project_version.strip():
+            raise LabManifestError(
+                f"scenario step {self.id!r} project_version must not be empty"
             )
 
 

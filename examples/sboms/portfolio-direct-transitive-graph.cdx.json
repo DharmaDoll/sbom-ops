@@ -1,0 +1,114 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:5d58b9bd-a694-47ba-869c-f290b8ef9aed",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-08-27T04:00:00Z",
+    "tools": [
+      {
+        "vendor": "sbom-ops",
+        "name": "dt-lab",
+        "version": "1"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:generic/dt-lab-dependency-graph@1.0.0",
+      "name": "dt-lab-dependency-graph",
+      "version": "1.0.0",
+      "purl": "pkg:generic/dt-lab-dependency-graph@1.0.0"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/web-adapter@1.0.0",
+      "name": "web-adapter",
+      "version": "1.0.0",
+      "purl": "pkg:npm/web-adapter@1.0.0"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/worker-adapter@1.0.0",
+      "name": "worker-adapter",
+      "version": "1.0.0",
+      "purl": "pkg:npm/worker-adapter@1.0.0"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/common-utils@1.0.0",
+      "name": "common-utils",
+      "version": "1.0.0",
+      "purl": "pkg:npm/common-utils@1.0.0"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/lodash@4.17.20",
+      "name": "lodash",
+      "version": "4.17.20",
+      "purl": "pkg:npm/lodash@4.17.20"
+    }
+  ],
+  "services": [
+    {
+      "bom-ref": "urn:service:payments-api:1.0.0",
+      "group": "dt-lab",
+      "name": "payments-api",
+      "version": "1.0.0",
+      "description": "Authenticated external payment service used by the web adapter.",
+      "endpoints": ["https://payments.invalid/v1"],
+      "authenticated": true,
+      "x-trust-boundary": true
+    },
+    {
+      "bom-ref": "urn:service:jobs-queue:1.0.0",
+      "group": "dt-lab",
+      "name": "jobs-queue",
+      "version": "1.0.0",
+      "description": "Internal queue used by the worker adapter.",
+      "endpoints": ["amqp://queue.invalid/jobs"],
+      "authenticated": true,
+      "x-trust-boundary": false
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:generic/dt-lab-dependency-graph@1.0.0",
+      "dependsOn": [
+        "pkg:npm/web-adapter@1.0.0",
+        "pkg:npm/worker-adapter@1.0.0"
+      ]
+    },
+    {
+      "ref": "pkg:npm/web-adapter@1.0.0",
+      "dependsOn": [
+        "pkg:npm/common-utils@1.0.0",
+        "urn:service:payments-api:1.0.0"
+      ]
+    },
+    {
+      "ref": "pkg:npm/worker-adapter@1.0.0",
+      "dependsOn": [
+        "pkg:npm/common-utils@1.0.0",
+        "urn:service:jobs-queue:1.0.0"
+      ]
+    },
+    {
+      "ref": "pkg:npm/common-utils@1.0.0",
+      "dependsOn": ["pkg:npm/lodash@4.17.20"]
+    },
+    {
+      "ref": "pkg:npm/lodash@4.17.20",
+      "dependsOn": []
+    },
+    {
+      "ref": "urn:service:payments-api:1.0.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "urn:service:jobs-queue:1.0.0",
+      "dependsOn": []
+    }
+  ]
+}

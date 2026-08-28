@@ -36,8 +36,11 @@ def test_repository_lab_manifest_is_valid() -> None:
         "identity-missing-purl",
         "identity-duplicate-dependency-paths",
         "lifecycle-add-remove-components",
+        "lifecycle-project-versions",
+        "portfolio-direct-transitive-graph",
+        "triage-multiple-sources-aliases",
     ]
-    assert sum(len(scenario.steps) for scenario in implemented) == 7
+    assert sum(len(scenario.steps) for scenario in implemented) == 11
 
 
 def test_lab_manifest_rejects_missing_implemented_bom(tmp_path: Path) -> None:
@@ -173,7 +176,7 @@ def test_lab_cli_validates_repository_manifest(
     )
 
     assert main() == 0
-    assert "scenarios=16 implemented=5 planned=11 steps=7" in capsys.readouterr().out
+    assert "scenarios=16 implemented=8 planned=8 steps=11" in capsys.readouterr().out
 
 
 def test_lab_cli_writes_openapi_inventory(
@@ -226,11 +229,13 @@ def test_lab_cli_writes_openapi_inventory(
 class FakeLabClient:
     def __init__(self) -> None:
         self.last_bom = ""
+        self.project_versions: list[str] = []
 
     def upload_bom_by_project_coordinates(
         self, project_name: str, project_version: str, bom_path: str | Path
     ) -> BomUpload:
         self.last_bom = Path(bom_path).name
+        self.project_versions.append(project_version)
         return BomUpload(token=f"token-{self.last_bom}")
 
     def wait_for_bom_processing(
@@ -293,6 +298,20 @@ class FakeLabClient:
             f"/api/v1/component/project/{project_uuid}", [retained, changed]
         )
 
+    def observe_project_direct_components(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation:
+        return self._observation(
+            f"/api/v1/component/project/{project_uuid}",
+            [{"uuid": "direct-1", "name": "direct"}],
+        )
+
+    def observe_project_services(self, project_uuid: str) -> DependencyTrackObservation:
+        return self._observation(
+            f"/api/v1/service/project/{project_uuid}",
+            [{"uuid": "service-1", "name": "service"}],
+        )
+
     def observe_project_dependency_graph(
         self, project_uuid: str
     ) -> DependencyTrackObservation:
@@ -301,12 +320,55 @@ class FakeLabClient:
         )
 
     def observe_project_findings(self, project_uuid: str) -> DependencyTrackObservation:
-        return self._observation(f"/api/v1/finding/project/{project_uuid}", [])
+        findings = []
+        if self.last_bom == "triage-multiple-sources-aliases.cdx.json":
+            findings = [
+                {
+                    "uuid": "finding-1",
+                    "component": {
+                        "uuid": "component-1",
+                        "name": "lodash",
+                        "version": "4.17.20",
+                        "purl": "pkg:npm/lodash@4.17.20",
+                    },
+                    "vulnerability": {
+                        "uuid": "vulnerability-1",
+                        "vulnId": "GHSA-35jh-r3h4-6jhm",
+                        "source": "GITHUB",
+                        "aliases": [
+                            {
+                                "uuid": "alias-1",
+                                "cveId": "CVE-2021-23337",
+                                "ghsaId": "GHSA-35jh-r3h4-6jhm",
+                            }
+                        ],
+                        "severity": "HIGH",
+                        "epssScore": 0.42,
+                        "epssPercentile": 0.91,
+                        "cvssV3BaseScore": 7.2,
+                    },
+                    "analysis": {"state": "NOT_SET", "isSuppressed": False},
+                }
+            ]
+        return self._observation(f"/api/v1/finding/project/{project_uuid}", findings)
 
     def observe_project_vulnerabilities(
         self, project_uuid: str
     ) -> DependencyTrackObservation:
-        return self._observation(f"/api/v1/vulnerability/project/{project_uuid}", [])
+        vulnerabilities = []
+        if self.last_bom == "triage-multiple-sources-aliases.cdx.json":
+            vulnerabilities = [
+                {
+                    "uuid": "vulnerability-1",
+                    "vulnId": "GHSA-35jh-r3h4-6jhm",
+                    "source": "GITHUB",
+                    "aliases": [{"cveId": "CVE-2021-23337"}],
+                    "epssScore": 0.42,
+                }
+            ]
+        return self._observation(
+            f"/api/v1/vulnerability/project/{project_uuid}", vulnerabilities
+        )
 
     def observe_project_metrics(self, project_uuid: str) -> DependencyTrackObservation:
         return self._observation(f"/api/v1/metrics/project/{project_uuid}/current", {})
@@ -343,3 +405,120 @@ def test_lab_runner_captures_step_delta(tmp_path: Path) -> None:
     assert delta["components_added"] == ["pkg:pypi/requests@2.31.0"]
     assert delta["components_removed"] == ["pkg:npm/lodash@4.17.20"]
     assert delta["retained_uuid_changes"] == []
+
+
+def test_lab_runner_supports_step_project_versions(tmp_path: Path) -> None:
+    manifest_path = REPOSITORY_ROOT / "examples" / "sboms" / "scenarios.yaml"
+    client = FakeLabClient()
+
+    result = run_lab_scenarios(
+        load_lab_manifest(manifest_path),
+        manifest_path=manifest_path,
+        upload_client=client,
+        read_client=client,
+        output_directory=tmp_path,
+        scenario_ids=("lifecycle-project-versions",),
+        poll_interval=0,
+    )
+
+    assert len(result.steps) == 2
+    assert client.project_versions[0].startswith("1.0.0-lab-")
+    assert client.project_versions[1].startswith("2.0.0-lab-")
+
+
+def test_lab_runner_summarizes_direct_components_and_services(
+    tmp_path: Path,
+) -> None:
+    manifest_path = REPOSITORY_ROOT / "examples" / "sboms" / "scenarios.yaml"
+    client = FakeLabClient()
+
+    result = run_lab_scenarios(
+        load_lab_manifest(manifest_path),
+        manifest_path=manifest_path,
+        upload_client=client,
+        read_client=client,
+        output_directory=tmp_path,
+        scenario_ids=("portfolio-direct-transitive-graph",),
+        poll_interval=0,
+    )
+
+    summary = json.loads(
+        (Path(result.steps[0].snapshot_directory) / "summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert summary["direct_component_count"] == 1
+    assert summary["service_count"] == 1
+
+
+def test_lab_runner_summarizes_finding_sources_aliases_and_scores(
+    tmp_path: Path,
+) -> None:
+    manifest_path = REPOSITORY_ROOT / "examples" / "sboms" / "scenarios.yaml"
+    client = FakeLabClient()
+
+    result = run_lab_scenarios(
+        load_lab_manifest(manifest_path),
+        manifest_path=manifest_path,
+        upload_client=client,
+        read_client=client,
+        output_directory=tmp_path,
+        scenario_ids=("triage-multiple-sources-aliases",),
+        poll_interval=0,
+    )
+
+    summary = json.loads(
+        (Path(result.steps[0].snapshot_directory) / "summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert summary["finding_sources"] == {"GITHUB": 1}
+    assert summary["findings"][0] == {
+        "aliases": ["CVE-2021-23337", "GHSA-35jh-r3h4-6jhm"],
+        "analysis_state": "NOT_SET",
+        "analysis_suppressed": False,
+        "component_identity": "pkg:npm/lodash@4.17.20",
+        "component_uuid": "component-1",
+        "cvss_v2_base_score": None,
+        "cvss_v3_base_score": 7.2,
+        "cvss_v4_score": None,
+        "epss_percentile": 0.91,
+        "epss_score": 0.42,
+        "finding_uuid": "finding-1",
+        "severity": "HIGH",
+        "vulnerability_id": "GHSA-35jh-r3h4-6jhm",
+        "vulnerability_source": "GITHUB",
+        "vulnerability_uuid": "vulnerability-1",
+    }
+    assert summary["vulnerabilities"][0]["aliases"] == ["CVE-2021-23337"]
+
+
+def test_lab_runner_records_failed_run_metadata(tmp_path: Path) -> None:
+    manifest_path = REPOSITORY_ROOT / "examples" / "sboms" / "scenarios.yaml"
+    client = FakeLabClient()
+
+    def fail_export(project_uuid: str) -> DependencyTrackObservation:
+        raise RuntimeError("export failed")
+
+    client.observe_project_bom_export = fail_export  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="export failed"):
+        run_lab_scenarios(
+            load_lab_manifest(manifest_path),
+            manifest_path=manifest_path,
+            upload_client=client,
+            read_client=client,
+            output_directory=tmp_path,
+            scenario_ids=("triage-multiple-sources-aliases",),
+            poll_interval=0,
+        )
+
+    run_directories = list(tmp_path.iterdir())
+    assert len(run_directories) == 1
+    metadata = json.loads((run_directories[0] / "run.json").read_text(encoding="utf-8"))
+    assert metadata["status"] == "failed"
+    assert metadata["completed_step_count"] == 0
+    assert metadata["error"] == {
+        "type": "RuntimeError",
+        "message": "export failed",
+    }

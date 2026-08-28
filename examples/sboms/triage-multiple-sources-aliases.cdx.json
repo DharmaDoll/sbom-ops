@@ -1,0 +1,85 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:edf4010d-3c67-47ec-89e6-94a34f961753",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-08-27T09:00:00Z",
+    "tools": [
+      {
+        "vendor": "sbom-ops",
+        "name": "dt-lab",
+        "version": "1"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:generic/dt-lab-triage-aliases@1.0.0",
+      "name": "dt-lab-triage-aliases",
+      "version": "1.0.0",
+      "purl": "pkg:generic/dt-lab-triage-aliases@1.0.0"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1",
+      "group": "org.apache.logging.log4j",
+      "name": "log4j-core",
+      "version": "2.14.1",
+      "purl": "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1",
+      "cpe": "cpe:2.3:a:apache:log4j:2.14.1:*:*:*:*:*:*:*"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/lodash@4.17.20",
+      "name": "lodash",
+      "version": "4.17.20",
+      "purl": "pkg:npm/lodash@4.17.20",
+      "cpe": "cpe:2.3:a:lodash:lodash:4.17.20:*:*:*:*:*:*:*"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/jquery@3.4.1",
+      "name": "jquery",
+      "version": "3.4.1",
+      "purl": "pkg:npm/jquery@3.4.1",
+      "cpe": "cpe:2.3:a:jquery:jquery:3.4.1:*:*:*:*:*:*:*"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/django@2.2.0",
+      "name": "django",
+      "version": "2.2.0",
+      "purl": "pkg:pypi/django@2.2.0",
+      "cpe": "cpe:2.3:a:djangoproject:django:2.2.0:*:*:*:*:*:*:*"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:generic/dt-lab-triage-aliases@1.0.0",
+      "dependsOn": [
+        "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1",
+        "pkg:npm/lodash@4.17.20",
+        "pkg:npm/jquery@3.4.1",
+        "pkg:pypi/django@2.2.0"
+      ]
+    },
+    {
+      "ref": "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/lodash@4.17.20",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/jquery@3.4.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/django@2.2.0",
+      "dependsOn": []
+    }
+  ]
+}

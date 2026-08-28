@@ -121,12 +121,32 @@ scenarios:
 
   - id: lifecycle-project-versions
     category: lifecycle
-    status: planned
+    status: implemented
     purpose: Compare UUID and Finding behavior across releases of the same named Project.
     project:
       name: dt-lab-lifecycle-versions
       version: 1.0.0
-    steps: []
+    steps:
+      - id: release-1
+        project_version: 1.0.0
+        bom: lifecycle-project-version-1.cdx.json
+        observe:
+          - project
+          - components
+          - findings
+          - vulnerabilities
+          - metrics
+          - bom-export
+      - id: release-2
+        project_version: 2.0.0
+        bom: lifecycle-project-version-2.cdx.json
+        observe:
+          - project
+          - components
+          - findings
+          - vulnerabilities
+          - metrics
+          - bom-export
 
   - id: portfolio-parent-child
     category: portfolio
@@ -148,21 +168,43 @@ scenarios:
 
   - id: portfolio-direct-transitive-graph
     category: portfolio
-    status: planned
+    status: implemented
     purpose: Compare direct and transitive dependency graph representation.
     project:
       name: dt-lab-dependency-graph
       version: 1.0.0
-    steps: []
+    steps:
+      - id: initial
+        bom: portfolio-direct-transitive-graph.cdx.json
+        observe:
+          - project
+          - components
+          - direct-components
+          - services
+          - dependency-graph
+          - findings
+          - vulnerabilities
+          - metrics
+          - bom-export
 
   - id: triage-multiple-sources-aliases
     category: triage
-    status: planned
+    status: implemented
     purpose: Compare CVE, GHSA, OSV, aliases, and vulnerability source identity.
     project:
       name: dt-lab-triage-aliases
       version: 1.0.0
-    steps: []
+    steps:
+      - id: initial
+        bom: triage-multiple-sources-aliases.cdx.json
+        observe:
+          - project
+          - components
+          - dependency-graph
+          - findings
+          - vulnerabilities
+          - metrics
+          - bom-export
 
   - id: triage-analysis-states
     category: triage

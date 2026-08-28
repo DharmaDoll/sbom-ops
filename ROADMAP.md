@@ -26,6 +26,9 @@ The repository has a working MVP with:
 - a hardened repository-local GitHub Actions sync example
 - a versioned DT lab scenario manifest, OpenAPI contract inventory, and isolated
   scenario runner with raw observations and Component delta reports
+- DT lab coverage for Component identity, add/remove lifecycle, Project version
+  boundaries, direct/transitive dependency graphs, CycloneDX Services, and
+  source/alias/EPSS Finding projections
 - a proposed GCP runtime ADR and static Terraform evaluation harness
 
 ## Phase 0: Production Validation (P0)

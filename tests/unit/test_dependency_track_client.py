@@ -9,6 +9,7 @@ from sbom_ops.clients import dependency_track as dependency_track_module
 from sbom_ops.clients.dependency_track import (
     DependencyTrackApiError,
     DependencyTrackClient,
+    DependencyTrackObservation,
 )
 from sbom_ops.clients.http import HttpJsonResponse
 
@@ -121,6 +122,60 @@ def test_dependency_track_observation_records_safe_metadata(monkeypatch) -> None
         "X-Total-Count": "1",
     }
     assert observation.duration_seconds == 0.25
+
+
+def test_dependency_track_observes_direct_components_and_services() -> None:
+    client = DependencyTrackClient("https://dtrack.example", "api-key")
+    requests: list[tuple[str, dict[str, str] | None]] = []
+
+    def fake_observe(path, params=None):
+        requests.append((path, params))
+        return DependencyTrackObservation(
+            method="GET",
+            path=path,
+            query=tuple(sorted((params or {}).items())),
+            status=200,
+            headers=(),
+            duration_seconds=0.01,
+            payload={},
+        )
+
+    client._observe_json = fake_observe  # type: ignore[method-assign]
+
+    client.observe_project_direct_components("project-1")
+    client.observe_project_services("project-1")
+
+    assert requests == [
+        (
+            "/api/v1/component/project/project-1",
+            {"onlyDirect": "true"},
+        ),
+        ("/api/v1/service/project/project-1", None),
+    ]
+
+
+def test_dependency_track_bom_export_requests_cyclonedx_json(monkeypatch) -> None:
+    captured = {}
+
+    def fake_request_json(request, **kwargs):
+        captured["request"] = request
+        return HttpJsonResponse(
+            payload={"bomFormat": "CycloneDX"},
+            status=200,
+            headers={"Content-Type": "application/vnd.cyclonedx+json"},
+            duration_seconds=0.01,
+        )
+
+    monkeypatch.setattr(dependency_track_module, "request_json", fake_request_json)
+
+    observation = DependencyTrackClient(
+        "https://dtrack.example", "api-key"
+    ).observe_project_bom_export("project-1")
+
+    assert captured["request"].get_header("Accept") == (
+        "application/vnd.cyclonedx+json"
+    )
+    assert observation.payload == {"bomFormat": "CycloneDX"}
 
 
 def test_wait_for_bom_processing_polls_until_complete(monkeypatch) -> None:

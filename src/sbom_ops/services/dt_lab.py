@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -85,7 +86,11 @@ def _required_string(payload: dict[str, Any], key: str, field_name: str) -> str:
 
 def _load_step(payload: Any, scenario_id: str) -> ScenarioStep:
     step = _mapping(payload, f"scenario {scenario_id} step")
-    _reject_unknown(step, {"id", "bom", "observe"}, f"scenario {scenario_id} step")
+    _reject_unknown(
+        step,
+        {"id", "bom", "observe", "project_version"},
+        f"scenario {scenario_id} step",
+    )
     observations = tuple(
         Observation(str(item))
         for item in _list(step.get("observe"), f"scenario {scenario_id} observe")
@@ -94,6 +99,11 @@ def _load_step(payload: Any, scenario_id: str) -> ScenarioStep:
         id=_required_string(step, "id", f"scenario {scenario_id} step"),
         bom=_required_string(step, "bom", f"scenario {scenario_id} step"),
         observations=observations,
+        project_version=(
+            _required_string(step, "project_version", f"scenario {scenario_id} step")
+            if step.get("project_version") is not None
+            else None
+        ),
     )
 
 
@@ -184,10 +194,26 @@ def _validate_json_bom(
             f"scenario {scenario_id!r} step {step_id!r} requires bom-ref on every "
             "component"
         )
-    known_refs = set(component_refs)
+    services = payload.get("services", [])
+    if not isinstance(services, list):
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} services must be a list"
+        )
+    service_refs = [
+        service.get("bom-ref")
+        for service in services
+        if isinstance(service, dict) and service.get("bom-ref")
+    ]
+    if len(service_refs) != len(services):
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} requires bom-ref on every "
+            "service"
+        )
+    known_refs = set(component_refs) | set(service_refs)
     if root_ref:
         known_refs.add(str(root_ref))
-    if len(component_refs) != len(set(component_refs)):
+    all_inventory_refs = component_refs + service_refs
+    if len(all_inventory_refs) != len(set(all_inventory_refs)):
         raise LabManifestError(
             f"scenario {scenario_id!r} step {step_id!r} has duplicate bom-ref values"
         )
@@ -462,6 +488,14 @@ class DependencyTrackLabApi(Protocol):
         self, project_uuid: str
     ) -> DependencyTrackObservation: ...
 
+    def observe_project_direct_components(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation: ...
+
+    def observe_project_services(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation: ...
+
     def observe_project_dependency_graph(
         self, project_uuid: str
     ) -> DependencyTrackObservation: ...
@@ -525,10 +559,88 @@ def _component_identity(component: Any) -> str:
     )
 
 
+_ALIAS_ID_FIELDS = (
+    "cveId",
+    "ghsaId",
+    "osvId",
+    "sonatypeId",
+    "snykId",
+    "gsdId",
+    "vulnDbId",
+    "internalId",
+)
+
+
+def _vulnerability_aliases(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    aliases: set[str] = set()
+    for alias in value:
+        if isinstance(alias, str) and alias:
+            aliases.add(alias)
+        elif isinstance(alias, dict):
+            aliases.update(
+                str(alias[field]) for field in _ALIAS_ID_FIELDS if alias.get(field)
+            )
+    return sorted(aliases)
+
+
+def _vulnerability_projection(vulnerability: Any) -> dict[str, Any]:
+    if not isinstance(vulnerability, dict):
+        vulnerability = {}
+    return {
+        "uuid": vulnerability.get("uuid"),
+        "id": (
+            vulnerability.get("vulnId")
+            or vulnerability.get("vulnID")
+            or vulnerability.get("id")
+        ),
+        "source": vulnerability.get("source"),
+        "aliases": _vulnerability_aliases(vulnerability.get("aliases")),
+        "severity": vulnerability.get("severity"),
+        "epss_score": vulnerability.get("epssScore"),
+        "epss_percentile": vulnerability.get("epssPercentile"),
+        "cvss_v4_score": vulnerability.get("cvssV4Score"),
+        "cvss_v3_base_score": vulnerability.get("cvssV3BaseScore"),
+        "cvss_v2_base_score": vulnerability.get("cvssV2BaseScore"),
+    }
+
+
+def _finding_projection(finding: Any) -> dict[str, Any]:
+    if not isinstance(finding, dict):
+        finding = {}
+    component = finding.get("component")
+    if not isinstance(component, dict):
+        component = {}
+    analysis = finding.get("analysis")
+    if not isinstance(analysis, dict):
+        analysis = {}
+    vulnerability = _vulnerability_projection(finding.get("vulnerability"))
+    return {
+        "finding_uuid": finding.get("uuid"),
+        "component_uuid": component.get("uuid"),
+        "component_identity": _component_identity(component),
+        "vulnerability_uuid": vulnerability["uuid"],
+        "vulnerability_id": vulnerability["id"],
+        "vulnerability_source": vulnerability["source"],
+        "aliases": vulnerability["aliases"],
+        "severity": vulnerability["severity"],
+        "epss_score": vulnerability["epss_score"],
+        "epss_percentile": vulnerability["epss_percentile"],
+        "cvss_v4_score": vulnerability["cvss_v4_score"],
+        "cvss_v3_base_score": vulnerability["cvss_v3_base_score"],
+        "cvss_v2_base_score": vulnerability["cvss_v2_base_score"],
+        "analysis_state": analysis.get("state"),
+        "analysis_suppressed": analysis.get("isSuppressed"),
+    }
+
+
 def _step_summary(
     observations: dict[Observation, DependencyTrackObservation],
 ) -> dict[str, Any]:
     components = _payload_list(observations.get(Observation.COMPONENTS))
+    direct_components = _payload_list(observations.get(Observation.DIRECT_COMPONENTS))
+    services = _payload_list(observations.get(Observation.SERVICES))
     findings = _payload_list(observations.get(Observation.FINDINGS))
     vulnerabilities = _payload_list(observations.get(Observation.VULNERABILITIES))
     component_projection = [
@@ -550,11 +662,37 @@ def _step_summary(
         for component in components
     ]
     component_projection.sort(key=lambda component: str(component["identity"]))
+    finding_projection = [_finding_projection(finding) for finding in findings]
+    finding_projection.sort(
+        key=lambda finding: (
+            str(finding["component_identity"]),
+            str(finding["vulnerability_source"]),
+            str(finding["vulnerability_id"]),
+        )
+    )
+    vulnerability_projection = [
+        _vulnerability_projection(vulnerability) for vulnerability in vulnerabilities
+    ]
+    vulnerability_projection.sort(
+        key=lambda vulnerability: (
+            str(vulnerability["source"]),
+            str(vulnerability["id"]),
+        )
+    )
+    finding_sources = Counter(
+        str(finding["vulnerability_source"] or "UNKNOWN")
+        for finding in finding_projection
+    )
     return {
         "component_count": len(components),
+        "direct_component_count": len(direct_components),
+        "service_count": len(services),
         "finding_count": len(findings),
         "vulnerability_count": len(vulnerabilities),
         "components": component_projection,
+        "finding_sources": dict(sorted(finding_sources.items())),
+        "findings": finding_projection,
+        "vulnerabilities": vulnerability_projection,
     }
 
 
@@ -598,6 +736,8 @@ def _capture_observation(
     observers: dict[Observation, Callable[[str], DependencyTrackObservation]] = {
         Observation.PROJECT: client.observe_project,
         Observation.COMPONENTS: client.observe_project_components,
+        Observation.DIRECT_COMPONENTS: client.observe_project_direct_components,
+        Observation.SERVICES: client.observe_project_services,
         Observation.DEPENDENCY_GRAPH: client.observe_project_dependency_graph,
         Observation.FINDINGS: client.observe_project_findings,
         Observation.VULNERABILITIES: client.observe_project_vulnerabilities,
@@ -631,41 +771,23 @@ def _selected_scenarios(
     return tuple(available[scenario_id] for scenario_id in scenario_ids)
 
 
-def run_lab_scenarios(
-    manifest: LabManifest,
+def _run_scenario_steps(
     *,
-    manifest_path: str | Path,
+    selected: tuple[LabScenario, ...],
+    manifest_root: Path,
+    run_directory: Path,
+    run_id: str,
     upload_client: DependencyTrackLabApi,
     read_client: DependencyTrackLabApi,
-    output_directory: str | Path,
-    scenario_ids: tuple[str, ...] = (),
-    processing_timeout: float = 120.0,
-    poll_interval: float = 5.0,
-    openapi_contract_sha256: str | None = None,
-) -> LabRunResult:
-    run_id = str(uuid4())
-    run_directory = Path(output_directory) / run_id
-    run_directory.mkdir(parents=True, exist_ok=False)
-    manifest_root = Path(manifest_path).resolve().parent
-    results: list[LabStepResult] = []
-    selected = _selected_scenarios(manifest, scenario_ids)
-    started_at = datetime.now(UTC).isoformat()
-    run_metadata = {
-        "run_id": run_id,
-        "status": "running",
-        "started_at": started_at,
-        "dependency_track_version": manifest.target.dependency_track_version,
-        "openapi_contract_sha256": openapi_contract_sha256,
-        "scenarios": [scenario.id for scenario in selected],
-    }
-    _write_json(
-        run_directory / "run.json",
-        run_metadata,
-    )
+    processing_timeout: float,
+    poll_interval: float,
+    results: list[LabStepResult],
+) -> None:
     for scenario in selected:
-        project_version = f"{scenario.project_version}-lab-{run_id[:8]}"
         previous_summary: dict[str, Any] | None = None
         for index, step in enumerate(scenario.steps, start=1):
+            declared_version = step.project_version or scenario.project_version
+            project_version = f"{declared_version}-lab-{run_id[:8]}"
             upload = upload_client.upload_bom_by_project_coordinates(
                 scenario.project_name,
                 project_version,
@@ -712,6 +834,66 @@ def run_lab_scenarios(
                     observation_count=len(captured) + 1,
                 )
             )
+
+
+def run_lab_scenarios(
+    manifest: LabManifest,
+    *,
+    manifest_path: str | Path,
+    upload_client: DependencyTrackLabApi,
+    read_client: DependencyTrackLabApi,
+    output_directory: str | Path,
+    scenario_ids: tuple[str, ...] = (),
+    processing_timeout: float = 120.0,
+    poll_interval: float = 5.0,
+    openapi_contract_sha256: str | None = None,
+) -> LabRunResult:
+    run_id = str(uuid4())
+    run_directory = Path(output_directory) / run_id
+    run_directory.mkdir(parents=True, exist_ok=False)
+    manifest_root = Path(manifest_path).resolve().parent
+    results: list[LabStepResult] = []
+    selected = _selected_scenarios(manifest, scenario_ids)
+    started_at = datetime.now(UTC).isoformat()
+    run_metadata = {
+        "run_id": run_id,
+        "status": "running",
+        "started_at": started_at,
+        "dependency_track_version": manifest.target.dependency_track_version,
+        "openapi_contract_sha256": openapi_contract_sha256,
+        "scenarios": [scenario.id for scenario in selected],
+    }
+    _write_json(
+        run_directory / "run.json",
+        run_metadata,
+    )
+    try:
+        _run_scenario_steps(
+            selected=selected,
+            manifest_root=manifest_root,
+            run_directory=run_directory,
+            run_id=run_id,
+            upload_client=upload_client,
+            read_client=read_client,
+            processing_timeout=processing_timeout,
+            poll_interval=poll_interval,
+            results=results,
+        )
+    except Exception as exc:
+        _write_json(
+            run_directory / "run.json",
+            {
+                **run_metadata,
+                "status": "failed",
+                "failed_at": datetime.now(UTC).isoformat(),
+                "completed_step_count": len(results),
+                "error": {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                },
+            },
+        )
+        raise
     _write_json(
         run_directory / "run.json",
         {
