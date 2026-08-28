@@ -12,13 +12,12 @@ from uuid import uuid4
 
 import yaml
 
-from sbom_ops.clients.dependency_track import (
+from dt_lab.domain import (
     BomUpload,
     DependencyTrackObservation,
-)
-from sbom_ops.domain.dt_lab import (
     LabManifest,
     LabManifestError,
+    LabProjectRecord,
     LabRunResult,
     LabScenario,
     LabStepResult,
@@ -540,6 +539,38 @@ def _write_json(path: Path, payload: Any) -> None:
     )
 
 
+def _project_record_dict(record: LabProjectRecord) -> dict[str, Any]:
+    return {
+        "scenario_id": record.scenario_id,
+        "step_id": record.step_id,
+        "project_name": record.project_name,
+        "project_version": record.project_version,
+        "project_uuid": record.project_uuid,
+    }
+
+
+def _write_project_ledger(
+    run_directory: Path,
+    run_id: str,
+    records: list[LabProjectRecord],
+) -> None:
+    ledger_path = run_directory / "projects.json"
+    temporary_path = run_directory / "projects.json.tmp"
+    _write_json(
+        temporary_path,
+        {
+            "schema_version": 1,
+            "run_id": run_id,
+            "projects": [_project_record_dict(record) for record in records],
+        },
+    )
+    temporary_path.replace(ledger_path)
+
+
+def _project_count(records: list[LabProjectRecord]) -> int:
+    return len({(record.project_name, record.project_version) for record in records})
+
+
 def _payload_list(observation: DependencyTrackObservation | None) -> list[Any]:
     if observation is None or not isinstance(observation.payload, list):
         return []
@@ -782,12 +813,23 @@ def _run_scenario_steps(
     processing_timeout: float,
     poll_interval: float,
     results: list[LabStepResult],
+    project_records: list[LabProjectRecord],
 ) -> None:
     for scenario in selected:
         previous_summary: dict[str, Any] | None = None
         for index, step in enumerate(scenario.steps, start=1):
             declared_version = step.project_version or scenario.project_version
             project_version = f"{declared_version}-lab-{run_id[:8]}"
+            record_index = len(project_records)
+            project_records.append(
+                LabProjectRecord(
+                    scenario_id=scenario.id,
+                    step_id=step.id,
+                    project_name=scenario.project_name,
+                    project_version=project_version,
+                )
+            )
+            _write_project_ledger(run_directory, run_id, project_records)
             upload = upload_client.upload_bom_by_project_coordinates(
                 scenario.project_name,
                 project_version,
@@ -801,11 +843,24 @@ def _run_scenario_steps(
             lookup = read_client.observe_project_lookup(
                 scenario.project_name, project_version
             )
-            if not isinstance(lookup.payload, dict) or not lookup.payload.get("uuid"):
+            if (
+                not isinstance(lookup.payload, dict)
+                or not lookup.payload.get("uuid")
+                or lookup.payload.get("name") != scenario.project_name
+                or lookup.payload.get("version") != project_version
+            ):
                 raise LabManifestError(
-                    f"scenario {scenario.id!r} Project lookup returned no UUID"
+                    f"scenario {scenario.id!r} Project lookup identity mismatch"
                 )
             project_uuid = str(lookup.payload["uuid"])
+            project_records[record_index] = LabProjectRecord(
+                scenario_id=scenario.id,
+                step_id=step.id,
+                project_name=scenario.project_name,
+                project_version=project_version,
+                project_uuid=project_uuid,
+            )
+            _write_project_ledger(run_directory, run_id, project_records)
             step_directory = run_directory / scenario.id / f"{index:02d}-{step.id}"
             step_directory.mkdir(parents=True, exist_ok=False)
             _write_json(
@@ -853,6 +908,7 @@ def run_lab_scenarios(
     run_directory.mkdir(parents=True, exist_ok=False)
     manifest_root = Path(manifest_path).resolve().parent
     results: list[LabStepResult] = []
+    project_records: list[LabProjectRecord] = []
     selected = _selected_scenarios(manifest, scenario_ids)
     started_at = datetime.now(UTC).isoformat()
     run_metadata = {
@@ -862,11 +918,13 @@ def run_lab_scenarios(
         "dependency_track_version": manifest.target.dependency_track_version,
         "openapi_contract_sha256": openapi_contract_sha256,
         "scenarios": [scenario.id for scenario in selected],
+        "project_ledger": "projects.json",
     }
     _write_json(
         run_directory / "run.json",
         run_metadata,
     )
+    _write_project_ledger(run_directory, run_id, project_records)
     try:
         _run_scenario_steps(
             selected=selected,
@@ -878,6 +936,7 @@ def run_lab_scenarios(
             processing_timeout=processing_timeout,
             poll_interval=poll_interval,
             results=results,
+            project_records=project_records,
         )
     except Exception as exc:
         _write_json(
@@ -887,6 +946,7 @@ def run_lab_scenarios(
                 "status": "failed",
                 "failed_at": datetime.now(UTC).isoformat(),
                 "completed_step_count": len(results),
+                "project_count": _project_count(project_records),
                 "error": {
                     "type": type(exc).__name__,
                     "message": str(exc),
@@ -901,6 +961,7 @@ def run_lab_scenarios(
             "status": "completed",
             "completed_at": datetime.now(UTC).isoformat(),
             "step_count": len(results),
+            "project_count": _project_count(project_records),
         },
     )
     return LabRunResult(

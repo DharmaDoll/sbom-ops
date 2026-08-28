@@ -11,11 +11,11 @@ scenarios:
     status: implemented
     purpose: Observe identity and Finding changes when vulnerable components are updated or replaced.
     project:
-      name: sbom-ops-vulnerable-demo
+      name: dt-lab-vulnerable-demo
       version: 0.1.0
     steps:
       - id: vulnerable
-        bom: vulnerable-demo.cdx.json
+        bom: sboms/lifecycle-vulnerable.cdx.json
         observe:
           - project
           - components
@@ -25,7 +25,7 @@ scenarios:
           - metrics
           - bom-export
       - id: updated
-        bom: vulnerable-demo-updated.cdx.json
+        bom: sboms/lifecycle-updated.cdx.json
         observe:
           - project
           - components
@@ -44,7 +44,7 @@ scenarios:
       version: 1.0.0
     steps:
       - id: initial
-        bom: identity-same-name-different-purl.cdx.json
+        bom: sboms/identity-same-name-different-purl.cdx.json
         observe:
           - project
           - components
@@ -62,7 +62,7 @@ scenarios:
       version: 1.0.0
     steps:
       - id: initial
-        bom: identity-missing-purl.cdx.json
+        bom: sboms/identity-missing-purl.cdx.json
         observe:
           - project
           - components
@@ -80,7 +80,7 @@ scenarios:
       version: 1.0.0
     steps:
       - id: initial
-        bom: identity-duplicate-dependency-paths.cdx.json
+        bom: sboms/identity-duplicate-dependency-paths.cdx.json
         observe:
           - project
           - components
@@ -99,7 +99,7 @@ scenarios:
       version: 1.0.0
     steps:
       - id: initial
-        bom: lifecycle-add-remove-initial.cdx.json
+        bom: sboms/lifecycle-add-remove-initial.cdx.json
         observe:
           - project
           - components
@@ -109,7 +109,7 @@ scenarios:
           - metrics
           - bom-export
       - id: updated
-        bom: lifecycle-add-remove-updated.cdx.json
+        bom: sboms/lifecycle-add-remove-updated.cdx.json
         observe:
           - project
           - components
@@ -129,7 +129,7 @@ scenarios:
     steps:
       - id: release-1
         project_version: 1.0.0
-        bom: lifecycle-project-version-1.cdx.json
+        bom: sboms/lifecycle-project-version-1.cdx.json
         observe:
           - project
           - components
@@ -139,7 +139,7 @@ scenarios:
           - bom-export
       - id: release-2
         project_version: 2.0.0
-        bom: lifecycle-project-version-2.cdx.json
+        bom: sboms/lifecycle-project-version-2.cdx.json
         observe:
           - project
           - components
@@ -175,7 +175,7 @@ scenarios:
       version: 1.0.0
     steps:
       - id: initial
-        bom: portfolio-direct-transitive-graph.cdx.json
+        bom: sboms/portfolio-direct-transitive-graph.cdx.json
         observe:
           - project
           - components
@@ -196,7 +196,7 @@ scenarios:
       version: 1.0.0
     steps:
       - id: initial
-        bom: triage-multiple-sources-aliases.cdx.json
+        bom: sboms/triage-multiple-sources-aliases.cdx.json
         observe:
           - project
           - components

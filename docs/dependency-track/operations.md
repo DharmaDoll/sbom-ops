@@ -40,6 +40,15 @@ Platform team owns:
 - upgrade
 - availability
 
+## Local Lab Cleanup
+
+DT lab cleanup is a development operation, not part of the production daily
+flow. It is scoped to one recorded run, previews locally by default, and needs a
+separate `VIEW_PORTFOLIO` plus `PORTFOLIO_MANAGEMENT` key for explicit deletion.
+Use `make dt-lab-cleanup RUN_ID=<uuid>` before adding `EXECUTE=1`. Failed runs
+remain intact unless a human deliberately cleans them. See the
+[behavior lab runbook](../../lab/dependency_track/README.md#cleaning-a-run).
+
 ## Minimum Production Checklist
 
 - Dependency-Track deployed with persistent database

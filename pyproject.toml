@@ -25,7 +25,6 @@ dev = [
 
 [project.scripts]
 sbom-ops = "sbom_ops.cli:main"
-sbom-ops-dt-lab = "sbom_ops.dt_lab_cli:main"
 
 [tool.black]
 line-length = 88

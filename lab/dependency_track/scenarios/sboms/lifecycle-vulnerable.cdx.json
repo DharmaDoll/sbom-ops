@@ -1,0 +1,81 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:0f7d0b8f-42ff-4386-9ed1-b9f9c50c0f2a",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-07-15T00:00:00Z",
+    "tools": [
+      {
+        "vendor": "sbom-ops",
+        "name": "manual-demo-sbom",
+        "version": "0.1.0"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:generic/sbom-ops-vulnerable-demo@0.1.0",
+      "name": "sbom-ops-vulnerable-demo",
+      "version": "0.1.0"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1",
+      "group": "org.apache.logging.log4j",
+      "name": "log4j-core",
+      "version": "2.14.1",
+      "purl": "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.9.9",
+      "group": "com.fasterxml.jackson.core",
+      "name": "jackson-databind",
+      "version": "2.9.9",
+      "purl": "pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.9.9"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/jquery@3.4.1",
+      "name": "jquery",
+      "version": "3.4.1",
+      "purl": "pkg:npm/jquery@3.4.1"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/django@2.2.0",
+      "name": "django",
+      "version": "2.2.0",
+      "purl": "pkg:pypi/django@2.2.0"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:generic/sbom-ops-vulnerable-demo@0.1.0",
+      "dependsOn": [
+        "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1",
+        "pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.9.9",
+        "pkg:npm/jquery@3.4.1",
+        "pkg:pypi/django@2.2.0"
+      ]
+    },
+    {
+      "ref": "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.9.9",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/jquery@3.4.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/django@2.2.0",
+      "dependsOn": []
+    }
+  ]
+}

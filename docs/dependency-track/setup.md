@@ -148,7 +148,21 @@ Required permissions:
 - `VIEW_PORTFOLIO`
 - `VIEW_VULNERABILITY`
 
-### 3. Future analysis-write key
+### 3. Optional DT lab cleanup key
+
+Purpose:
+
+- verify and delete only Projects recorded by one DT lab run
+
+Required permissions:
+
+- `VIEW_PORTFOLIO`
+- `PORTFOLIO_MANAGEMENT`
+
+This key is not required by the product runtime. Do not reuse the upload or
+orchestrator read key for cleanup.
+
+### 4. Future analysis-write key
 
 Not required for MVP.
 
@@ -164,8 +178,10 @@ From the UI:
 2. Assign only the permissions needed for upload
 3. Create a second team for the orchestrator
 4. Assign only read permissions for MVP
-5. Generate an API key for each team
-6. Save each key immediately
+5. If DT lab cleanup is needed, create a third local-only team with
+   `VIEW_PORTFOLIO` and `PORTFOLIO_MANAGEMENT`
+6. Generate an API key for each team
+7. Save each key immediately
 
 Dependency-Track stores API keys in hashed form and only shows the key at creation time.
 
@@ -314,6 +330,8 @@ Suggested local values:
 export SBOM_OPS_DT_BASE_URL=http://localhost:8080
 export SBOM_OPS_DT_API_KEY=replace-with-orchestrator-read-key
 export SBOM_OPS_SBOM_UPLOAD_API_KEY=replace-with-upload-key
+# Optional and repository-lab-only:
+export SBOM_OPS_DT_CLEANUP_API_KEY=replace-with-cleanup-key
 export SBOM_OPS_DT_PROJECT_UUID=replace-with-project-uuid
 export SBOM_OPS_DT_PAGE_SIZE=100
 export SBOM_OPS_DT_MAX_RETRIES=3
@@ -322,7 +340,7 @@ export SBOM_OPS_DT_ANALYSIS_POLL_INTERVAL_SECONDS=5
 export SBOM_OPS_WAIT_FOR_ANALYSIS=false
 ```
 
-The upload key should be kept separate from the orchestrator key.
+The upload, orchestrator, and optional lab cleanup keys should remain separate.
 
 For local development, store real secrets in `.env`.
 Do not put real API keys in `.env.example` or committed documentation.
@@ -374,6 +392,7 @@ Use separate keys for separate responsibilities:
 
 - SBOM upload automation
 - orchestrator read access
+- local DT lab Project cleanup, when used
 - future analysis-write workflows, if explicitly implemented
 
 ### Vulnerability database count
@@ -480,5 +499,6 @@ Dependency-Track is considered ready for this repository when all of the followi
 - admin password changed
 - upload API key created
 - orchestrator read API key created
+- optional lab cleanup key created only when run cleanup is required
 - test CycloneDX BOM uploaded successfully
 - project and findings visible in the UI

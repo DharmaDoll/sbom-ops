@@ -9,7 +9,6 @@ from urllib.request import Request
 
 from sbom_ops.clients.http import (
     HttpApiError,
-    HttpJsonResponse,
     collection_items,
     request_json,
 )
@@ -50,17 +49,6 @@ class DependencyTrackApiError(RuntimeError):
 @dataclass(frozen=True)
 class BomUpload:
     token: str
-
-
-@dataclass(frozen=True)
-class DependencyTrackObservation:
-    method: str
-    path: str
-    query: tuple[tuple[str, str], ...]
-    status: int
-    headers: tuple[tuple[str, str], ...]
-    duration_seconds: float
-    payload: Any
 
 
 def _number(value: Any) -> float | None:
@@ -167,60 +155,6 @@ class DependencyTrackClient:
                 f"Dependency-Track request failed{detail}: {path}"
             ) from exc
 
-    def _observe_json(
-        self,
-        path: str,
-        params: dict[str, str] | None = None,
-        *,
-        accept: str = "application/json",
-    ) -> DependencyTrackObservation:
-        query = f"?{urlencode(params)}" if params else ""
-        request = Request(
-            f"{self._base_url}{path}{query}",
-            headers={"Accept": accept, "X-Api-Key": self._api_key},
-        )
-        try:
-            response = request_json(
-                request,
-                timeout=self._timeout,
-                max_retries=self._max_retries,
-                backoff_seconds=self._retry_backoff_seconds,
-                error_message=f"Dependency-Track observation failed: {path}",
-                return_response=True,
-            )
-        except HttpApiError as exc:
-            detail = f" (HTTP {exc.status})" if exc.status else ""
-            raise DependencyTrackApiError(
-                f"Dependency-Track observation failed{detail}: {path}"
-            ) from exc
-        if not isinstance(response, HttpJsonResponse):
-            raise DependencyTrackApiError(
-                f"Dependency-Track observation returned no response metadata: {path}"
-            )
-        safe_headers = {
-            key: value
-            for key, value in response.headers.items()
-            if key.lower()
-            in {
-                "content-length",
-                "content-type",
-                "date",
-                "etag",
-                "last-modified",
-                "retry-after",
-                "x-total-count",
-            }
-        }
-        return DependencyTrackObservation(
-            method="GET",
-            path=path,
-            query=tuple(sorted((params or {}).items())),
-            status=response.status,
-            headers=tuple(sorted(safe_headers.items())),
-            duration_seconds=response.duration_seconds,
-            payload=response.payload,
-        )
-
     def _upload_bom(
         self, fields: tuple[tuple[str, str], ...], bom_path: str | Path
     ) -> BomUpload:
@@ -279,77 +213,6 @@ class DependencyTrackClient:
     def upload_bom(self, project_uuid: str, bom_path: str | Path) -> BomUpload:
         """Upload a CycloneDX BOM and return DT's asynchronous processing token."""
         return self._upload_bom((("project", project_uuid),), bom_path)
-
-    def upload_bom_by_project_coordinates(
-        self, project_name: str, project_version: str, bom_path: str | Path
-    ) -> BomUpload:
-        """Upload to a named lab Project, creating it when it does not exist."""
-        return self._upload_bom(
-            (
-                ("autoCreate", "true"),
-                ("projectName", project_name),
-                ("projectVersion", project_version),
-            ),
-            bom_path,
-        )
-
-    def observe_project_lookup(
-        self, project_name: str, project_version: str
-    ) -> DependencyTrackObservation:
-        return self._observe_json(
-            "/api/v1/project/lookup",
-            {"name": project_name, "version": project_version},
-        )
-
-    def observe_project(self, project_uuid: str) -> DependencyTrackObservation:
-        return self._observe_json(f"/api/v1/project/{project_uuid}")
-
-    def observe_project_components(
-        self, project_uuid: str
-    ) -> DependencyTrackObservation:
-        return self._observe_json(f"/api/v1/component/project/{project_uuid}")
-
-    def observe_project_direct_components(
-        self, project_uuid: str
-    ) -> DependencyTrackObservation:
-        return self._observe_json(
-            f"/api/v1/component/project/{project_uuid}", {"onlyDirect": "true"}
-        )
-
-    def observe_project_services(self, project_uuid: str) -> DependencyTrackObservation:
-        return self._observe_json(f"/api/v1/service/project/{project_uuid}")
-
-    def observe_project_dependency_graph(
-        self, project_uuid: str
-    ) -> DependencyTrackObservation:
-        return self._observe_json(
-            f"/api/v1/dependencyGraph/project/{project_uuid}/directDependencies"
-        )
-
-    def observe_project_findings(self, project_uuid: str) -> DependencyTrackObservation:
-        return self._observe_json(f"/api/v1/finding/project/{project_uuid}")
-
-    def observe_project_vulnerabilities(
-        self, project_uuid: str
-    ) -> DependencyTrackObservation:
-        return self._observe_json(f"/api/v1/vulnerability/project/{project_uuid}")
-
-    def observe_project_metrics(self, project_uuid: str) -> DependencyTrackObservation:
-        return self._observe_json(f"/api/v1/metrics/project/{project_uuid}/current")
-
-    def observe_project_bom_export(
-        self, project_uuid: str
-    ) -> DependencyTrackObservation:
-        return self._observe_json(
-            f"/api/v1/bom/cyclonedx/project/{project_uuid}",
-            {
-                "format": "JSON",
-                "variant": "inventory",
-                "download": "false",
-                "version": "1.5",
-            },
-            accept="application/vnd.cyclonedx+json",
-        )
 
     def wait_for_bom_processing(
         self,

@@ -31,6 +31,14 @@ class FakeResponse:
         return self._payload
 
 
+class FakeEmptyResponse(FakeResponse):
+    def __init__(self, *, status: int) -> None:
+        super().__init__(None, status=status)
+
+    def read(self) -> bytes:
+        return b""
+
+
 def test_http_json_response_includes_status_headers_and_duration() -> None:
     response = request_json(
         request=kev_module.Request("https://example.test/data"),
@@ -51,6 +59,23 @@ def test_http_json_response_includes_status_headers_and_duration() -> None:
     assert response.status == 201
     assert response.headers == {"X-Test": "value"}
     assert response.duration_seconds >= 0
+
+
+def test_http_json_response_can_allow_an_empty_success_body() -> None:
+    response = request_json(
+        request=kev_module.Request("https://example.test/data"),
+        timeout=1,
+        max_retries=0,
+        backoff_seconds=0,
+        error_message="failed",
+        opener=lambda request, timeout: FakeEmptyResponse(status=204),
+        return_response=True,
+        allow_empty=True,
+    )
+
+    assert isinstance(response, HttpJsonResponse)
+    assert response.payload is None
+    assert response.status == 204
 
 
 def test_kev_client_reads_cve_ids(monkeypatch) -> None:

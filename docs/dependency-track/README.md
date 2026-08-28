@@ -15,8 +15,10 @@ Official documentation must be treated as the source of truth:
 Local repository guides:
 
 - `setup.md` for local bootstrap and API validation
-- `api.md` for client implementation rules
+- `api.md` for production client implementation rules
 - `operations.md` for day-2 operating flow
+- [`../../lab/dependency_track/README.md`](../../lab/dependency_track/README.md)
+  for repository-only behavior exploration and promotion rules
 
 Dependency-Track is used for:
 

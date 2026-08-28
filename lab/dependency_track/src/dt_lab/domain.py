@@ -3,10 +3,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 
 class LabManifestError(ValueError):
     """Raised when a Dependency-Track lab manifest is invalid."""
+
+
+class LabCleanupError(RuntimeError):
+    """Raised when a Dependency-Track lab cleanup cannot complete safely."""
 
 
 class ScenarioCategory(StrEnum):
@@ -34,6 +39,22 @@ class Observation(StrEnum):
     VIOLATIONS = "violations"
     BOM_EXPORT = "bom-export"
     VEX_EXPORT = "vex-export"
+
+
+@dataclass(frozen=True)
+class BomUpload:
+    token: str
+
+
+@dataclass(frozen=True)
+class DependencyTrackObservation:
+    method: str
+    path: str
+    query: tuple[tuple[str, str], ...]
+    status: int
+    headers: tuple[tuple[str, str], ...]
+    duration_seconds: float
+    payload: Any
 
 
 _SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -97,6 +118,10 @@ class LabScenario:
             raise LabManifestError(
                 f"scenario {self.id!r} requires project name and version"
             )
+        if not self.project_name.startswith("dt-lab-"):
+            raise LabManifestError(
+                f"scenario {self.id!r} Project name must start with 'dt-lab-'"
+            )
         if self.status is ScenarioStatus.IMPLEMENTED and not self.steps:
             raise LabManifestError(
                 f"implemented scenario {self.id!r} requires at least one step"
@@ -159,6 +184,33 @@ class LabStepResult:
     project_uuid: str
     snapshot_directory: str
     observation_count: int
+
+
+@dataclass(frozen=True)
+class LabProjectRecord:
+    scenario_id: str
+    step_id: str
+    project_name: str
+    project_version: str
+    project_uuid: str | None = None
+
+
+@dataclass(frozen=True)
+class LabCleanupTarget:
+    project_name: str
+    project_version: str
+    project_uuid: str | None
+
+
+@dataclass(frozen=True)
+class LabCleanupResult:
+    run_id: str
+    cleanup_id: str
+    executed: bool
+    audit_path: str
+    targets: tuple[LabCleanupTarget, ...]
+    deleted_project_uuids: tuple[str, ...]
+    already_absent_projects: tuple[str, ...]
 
 
 @dataclass(frozen=True)

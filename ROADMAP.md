@@ -26,6 +26,10 @@ The repository has a working MVP with:
 - a hardened repository-local GitHub Actions sync example
 - a versioned DT lab scenario manifest, OpenAPI contract inventory, and isolated
   scenario runner with raw observations and Component delta reports
+- physical separation of the repository-only DT lab from the product wheel,
+  runtime CLI, adapter, and test suite
+- run-scoped DT lab Project cleanup with a durable ledger, local dry-run,
+  live identity verification, explicit deletion, and immutable audits
 - DT lab coverage for Component identity, add/remove lifecycle, Project version
   boundaries, direct/transitive dependency graphs, CycloneDX Services, and
   source/alias/EPSS Finding projections
@@ -36,8 +40,8 @@ The repository has a working MVP with:
 - Validate Dependency-Track Project, Finding, EPSS, Analysis, pagination, and
   processing-token behavior against a representative environment.
 - Implement the planned Identity, Lifecycle, Portfolio, Triage, and Robustness
-  scenarios in `examples/sboms/scenarios.yaml`; capture stable observations and
-  promote only reviewed contracts to test fixtures.
+  scenarios in `lab/dependency_track/scenarios/scenarios.yaml`; capture stable
+  observations and promote only reviewed contracts to product test fixtures.
 - Validate GitHub Issue create, update, migration, and safe closure after a
   reviewed dry-run.
 - Exercise timeout, `429`, `5xx`, partial reads, analysis-in-progress, and
