@@ -2,10 +2,12 @@ COMPOSE_FILE := examples/dependency-track/docker-compose.yml
 DT_BACKEND_URL ?= http://localhost:8080
 GCP_POC_DIR := infra/gcp/poc
 DT_LAB_DIR ?= var/dt-lab
-DT_LAB_MANIFEST := examples/sboms/scenarios.yaml
+DT_LAB_ROOT := lab/dependency_track
+DT_LAB_PYTHONPATH := src:$(DT_LAB_ROOT)/src
+DT_LAB_MANIFEST := $(DT_LAB_ROOT)/scenarios/scenarios.yaml
 PYTHON ?= python3.12
 
-.PHONY: dt-up dt-down dt-logs dt-ps dt-openapi-check dt-lab-validate dt-lab-openapi dt-lab-run dt-bom-upload dt-demo-upload dt-demo-update-upload infra-gcp-poc-fmt-check infra-gcp-poc-validate test lint
+.PHONY: dt-up dt-down dt-logs dt-ps dt-openapi-check dt-lab-validate dt-lab-openapi dt-lab-run dt-lab-test dt-bom-upload dt-demo-upload dt-demo-update-upload infra-gcp-poc-fmt-check infra-gcp-poc-validate test lint
 
 dt-up:
 	docker compose -f $(COMPOSE_FILE) up -d
@@ -23,15 +25,18 @@ dt-openapi-check:
 	./scripts/check_dt_openapi.sh "$(DT_BACKEND_URL)"
 
 dt-lab-validate:
-	PYTHONPATH=src $(PYTHON) -m sbom_ops.dt_lab_cli validate-manifest --manifest "$(DT_LAB_MANIFEST)"
+	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m dt_lab.cli validate-manifest --manifest "$(DT_LAB_MANIFEST)"
 
 dt-lab-openapi:
 	mkdir -p "$(DT_LAB_DIR)"
 	./scripts/check_dt_openapi.sh "$(DT_BACKEND_URL)" "$(DT_LAB_DIR)/openapi.json"
-	PYTHONPATH=src $(PYTHON) -m sbom_ops.dt_lab_cli openapi-inventory "$(DT_LAB_DIR)/openapi.json" --output "$(DT_LAB_DIR)/openapi-inventory.json"
+	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m dt_lab.cli openapi-inventory "$(DT_LAB_DIR)/openapi.json" --output "$(DT_LAB_DIR)/openapi-inventory.json"
 
 dt-lab-run:
-	PYTHONPATH=src $(PYTHON) -m sbom_ops.dt_lab_cli run-scenarios --manifest "$(DT_LAB_MANIFEST)" --output-dir "$(DT_LAB_DIR)/runs" --openapi-inventory "$(DT_LAB_DIR)/openapi-inventory.json"
+	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m dt_lab.cli run-scenarios --manifest "$(DT_LAB_MANIFEST)" --output-dir "$(DT_LAB_DIR)/runs" --openapi-inventory "$(DT_LAB_DIR)/openapi-inventory.json"
+
+dt-lab-test:
+	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m pytest -q $(DT_LAB_ROOT)/tests
 
 dt-bom-upload:
 	./scripts/upload_bom.sh

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 
 class LabManifestError(ValueError):
@@ -34,6 +35,22 @@ class Observation(StrEnum):
     VIOLATIONS = "violations"
     BOM_EXPORT = "bom-export"
     VEX_EXPORT = "vex-export"
+
+
+@dataclass(frozen=True)
+class BomUpload:
+    token: str
+
+
+@dataclass(frozen=True)
+class DependencyTrackObservation:
+    method: str
+    path: str
+    query: tuple[tuple[str, str], ...]
+    status: int
+    headers: tuple[tuple[str, str], ...]
+    duration_seconds: float
+    payload: Any
 
 
 _SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")

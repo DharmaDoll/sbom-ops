@@ -157,12 +157,30 @@ Rules:
 
 1. Do not assume API behavior.
 2. Confirm endpoint, method, request body, response body, and required permission from official documentation.
-3. Keep Dependency-Track API code isolated in `src/sbom_ops/clients/dependency_track.py`.
-4. Do not put priority logic, GitHub logic, or SLA logic in the Dependency-Track client.
-5. Treat Dependency-Track as the source of truth for SBOM inventory.
-6. Treat GitHub Issues as the source of truth for remediation workflow.
-7. Never overwrite Dependency-Track analysis state without explicit workflow logic.
-8. All Dependency-Track API changes require integration tests or documented mock fixtures.
+3. Keep production Dependency-Track API code isolated in `src/sbom_ops/clients/dependency_track.py`.
+4. Keep exploratory Dependency-Track API code isolated in `lab/dependency_track/src/dt_lab/client.py`; product modules must never import it.
+5. Do not put priority logic, GitHub logic, or SLA logic in either Dependency-Track client.
+6. Treat Dependency-Track as the source of truth for SBOM inventory.
+7. Treat GitHub Issues as the source of truth for remediation workflow.
+8. Never overwrite Dependency-Track analysis state without explicit workflow logic.
+9. All production Dependency-Track API changes require integration tests or documented mock fixtures.
+10. Lab observations are not production contracts until reviewed and promoted into product fixtures, code, tests, and documentation.
+
+## Dependency-Track Lab Isolation Rule
+
+The repository-only behavior lab lives under `lab/dependency_track/` and is not
+part of the `sbom-ops` wheel or runtime CLI.
+
+Rules:
+
+1. Product code under `src/sbom_ops/` must not import `dt_lab`.
+2. Lab scenarios, adapters, domain models, orchestration, and tests stay under `lab/dependency_track/`.
+3. Raw observations and target-specific OpenAPI documents stay under ignored `var/dt-lab/`.
+4. Develop experiments on short-lived `lab/*` or `refactor/*` branches; do not maintain a long-lived lab branch.
+5. Merge only reproducible scenarios, stable lab code, reviewed fixtures, durable documentation, and justified product changes.
+6. Never merge credentials, raw observations, environment-specific UUIDs, or temporary investigation code.
+7. Mutating Analysis, VEX, suppression, policy, or administrative scenarios require a disposable Project, least-privilege key, and explicit CLI opt-in.
+8. Run product tests and lab tests independently before merge.
 
 
 ## Google Cloud Infrastructure Development Rule

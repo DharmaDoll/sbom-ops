@@ -4,24 +4,27 @@ import json
 from pathlib import Path
 
 import pytest
-
-from sbom_ops.clients.dependency_track import BomUpload, DependencyTrackObservation
-from sbom_ops.domain.dt_lab import LabManifestError, ScenarioStatus
-from sbom_ops.dt_lab_cli import main
-from sbom_ops.services.dt_lab import (
+from dt_lab.cli import main
+from dt_lab.domain import (
+    BomUpload,
+    DependencyTrackObservation,
+    LabManifestError,
+    ScenarioStatus,
+)
+from dt_lab.service import (
     build_openapi_inventory,
     load_lab_manifest,
     openapi_inventory_dict,
     run_lab_scenarios,
 )
 
-REPOSITORY_ROOT = Path(__file__).parents[2]
+LAB_ROOT = Path(__file__).parents[1]
+REPOSITORY_ROOT = Path(__file__).parents[3]
+MANIFEST_PATH = LAB_ROOT / "scenarios" / "scenarios.yaml"
 
 
 def test_repository_lab_manifest_is_valid() -> None:
-    manifest = load_lab_manifest(
-        REPOSITORY_ROOT / "examples" / "sboms" / "scenarios.yaml"
-    )
+    manifest = load_lab_manifest(MANIFEST_PATH)
 
     assert manifest.target.dependency_track_version == "4.14.3"
     assert len(manifest.scenarios) == 16
@@ -168,10 +171,10 @@ def test_lab_cli_validates_repository_manifest(
     monkeypatch.setattr(
         "sys.argv",
         [
-            "sbom-ops-dt-lab",
+            "dt-lab",
             "validate-manifest",
             "--manifest",
-            str(REPOSITORY_ROOT / "examples" / "sboms" / "scenarios.yaml"),
+            str(MANIFEST_PATH),
         ],
     )
 
@@ -188,7 +191,7 @@ def test_lab_cli_writes_openapi_inventory(
     monkeypatch.setattr(
         "sys.argv",
         [
-            "sbom-ops-dt-lab",
+            "dt-lab",
             "openapi-inventory",
             str(
                 REPOSITORY_ROOT / "tests" / "fixtures" / "dependency-track-openapi.json"
@@ -380,7 +383,7 @@ class FakeLabClient:
 
 
 def test_lab_runner_captures_step_delta(tmp_path: Path) -> None:
-    manifest_path = REPOSITORY_ROOT / "examples" / "sboms" / "scenarios.yaml"
+    manifest_path = MANIFEST_PATH
     client = FakeLabClient()
 
     result = run_lab_scenarios(
@@ -408,7 +411,7 @@ def test_lab_runner_captures_step_delta(tmp_path: Path) -> None:
 
 
 def test_lab_runner_supports_step_project_versions(tmp_path: Path) -> None:
-    manifest_path = REPOSITORY_ROOT / "examples" / "sboms" / "scenarios.yaml"
+    manifest_path = MANIFEST_PATH
     client = FakeLabClient()
 
     result = run_lab_scenarios(
@@ -429,7 +432,7 @@ def test_lab_runner_supports_step_project_versions(tmp_path: Path) -> None:
 def test_lab_runner_summarizes_direct_components_and_services(
     tmp_path: Path,
 ) -> None:
-    manifest_path = REPOSITORY_ROOT / "examples" / "sboms" / "scenarios.yaml"
+    manifest_path = MANIFEST_PATH
     client = FakeLabClient()
 
     result = run_lab_scenarios(
@@ -454,7 +457,7 @@ def test_lab_runner_summarizes_direct_components_and_services(
 def test_lab_runner_summarizes_finding_sources_aliases_and_scores(
     tmp_path: Path,
 ) -> None:
-    manifest_path = REPOSITORY_ROOT / "examples" / "sboms" / "scenarios.yaml"
+    manifest_path = MANIFEST_PATH
     client = FakeLabClient()
 
     result = run_lab_scenarios(
@@ -494,7 +497,7 @@ def test_lab_runner_summarizes_finding_sources_aliases_and_scores(
 
 
 def test_lab_runner_records_failed_run_metadata(tmp_path: Path) -> None:
-    manifest_path = REPOSITORY_ROOT / "examples" / "sboms" / "scenarios.yaml"
+    manifest_path = MANIFEST_PATH
     client = FakeLabClient()
 
     def fail_export(project_uuid: str) -> DependencyTrackObservation:

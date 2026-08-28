@@ -12,11 +12,9 @@ from uuid import uuid4
 
 import yaml
 
-from sbom_ops.clients.dependency_track import (
+from dt_lab.domain import (
     BomUpload,
     DependencyTrackObservation,
-)
-from sbom_ops.domain.dt_lab import (
     LabManifest,
     LabManifestError,
     LabRunResult,

@@ -8,3 +8,5 @@
 - Introduce v2 Finding keys based on Dependency-Track UUIDs or Package URLs,
   with legacy-key migration
 - Separate Finding, Dependency-Track analysis, and remediation workflow state
+- Move the Dependency-Track behavior lab into a repository-only tree, separate
+  from the product wheel, runtime CLI, adapter, and tests

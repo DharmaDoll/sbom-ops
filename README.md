@@ -42,8 +42,8 @@ python -m pip install -e ".[dev]"
 Run the local test suite:
 
 ```bash
-ruff check .
-pytest
+ruff check src tests
+pytest -q tests
 ```
 
 Start the local Dependency-Track evaluation stack:
@@ -177,11 +177,18 @@ sbom-ops sync --config examples/config.yaml --dry-run --no-github
 sbom-ops sync --config examples/config.yaml --dry-run --no-github --output json
 sbom-ops upload path/to/bom.cdx.json --project "$SBOM_OPS_DT_PROJECT_UUID"
 make dt-lab-validate
+make dt-lab-test
 make dt-lab-openapi
 make dt-lab-run
 make infra-gcp-poc-fmt-check
 make infra-gcp-poc-validate
 ```
+
+The Dependency-Track behavior lab is repository-only and is not installed by
+`pip install sbom-ops`. Its adapter, scenarios, and tests live under
+[`lab/dependency_track/`](lab/dependency_track/README.md). Product tests and lab
+tests are intentionally separate. New experiments use short-lived branches and
+only reviewed stable contracts are promoted into `src/sbom_ops/`.
 
 ## Documentation
 
@@ -197,7 +204,8 @@ Supporting guides are grouped by purpose:
 - Operations: [`use cases`](docs/use-cases.md), [`data sources`](docs/data-sources.md),
   [`runbook`](docs/operations.md), and
   [`Dependency-Track setup`](docs/dependency-track/setup.md)
-- Dependency-Track development: [`API contract and behavior lab`](docs/dependency-track/api.md)
+- Dependency-Track development: [`production API contract`](docs/dependency-track/api.md)
+  and [`behavior lab`](lab/dependency_track/README.md)
 - Policies: [`priority`](docs/priority-policy.md) and
   [`VEX`](docs/vex.md)
 - Decisions and infrastructure: [`ADRs`](docs/adr/README.md) and the

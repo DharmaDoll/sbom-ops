@@ -135,6 +135,11 @@ dependency-track-sbom-ops/
 │       ├── domain/
 │       └── utils/
 ├── tests/
+├── lab/
+│   └── dependency_track/
+│       ├── scenarios/
+│       ├── src/dt_lab/
+│       └── tests/
 ├── scripts/
 ├── examples/
 └── .github/
@@ -200,6 +205,19 @@ Examples
 
 ---
 
+### lab/dependency_track/
+
+Repository-only Dependency-Track behavior exploration. It owns its own adapter,
+domain models, orchestration, CLI, scenario corpus, and tests. It is excluded
+from the product wheel and may depend on generic product infrastructure, but
+`src/sbom_ops/` must never depend on it.
+
+Lab behavior is promoted into the product only through a reviewed stable
+fixture, explicit production contract, tests, and documentation. Experiments
+use short-lived branches; the stable lab harness remains on `main`.
+
+---
+
 ### scripts/
 Developer utilities.
 - Bootstrap
@@ -212,7 +230,7 @@ Developer utilities.
 Reference implementations.
 - GitHub Actions
 - Docker Compose
-- Example SBOMs
+- Quick Start SBOMs
 
 ## Dependency-Track Boundary
 Dependency-Track is not embedded in this repository.

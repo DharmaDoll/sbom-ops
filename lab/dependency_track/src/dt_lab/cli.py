@@ -7,12 +7,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from sbom_ops.clients.dependency_track import (
-    DependencyTrackApiError,
-    DependencyTrackClient,
-)
-from sbom_ops.domain.dt_lab import LabManifestError, ScenarioStatus
-from sbom_ops.services.dt_lab import (
+from dt_lab.client import DependencyTrackLabApiError, DependencyTrackLabClient
+from dt_lab.domain import LabManifestError, ScenarioStatus
+from dt_lab.service import (
     RELEVANT_OPENAPI_TAGS,
     build_openapi_inventory,
     load_lab_manifest,
@@ -23,7 +20,7 @@ from sbom_ops.services.dt_lab import (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="sbom-ops-dt-lab",
+        prog="dt-lab",
         description=(
             "Validate the DT lab corpus and inspect a captured OpenAPI contract."
         ),
@@ -31,7 +28,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     validate_parser = subparsers.add_parser("validate-manifest")
-    validate_parser.add_argument("--manifest", default="examples/sboms/scenarios.yaml")
+    validate_parser.add_argument(
+        "--manifest", default="lab/dependency_track/scenarios/scenarios.yaml"
+    )
 
     inventory_parser = subparsers.add_parser("openapi-inventory")
     inventory_parser.add_argument("openapi_path")
@@ -43,7 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     run_parser = subparsers.add_parser("run-scenarios")
-    run_parser.add_argument("--manifest", default="examples/sboms/scenarios.yaml")
+    run_parser.add_argument(
+        "--manifest", default="lab/dependency_track/scenarios/scenarios.yaml"
+    )
     run_parser.add_argument("--output-dir", default="var/dt-lab/runs")
     run_parser.add_argument("--scenario", action="append", default=[])
     run_parser.add_argument(
@@ -127,15 +128,14 @@ def _openapi_hash(path: str | None) -> str | None:
     return str(value) if value else None
 
 
-def _dependency_track_client(api_key: str) -> DependencyTrackClient:
+def _dependency_track_client(api_key: str) -> DependencyTrackLabClient:
     base_url = os.getenv("SBOM_OPS_DT_BASE_URL")
     if not base_url:
         raise ValueError("run-scenarios requires SBOM_OPS_DT_BASE_URL")
-    return DependencyTrackClient(
+    return DependencyTrackLabClient(
         base_url,
         api_key,
         timeout=float(os.getenv("SBOM_OPS_DT_TIMEOUT_SECONDS", "30")),
-        page_size=int(os.getenv("SBOM_OPS_DT_PAGE_SIZE", "100")),
         max_retries=int(os.getenv("SBOM_OPS_DT_MAX_RETRIES", "3")),
         retry_backoff_seconds=float(
             os.getenv("SBOM_OPS_DT_RETRY_BACKOFF_SECONDS", "1")
@@ -187,7 +187,7 @@ def main() -> int:
             return _run_scenarios(args)
         parser.error(f"unsupported command: {args.command}")
     except (
-        DependencyTrackApiError,
+        DependencyTrackLabApiError,
         json.JSONDecodeError,
         LabManifestError,
         OSError,

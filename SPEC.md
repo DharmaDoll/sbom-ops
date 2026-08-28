@@ -561,11 +561,20 @@ Fixtures should cover:
 - GitHub issue search response
 - GitHub issue create/update payloads
 
-Dependency-Track behavior exploration uses the versioned scenario manifest in
-`examples/sboms/scenarios.yaml`. Raw OpenAPI and API observations remain ignored
-under `var/dt-lab/`; only stable, reviewed contract examples belong in test
-fixtures. Live vulnerability counts, EPSS values, and datasource timing must not
-be treated as deterministic assertions.
+Dependency-Track behavior exploration is a repository-only subsystem under
+`lab/dependency_track/`; it is excluded from the product wheel and runtime CLI.
+Its versioned scenario manifest is
+`lab/dependency_track/scenarios/scenarios.yaml`. Product code must not import lab
+modules. Raw OpenAPI and API observations remain ignored under `var/dt-lab/`;
+only stable, reviewed contract examples belong in product test fixtures. Live
+vulnerability counts, EPSS values, and datasource timing must not be treated as
+deterministic assertions.
+
+Experiments use short-lived branches. A behavior may be promoted from the lab
+only when the change includes official contract verification, a minimal reviewed
+fixture, production tests, and updated product documentation. Branch separation
+alone is not a security boundary; mutating experiments require a disposable
+Project, least-privilege credentials, and an explicit CLI opt-in.
 
 ## Open Items
 
