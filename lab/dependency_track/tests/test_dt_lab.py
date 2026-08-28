@@ -19,8 +19,8 @@ from dt_lab.service import (
 )
 
 LAB_ROOT = Path(__file__).parents[1]
-REPOSITORY_ROOT = Path(__file__).parents[3]
 MANIFEST_PATH = LAB_ROOT / "scenarios" / "scenarios.yaml"
+OPENAPI_FIXTURE = LAB_ROOT / "fixtures" / "dependency-track-openapi.json"
 
 
 def test_repository_lab_manifest_is_valid() -> None:
@@ -59,7 +59,7 @@ scenarios:
     category: robustness
     status: implemented
     purpose: Reject missing scenario files.
-    project: {name: missing, version: 1.0.0}
+    project: {name: dt-lab-missing, version: 1.0.0}
     steps:
       - id: upload
         bom: absent.cdx.json
@@ -106,7 +106,7 @@ scenarios:
     category: robustness
     status: implemented
     purpose: Reject an invalid dependency graph.
-    project: {name: invalid, version: 1.0.0}
+    project: {name: dt-lab-invalid, version: 1.0.0}
     steps:
       - id: upload
         bom: invalid.cdx.json
@@ -120,19 +120,15 @@ scenarios:
 
 
 def test_openapi_inventory_extracts_contract_details() -> None:
-    payload = json.loads(
-        (
-            REPOSITORY_ROOT / "tests" / "fixtures" / "dependency-track-openapi.json"
-        ).read_text(encoding="utf-8")
-    )
+    payload = json.loads(OPENAPI_FIXTURE.read_text(encoding="utf-8"))
 
     inventory = build_openapi_inventory(payload)
     rendered = openapi_inventory_dict(inventory)
 
-    assert inventory.path_count == 3
-    assert inventory.operation_count == 3
-    assert inventory.tag_count == 3
-    assert len(inventory.operations) == 2
+    assert inventory.path_count == 5
+    assert inventory.operation_count == 5
+    assert inventory.tag_count == 4
+    assert len(inventory.operations) == 4
     finding = next(
         operation
         for operation in inventory.operations
@@ -148,21 +144,55 @@ def test_openapi_inventory_extracts_contract_details() -> None:
         "application/json",
         "application/sarif+json",
     )
-    assert rendered["summary"]["selected_operation_count"] == 2
+    deletion = next(
+        operation
+        for operation in inventory.operations
+        if operation.operation_id == "deleteProject"
+    )
+    assert deletion.method == "DELETE"
+    assert deletion.path == "/v1/project/{uuid}"
+    assert deletion.permissions == ("PORTFOLIO_MANAGEMENT",)
+    assert deletion.response_statuses == ("204", "401", "403", "404")
+    lookup = next(
+        operation
+        for operation in inventory.operations
+        if operation.operation_id == "lookupProject"
+    )
+    assert lookup.permissions == ("VIEW_PORTFOLIO",)
+    assert lookup.query_parameters == ("name", "version")
+    assert rendered["summary"]["selected_operation_count"] == 4
     assert len(rendered["source"]["contract_sha256"]) == 64
 
 
-def test_openapi_inventory_can_include_all_tags() -> None:
-    payload = json.loads(
-        (
-            REPOSITORY_ROOT / "tests" / "fixtures" / "dependency-track-openapi.json"
-        ).read_text(encoding="utf-8")
+def test_lab_manifest_requires_cleanup_safe_project_prefix(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "scenarios.yaml"
+    manifest_path.write_text(
+        """
+schema_version: 1
+target:
+  dependency_track_version: 4.14.3
+  cyclonedx_versions: ["1.5"]
+scenarios:
+  - id: unsafe-project
+    category: robustness
+    status: planned
+    purpose: Reject a Project outside the lab namespace.
+    project: {name: production-service, version: 1.0.0}
+""".strip(),
+        encoding="utf-8",
     )
+
+    with pytest.raises(LabManifestError, match="must start with 'dt-lab-'"):
+        load_lab_manifest(manifest_path)
+
+
+def test_openapi_inventory_can_include_all_tags() -> None:
+    payload = json.loads(OPENAPI_FIXTURE.read_text(encoding="utf-8"))
 
     inventory = build_openapi_inventory(payload, selected_tags=None)
 
-    assert len(inventory.operations) == 3
-    assert inventory.selected_tags == ("analysis", "finding", "user")
+    assert len(inventory.operations) == 5
+    assert inventory.selected_tags == ("analysis", "finding", "project", "user")
 
 
 def test_lab_cli_validates_repository_manifest(
@@ -193,9 +223,7 @@ def test_lab_cli_writes_openapi_inventory(
         [
             "dt-lab",
             "openapi-inventory",
-            str(
-                REPOSITORY_ROOT / "tests" / "fixtures" / "dependency-track-openapi.json"
-            ),
+            str(OPENAPI_FIXTURE),
             "--output",
             str(output_path),
         ],
@@ -203,9 +231,9 @@ def test_lab_cli_writes_openapi_inventory(
 
     assert main() == 0
     assert json.loads(output_path.read_text(encoding="utf-8"))["summary"] == {
-        "operation_count": 3,
-        "path_count": 3,
-        "selected_operation_count": 2,
+        "operation_count": 5,
+        "path_count": 5,
+        "selected_operation_count": 4,
         "selected_tags": [
             "analysis",
             "bom",
@@ -222,11 +250,73 @@ def test_lab_cli_writes_openapi_inventory(
             "violationanalysis",
             "vulnerability",
         ],
-        "tag_count": 3,
+        "tag_count": 4,
     }
-    assert "OpenAPI inventory: paths=3 operations=3 selected=2 tags=3" in (
+    assert "OpenAPI inventory: paths=5 operations=5 selected=4 tags=4" in (
         capsys.readouterr().out
     )
+
+
+def test_lab_cli_cleanup_defaults_to_a_local_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_id = "25dfd88e-2673-462b-9f40-818279ecd8b5"
+    run_directory = tmp_path / run_id
+    run_directory.mkdir()
+    (run_directory / "run.json").write_text(
+        json.dumps({"run_id": run_id, "status": "completed"}), encoding="utf-8"
+    )
+    (run_directory / "projects.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": run_id,
+                "projects": [
+                    {
+                        "scenario_id": "identity",
+                        "step_id": "initial",
+                        "project_name": "dt-lab-example",
+                        "project_version": "1.0.0-lab-25dfd88e",
+                        "project_uuid": "4c40cf70-57cf-4eee-8043-1f246fef3f7b",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "dt-lab",
+            "cleanup-run",
+            "--run-id",
+            run_id,
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert main() == 0
+    assert "DT lab cleanup plan" in capsys.readouterr().out
+
+    monkeypatch.delenv("SBOM_OPS_DT_CLEANUP_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "dt-lab",
+            "cleanup-run",
+            "--run-id",
+            run_id,
+            "--output-dir",
+            str(tmp_path),
+            "--execute",
+        ],
+    )
+
+    assert main() == 2
+    assert "--execute requires SBOM_OPS_DT_CLEANUP_API_KEY" in (capsys.readouterr().err)
 
 
 class FakeLabClient:
@@ -403,6 +493,17 @@ def test_lab_runner_captures_step_delta(tmp_path: Path) -> None:
     )
     assert run_metadata["status"] == "completed"
     assert run_metadata["step_count"] == 2
+    assert run_metadata["project_ledger"] == "projects.json"
+    assert run_metadata["project_count"] == 1
+    project_ledger = json.loads(
+        (Path(result.output_directory) / "projects.json").read_text(encoding="utf-8")
+    )
+    assert project_ledger["run_id"] == result.run_id
+    assert len(project_ledger["projects"]) == 2
+    assert all(
+        project["project_version"].endswith(f"-lab-{result.run_id[:8]}")
+        for project in project_ledger["projects"]
+    )
     updated_directory = Path(result.steps[1].snapshot_directory)
     delta = json.loads((updated_directory / "delta.json").read_text(encoding="utf-8"))
     assert delta["components_added"] == ["pkg:pypi/requests@2.31.0"]

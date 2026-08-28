@@ -7,8 +7,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from dt_lab.cleanup import cleanup_lab_run
 from dt_lab.client import DependencyTrackLabApiError, DependencyTrackLabClient
-from dt_lab.domain import LabManifestError, ScenarioStatus
+from dt_lab.domain import (
+    LabCleanupError,
+    LabCleanupResult,
+    LabManifestError,
+    ScenarioStatus,
+)
 from dt_lab.service import (
     RELEVANT_OPENAPI_TAGS,
     build_openapi_inventory,
@@ -21,9 +27,7 @@ from dt_lab.service import (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dt-lab",
-        description=(
-            "Validate the DT lab corpus and inspect a captured OpenAPI contract."
-        ),
+        description="Run isolated Dependency-Track behavior experiments safely.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -59,6 +63,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--poll-interval",
         type=float,
         default=float(os.getenv("SBOM_OPS_DT_ANALYSIS_POLL_INTERVAL_SECONDS", "5")),
+    )
+    run_parser.add_argument(
+        "--cleanup-on-success",
+        action="store_true",
+        help="delete this run's verified lab Projects after successful observation",
+    )
+
+    cleanup_parser = subparsers.add_parser("cleanup-run")
+    cleanup_parser.add_argument("--run-id", required=True)
+    cleanup_parser.add_argument("--output-dir", default="var/dt-lab/runs")
+    cleanup_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="perform verified Project deletion; otherwise only write a plan",
     )
     return parser
 
@@ -131,7 +149,7 @@ def _openapi_hash(path: str | None) -> str | None:
 def _dependency_track_client(api_key: str) -> DependencyTrackLabClient:
     base_url = os.getenv("SBOM_OPS_DT_BASE_URL")
     if not base_url:
-        raise ValueError("run-scenarios requires SBOM_OPS_DT_BASE_URL")
+        raise ValueError("Dependency-Track access requires SBOM_OPS_DT_BASE_URL")
     return DependencyTrackLabClient(
         base_url,
         api_key,
@@ -151,6 +169,9 @@ def _run_scenarios(args: argparse.Namespace) -> int:
             "run-scenarios requires SBOM_OPS_SBOM_UPLOAD_API_KEY and "
             "SBOM_OPS_DT_API_KEY"
         )
+    cleanup_key = os.getenv("SBOM_OPS_DT_CLEANUP_API_KEY")
+    if args.cleanup_on_success and not cleanup_key:
+        raise ValueError("--cleanup-on-success requires SBOM_OPS_DT_CLEANUP_API_KEY")
     manifest = load_lab_manifest(args.manifest)
     result = run_lab_scenarios(
         manifest,
@@ -172,6 +193,43 @@ def _run_scenarios(args: argparse.Namespace) -> int:
             f"{step.scenario_id}/{step.step_id}: project={step.project_uuid} "
             f"observations={step.observation_count}"
         )
+    if args.cleanup_on_success:
+        cleanup_result = cleanup_lab_run(
+            output_directory=args.output_dir,
+            run_id=result.run_id,
+            execute=True,
+            client=_dependency_track_client(str(cleanup_key)),
+        )
+        _print_cleanup_result(cleanup_result)
+    return 0
+
+
+def _print_cleanup_result(result: LabCleanupResult) -> None:
+    if not result.executed:
+        print(
+            f"DT lab cleanup plan: run_id={result.run_id} "
+            f"targets={len(result.targets)} audit={result.audit_path}"
+        )
+        return
+    print(
+        f"DT lab cleanup completed: run_id={result.run_id} "
+        f"deleted={len(result.deleted_project_uuids)} "
+        f"already_absent={len(result.already_absent_projects)} "
+        f"audit={result.audit_path}"
+    )
+
+
+def _run_cleanup(args: argparse.Namespace) -> int:
+    cleanup_key = os.getenv("SBOM_OPS_DT_CLEANUP_API_KEY")
+    if args.execute and not cleanup_key:
+        raise ValueError("--execute requires SBOM_OPS_DT_CLEANUP_API_KEY")
+    result = cleanup_lab_run(
+        output_directory=args.output_dir,
+        run_id=args.run_id,
+        execute=args.execute,
+        client=(_dependency_track_client(str(cleanup_key)) if args.execute else None),
+    )
+    _print_cleanup_result(result)
     return 0
 
 
@@ -185,9 +243,12 @@ def main() -> int:
             return _run_openapi_inventory(args.openapi_path, args.output, args.all_tags)
         if args.command == "run-scenarios":
             return _run_scenarios(args)
+        if args.command == "cleanup-run":
+            return _run_cleanup(args)
         parser.error(f"unsupported command: {args.command}")
     except (
         DependencyTrackLabApiError,
+        LabCleanupError,
         json.JSONDecodeError,
         LabManifestError,
         OSError,

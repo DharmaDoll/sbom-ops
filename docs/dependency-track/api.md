@@ -93,6 +93,12 @@ get_api_v1_finding_project_uuid(...)
 post_api_v1_bom(...)
 ```
 
+The lab-only cleanup adapter uses `GET /api/v1/project/lookup` for live identity
+verification followed by `DELETE /api/v1/project/{uuid}`. The captured v4.14.3
+OpenAPI contract documents `204` on successful deletion and requires
+`PORTFOLIO_MANAGEMENT`; the lookup also requires `VIEW_PORTFOLIO`. These methods
+must not be exposed by the production client merely because the lab uses them.
+
 ## Behavior Lab Promotion Boundary
 
 The repository-only [Dependency-Track behavior lab](../../lab/dependency_track/README.md)

@@ -10,6 +10,10 @@ class LabManifestError(ValueError):
     """Raised when a Dependency-Track lab manifest is invalid."""
 
 
+class LabCleanupError(RuntimeError):
+    """Raised when a Dependency-Track lab cleanup cannot complete safely."""
+
+
 class ScenarioCategory(StrEnum):
     IDENTITY = "identity"
     LIFECYCLE = "lifecycle"
@@ -114,6 +118,10 @@ class LabScenario:
             raise LabManifestError(
                 f"scenario {self.id!r} requires project name and version"
             )
+        if not self.project_name.startswith("dt-lab-"):
+            raise LabManifestError(
+                f"scenario {self.id!r} Project name must start with 'dt-lab-'"
+            )
         if self.status is ScenarioStatus.IMPLEMENTED and not self.steps:
             raise LabManifestError(
                 f"implemented scenario {self.id!r} requires at least one step"
@@ -176,6 +184,33 @@ class LabStepResult:
     project_uuid: str
     snapshot_directory: str
     observation_count: int
+
+
+@dataclass(frozen=True)
+class LabProjectRecord:
+    scenario_id: str
+    step_id: str
+    project_name: str
+    project_version: str
+    project_uuid: str | None = None
+
+
+@dataclass(frozen=True)
+class LabCleanupTarget:
+    project_name: str
+    project_version: str
+    project_uuid: str | None
+
+
+@dataclass(frozen=True)
+class LabCleanupResult:
+    run_id: str
+    cleanup_id: str
+    executed: bool
+    audit_path: str
+    targets: tuple[LabCleanupTarget, ...]
+    deleted_project_uuids: tuple[str, ...]
+    already_absent_projects: tuple[str, ...]
 
 
 @dataclass(frozen=True)

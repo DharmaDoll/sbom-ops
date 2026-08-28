@@ -73,6 +73,10 @@ export SBOM_OPS_DT_API_KEY=replace-with-orchestrator-read-key
 export SBOM_OPS_SBOM_UPLOAD_API_KEY=replace-with-upload-key
 ```
 
+The repository-only DT lab can additionally use a dedicated cleanup key with
+`VIEW_PORTFOLIO` and `PORTFOLIO_MANAGEMENT`. It is not needed for the product
+Quick Start.
+
 Upload the demo SBOM:
 
 ```bash
@@ -180,6 +184,8 @@ make dt-lab-validate
 make dt-lab-test
 make dt-lab-openapi
 make dt-lab-run
+make dt-lab-cleanup RUN_ID=<run-uuid>
+make dt-lab-cleanup RUN_ID=<run-uuid> EXECUTE=1
 make infra-gcp-poc-fmt-check
 make infra-gcp-poc-validate
 ```
@@ -189,6 +195,8 @@ The Dependency-Track behavior lab is repository-only and is not installed by
 [`lab/dependency_track/`](lab/dependency_track/README.md). Product tests and lab
 tests are intentionally separate. New experiments use short-lived branches and
 only reviewed stable contracts are promoted into `src/sbom_ops/`.
+Lab cleanup is run-scoped and dry-run by default; destructive execution requires
+a separate key and explicit `EXECUTE=1`.
 
 ## Documentation
 

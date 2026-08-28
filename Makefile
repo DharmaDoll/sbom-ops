@@ -5,9 +5,11 @@ DT_LAB_DIR ?= var/dt-lab
 DT_LAB_ROOT := lab/dependency_track
 DT_LAB_PYTHONPATH := src:$(DT_LAB_ROOT)/src
 DT_LAB_MANIFEST := $(DT_LAB_ROOT)/scenarios/scenarios.yaml
+DT_LAB_EXECUTE_FLAG = $(if $(filter 1 true yes,$(EXECUTE)),--execute,)
+DT_LAB_CLEANUP_ON_SUCCESS_FLAG = $(if $(filter 1 true yes,$(CLEANUP)),--cleanup-on-success,)
 PYTHON ?= python3.12
 
-.PHONY: dt-up dt-down dt-logs dt-ps dt-openapi-check dt-lab-validate dt-lab-openapi dt-lab-run dt-lab-test dt-bom-upload dt-demo-upload dt-demo-update-upload infra-gcp-poc-fmt-check infra-gcp-poc-validate test lint
+.PHONY: dt-up dt-down dt-logs dt-ps dt-openapi-check dt-lab-validate dt-lab-openapi dt-lab-run dt-lab-cleanup dt-lab-test dt-bom-upload dt-demo-upload dt-demo-update-upload infra-gcp-poc-fmt-check infra-gcp-poc-validate test lint
 
 dt-up:
 	docker compose -f $(COMPOSE_FILE) up -d
@@ -33,7 +35,11 @@ dt-lab-openapi:
 	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m dt_lab.cli openapi-inventory "$(DT_LAB_DIR)/openapi.json" --output "$(DT_LAB_DIR)/openapi-inventory.json"
 
 dt-lab-run:
-	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m dt_lab.cli run-scenarios --manifest "$(DT_LAB_MANIFEST)" --output-dir "$(DT_LAB_DIR)/runs" --openapi-inventory "$(DT_LAB_DIR)/openapi-inventory.json"
+	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m dt_lab.cli run-scenarios --manifest "$(DT_LAB_MANIFEST)" --output-dir "$(DT_LAB_DIR)/runs" --openapi-inventory "$(DT_LAB_DIR)/openapi-inventory.json" $(DT_LAB_CLEANUP_ON_SUCCESS_FLAG)
+
+dt-lab-cleanup:
+	$(if $(strip $(RUN_ID)),,$(error RUN_ID is required, for example: make dt-lab-cleanup RUN_ID=<uuid>))
+	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m dt_lab.cli cleanup-run --output-dir "$(DT_LAB_DIR)/runs" --run-id "$(RUN_ID)" $(DT_LAB_EXECUTE_FLAG)
 
 dt-lab-test:
 	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m pytest -q $(DT_LAB_ROOT)/tests

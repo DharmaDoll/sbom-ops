@@ -28,6 +28,8 @@ The repository has a working MVP with:
   scenario runner with raw observations and Component delta reports
 - physical separation of the repository-only DT lab from the product wheel,
   runtime CLI, adapter, and test suite
+- run-scoped DT lab Project cleanup with a durable ledger, local dry-run,
+  live identity verification, explicit deletion, and immutable audits
 - DT lab coverage for Component identity, add/remove lifecycle, Project version
   boundaries, direct/transitive dependency graphs, CycloneDX Services, and
   source/alias/EPSS Finding projections

@@ -576,6 +576,23 @@ fixture, production tests, and updated product documentation. Branch separation
 alone is not a security boundary; mutating experiments require a disposable
 Project, least-privilege credentials, and an explicit CLI opt-in.
 
+Every lab run must persist a run-scoped Project ledger before upload and update
+it with the observed Project UUID. Lab cleanup must be a local dry-run by
+default. Executed cleanup must:
+
+- use a dedicated key with `VIEW_PORTFOLIO` and `PORTFOLIO_MANAGEMENT`
+- accept one canonical run UUID rather than an arbitrary Project selector
+- require the `dt-lab-` Project-name prefix and matching
+  `-lab-<first-eight-run-id-characters>` version
+- re-read the live Project and verify name, version, and recorded UUID before
+  calling `DELETE /api/v1/project/{uuid}`
+- treat an already absent Project as an idempotent success
+- fail closed on every identity mismatch and preserve an immutable local audit
+- retain local observations and failed-run Projects unless explicitly cleaned
+
+Automatic cleanup is permitted only after a successful run and explicit
+`--cleanup-on-success`; failed runs must remain available for diagnosis.
+
 ## Open Items
 
 These are intentionally deferred, not blockers for the first implementation:

@@ -181,6 +181,8 @@ Rules:
 6. Never merge credentials, raw observations, environment-specific UUIDs, or temporary investigation code.
 7. Mutating Analysis, VEX, suppression, policy, or administrative scenarios require a disposable Project, least-privilege key, and explicit CLI opt-in.
 8. Run product tests and lab tests independently before merge.
+9. Project cleanup must remain run-scoped and dry-run by default; require the lab namespace, matching run marker, live identity verification, a dedicated cleanup key, explicit execution, and a local audit.
+10. Never add prefix-only bulk deletion or an implicit full-database reset.
 
 
 ## Google Cloud Infrastructure Development Rule

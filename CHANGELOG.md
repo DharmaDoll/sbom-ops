@@ -10,3 +10,5 @@
 - Separate Finding, Dependency-Track analysis, and remediation workflow state
 - Move the Dependency-Track behavior lab into a repository-only tree, separate
   from the product wheel, runtime CLI, adapter, and tests
+- Add safe run-scoped DT lab Project cleanup with dry-run planning, live
+  identity verification, explicit execution, and local audit records

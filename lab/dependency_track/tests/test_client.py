@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import pytest
 from dt_lab import client as client_module
-from dt_lab.client import DependencyTrackLabClient
+from dt_lab.client import DependencyTrackLabApiError, DependencyTrackLabClient
 from dt_lab.domain import DependencyTrackObservation
 
-from sbom_ops.clients.http import HttpJsonResponse
+from sbom_ops.clients.http import HttpApiError, HttpJsonResponse
 
 
 def test_bom_upload_by_project_coordinates_uses_auto_create(
@@ -125,3 +126,46 @@ def test_wait_for_bom_processing_polls_until_complete(monkeypatch) -> None:
     monkeypatch.setattr(client_module.time, "sleep", lambda _: None)
 
     client.wait_for_bom_processing("token-1", timeout=1, poll_interval=0)
+
+
+def test_delete_project_requires_a_204_empty_response(monkeypatch) -> None:
+    captured = {}
+
+    def fake_request_json(request, **kwargs):
+        captured["request"] = request
+        captured["kwargs"] = kwargs
+        return HttpJsonResponse(
+            payload=None,
+            status=204,
+            headers={},
+            duration_seconds=0.01,
+        )
+
+    monkeypatch.setattr(client_module, "request_json", fake_request_json)
+
+    DependencyTrackLabClient("https://dtrack.example", "cleanup-key").delete_project(
+        "018f6aca-9705-7f61-a36b-4f16ec3b1f4a"
+    )
+
+    request = captured["request"]
+    assert request.method == "DELETE"
+    assert request.full_url.endswith(
+        "/api/v1/project/018f6aca-9705-7f61-a36b-4f16ec3b1f4a"
+    )
+    assert request.get_header("X-api-key") == "cleanup-key"
+    assert captured["kwargs"]["allow_empty"] is True
+    assert captured["kwargs"]["return_response"] is True
+
+
+def test_delete_project_preserves_http_status(monkeypatch) -> None:
+    def fail_request(request, **kwargs):
+        raise HttpApiError("forbidden", status=403)
+
+    monkeypatch.setattr(client_module, "request_json", fail_request)
+
+    with pytest.raises(DependencyTrackLabApiError) as captured:
+        DependencyTrackLabClient(
+            "https://dtrack.example", "cleanup-key"
+        ).delete_project("018f6aca-9705-7f61-a36b-4f16ec3b1f4a")
+
+    assert captured.value.status == 403

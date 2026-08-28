@@ -13,6 +13,10 @@ from sbom_ops.clients.http import HttpApiError, HttpJsonResponse, request_json
 class DependencyTrackLabApiError(RuntimeError):
     """Raised when Dependency-Track cannot serve a lab request."""
 
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
 
 class DependencyTrackLabClient:
     """Repository-only adapter for exploratory Dependency-Track observations."""
@@ -48,7 +52,8 @@ class DependencyTrackLabClient:
         except HttpApiError as exc:
             detail = f" (HTTP {exc.status})" if exc.status else ""
             raise DependencyTrackLabApiError(
-                f"Dependency-Track lab request failed{detail}: {path}"
+                f"Dependency-Track lab request failed{detail}: {path}",
+                status=exc.status,
             ) from exc
 
     def _observe_json(
@@ -75,7 +80,8 @@ class DependencyTrackLabClient:
         except HttpApiError as exc:
             detail = f" (HTTP {exc.status})" if exc.status else ""
             raise DependencyTrackLabApiError(
-                f"Dependency-Track lab observation failed{detail}: {path}"
+                f"Dependency-Track lab observation failed{detail}: {path}",
+                status=exc.status,
             ) from exc
         if not isinstance(response, HttpJsonResponse):
             raise DependencyTrackLabApiError(
@@ -159,7 +165,8 @@ class DependencyTrackLabClient:
         except HttpApiError as exc:
             detail = f" (HTTP {exc.status})" if exc.status else ""
             raise DependencyTrackLabApiError(
-                f"Dependency-Track lab BOM upload failed{detail}"
+                f"Dependency-Track lab BOM upload failed{detail}",
+                status=exc.status,
             ) from exc
         token = payload.get("token") if isinstance(payload, dict) else None
         if not token:
@@ -250,3 +257,35 @@ class DependencyTrackLabClient:
             },
             accept="application/vnd.cyclonedx+json",
         )
+
+    def delete_project(self, project_uuid: str) -> None:
+        """Delete one verified lab Project using DT's project API."""
+        path = f"/api/v1/project/{project_uuid}"
+        request = Request(
+            f"{self._base_url}{path}",
+            method="DELETE",
+            headers={"Accept": "application/json", "X-Api-Key": self._api_key},
+        )
+        try:
+            response = request_json(
+                request,
+                timeout=self._timeout,
+                max_retries=self._max_retries,
+                backoff_seconds=self._retry_backoff_seconds,
+                error_message=f"Dependency-Track lab Project deletion failed: {path}",
+                return_response=True,
+                allow_empty=True,
+            )
+        except HttpApiError as exc:
+            detail = f" (HTTP {exc.status})" if exc.status else ""
+            raise DependencyTrackLabApiError(
+                f"Dependency-Track lab Project deletion failed{detail}: {path}",
+                status=exc.status,
+            ) from exc
+        if not isinstance(response, HttpJsonResponse) or response.status != 204:
+            status = response.status if isinstance(response, HttpJsonResponse) else None
+            raise DependencyTrackLabApiError(
+                "Dependency-Track lab Project deletion returned an unexpected "
+                f"response: {path}",
+                status=status,
+            )

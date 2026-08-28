@@ -18,3 +18,5 @@
 - Keep `src/sbom_ops/` independent of the repository-only DT lab
 - Develop lab experiments on short-lived branches and delete them after merge
 - Promote lab findings only with reviewed fixtures, production tests, and docs
+- Keep lab cleanup run-scoped, dry-run by default, fail-closed, and covered by
+  adapter, service, CLI, and audit-contract tests

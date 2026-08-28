@@ -30,12 +30,14 @@ src/sbom_ops ------------------------------------------X-> lab
 ```text
 lab/dependency_track/
 ├── README.md
+├── fixtures/
 ├── scenarios/
 │   ├── scenarios.yaml
 │   └── sboms/
 ├── src/dt_lab/
 │   ├── cli.py
 │   ├── client.py
+│   ├── cleanup.py
 │   ├── domain.py
 │   └── service.py
 └── tests/
@@ -68,6 +70,14 @@ export SBOM_OPS_DT_API_KEY=replace-with-read-key
 make dt-lab-run
 ```
 
+The optional cleanup key is deliberately separate from upload and read access.
+Its team needs `VIEW_PORTFOLIO` to verify each live Project and
+`PORTFOLIO_MANAGEMENT` to delete it:
+
+```bash
+export SBOM_OPS_DT_CLEANUP_API_KEY=replace-with-cleanup-key
+```
+
 Use the module directly to select scenarios or include every OpenAPI tag:
 
 ```bash
@@ -83,6 +93,63 @@ python -m dt_lab.cli openapi-inventory \
   --output var/dt-lab/openapi-inventory-all.json
 ```
 
+## Cleaning a Run
+
+Each new run writes `projects.json` before uploading and updates the ledger with
+the Project UUID after lookup. Cleanup is always scoped to one run. Preview the
+plan locally first; this does not contact Dependency-Track:
+
+```bash
+make dt-lab-cleanup RUN_ID=25dfd88e-2673-462b-9f40-818279ecd8b5
+```
+
+After reviewing the targets, execute the verified deletion:
+
+```bash
+make dt-lab-cleanup \
+  RUN_ID=25dfd88e-2673-462b-9f40-818279ecd8b5 \
+  EXECUTE=1
+```
+
+For disposable successful runs, cleanup may be requested with the run itself:
+
+```bash
+make dt-lab-run CLEANUP=1
+```
+
+`CLEANUP=1` is equivalent to `--cleanup-on-success`. A failed scenario is never
+cleaned automatically, so its DT Project and local observations remain
+available for diagnosis.
+
+Before every deletion, the lab checks all of the following:
+
+1. The requested run ID is a canonical UUID and matches `run.json`.
+2. The recorded Project name starts with `dt-lab-`.
+3. The Project version ends with `-lab-<first-eight-run-id-characters>`.
+4. A live name/version lookup returns the same identity.
+5. The live UUID matches the recorded UUID, when one was captured.
+
+Any mismatch fails closed. A missing Project is treated as already cleaned, so
+the command is safe to repeat. Every preview and execution writes an immutable
+audit record under `var/dt-lab/runs/<run-id>/cleanups/`. Raw observations and
+audit files remain local and ignored; cleanup deletes only the verified DT
+Projects. It does not delete local evidence or reset the entire DT database.
+
+Reproducibility does not depend on cleaning a preceding run: every run already
+uses a fresh Project version. Cleanup controls portfolio accumulation after the
+result has been inspected. Datasource mirrors, global policies, users, teams,
+and API keys remain stable experiment inputs and are intentionally not reset.
+
+Runs created before `projects.json` was introduced can still be planned from
+their captured `project-lookup.json` observations under the same checks.
+
+The reduced
+[`fixtures/dependency-track-openapi.json`](fixtures/dependency-track-openapi.json)
+preserves the reviewed v4.14.3 delete contract (`204`, `401`, `403`, `404`) and
+`PORTFOLIO_MANAGEMENT` requirement, plus the lookup contract and its
+`VIEW_PORTFOLIO` requirement. Recheck it against the target instance's
+`/api/openapi.json` before upgrading Dependency-Track.
+
 ## Scenario Contract
 
 The source of truth is [`scenarios/scenarios.yaml`](scenarios/scenarios.yaml).
@@ -90,9 +157,10 @@ Each scenario declares a purpose, isolated Project identity, implementation
 status, ordered SBOM steps, and the API areas to observe. Implemented scenarios
 must reference existing SBOM files; planned scenarios may omit steps.
 
-The manifest validator checks repository-level invariants such as unique
-CycloneDX serial numbers and valid dependency references. New or changed valid
-samples must also pass the official schema for their declared CycloneDX version.
+Project names must use the `dt-lab-` prefix. The manifest validator also checks
+repository-level invariants such as unique CycloneDX serial numbers and valid
+dependency references. New or changed valid samples must also pass the official
+schema for their declared CycloneDX version.
 
 Every run adds a unique suffix to the declared Project version. A step may
 override that version to compare separate releases of one named Project without
@@ -104,6 +172,9 @@ and a sanitized error.
 The lab must not write Analysis, VEX, suppression, policy, or administrative
 state unless a scenario explicitly covers that mutation, uses a disposable
 Project and least-privilege lab key, and requires an explicit CLI opt-in.
+Project cleanup is the sole generally available mutation: it requires a
+dedicated cleanup key, a run-scoped ledger, live identity verification, and
+`--execute` or `--cleanup-on-success`.
 
 ## Branch Workflow
 

@@ -34,6 +34,7 @@ def request_json(
     allow_not_modified: bool = False,
     return_headers: bool = False,
     return_response: bool = False,
+    allow_empty: bool = False,
 ) -> Any:
     """Fetch JSON with bounded retries for transient failures only."""
     if return_headers and return_response:
@@ -44,7 +45,12 @@ def request_json(
     for attempt in range(attempts):
         try:
             with opener(request, timeout=timeout) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+                response_body = response.read()
+                payload = (
+                    None
+                    if allow_empty and not response_body
+                    else json.loads(response_body.decode("utf-8"))
+                )
                 response_headers = dict(getattr(response, "headers", {}).items())
                 if return_response:
                     status = getattr(response, "status", None)
