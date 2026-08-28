@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 
 target:
   dependency_track_version: 4.14.3
@@ -10,6 +10,10 @@ scenarios:
     category: lifecycle
     status: implemented
     purpose: Observe identity and Finding changes when vulnerable components are updated or replaced.
+    hypotheses:
+      - DT updates inventory and Findings when a new SBOM replaces components in the same Project version.
+    decision_questions:
+      - Can DT Finding lifecycle provide remediation evidence without duplicating SBOM diff logic in sbom-ops?
     project:
       name: dt-lab-vulnerable-demo
       version: 0.1.0
@@ -39,6 +43,10 @@ scenarios:
     category: identity
     status: implemented
     purpose: Distinguish components with identical display coordinates but different ecosystems or PURLs.
+    hypotheses:
+      - DT preserves distinct component identities when display coordinates match but PURLs differ.
+    decision_questions:
+      - Can sbom-ops rely on DT identity plus PURL instead of defining a parallel component identity scheme?
     project:
       name: dt-lab-identity-purl
       version: 1.0.0
@@ -57,6 +65,10 @@ scenarios:
     category: identity
     status: implemented
     purpose: Measure matching and UUID stability when PURL is absent and hashes or CPEs are present.
+    hypotheses:
+      - DT applies usable fallback identity rules when a component has no PURL.
+    decision_questions:
+      - Which identifiers must sbom-ops require or preserve when DT cannot use a PURL?
     project:
       name: dt-lab-identity-fallback
       version: 1.0.0
@@ -75,6 +87,10 @@ scenarios:
     category: identity
     status: implemented
     purpose: Observe one component reached through multiple dependency paths without duplicate remediation work.
+    hypotheses:
+      - DT represents one component reached by multiple dependency paths without duplicate Findings.
+    decision_questions:
+      - Can DT own component and Finding deduplication for remediation task creation?
     project:
       name: dt-lab-identity-paths
       version: 1.0.0
@@ -94,6 +110,10 @@ scenarios:
     category: lifecycle
     status: implemented
     purpose: Record Component, Finding, and Metrics transitions across add and remove uploads.
+    hypotheses:
+      - A replacement SBOM makes DT inventory, Findings, and metrics reflect component additions and removals.
+    decision_questions:
+      - Which DT transitions are reliable enough to open, update, or close remediation tasks?
     project:
       name: dt-lab-lifecycle-components
       version: 1.0.0
@@ -123,6 +143,10 @@ scenarios:
     category: lifecycle
     status: implemented
     purpose: Compare UUID and Finding behavior across releases of the same named Project.
+    hypotheses:
+      - DT isolates component and Finding identity by Project version while retaining portfolio relationships.
+    decision_questions:
+      - Should remediation tasks follow a DT Project version, a component, or a vulnerability across releases?
     project:
       name: dt-lab-lifecycle-versions
       version: 1.0.0
@@ -152,6 +176,10 @@ scenarios:
     category: portfolio
     status: planned
     purpose: Measure inherited risk and API responses across parent and child Projects.
+    hypotheses:
+      - DT parent-child Projects provide enough portfolio aggregation to avoid rebuilding it in sbom-ops.
+    decision_questions:
+      - Which hierarchy and inherited-risk behavior can sbom-ops delegate to DT?
     project:
       name: dt-lab-portfolio-parent
       version: 1.0.0
@@ -161,6 +189,10 @@ scenarios:
     category: portfolio
     status: planned
     purpose: Evaluate tags and properties as routing and ownership metadata.
+    hypotheses:
+      - DT tags or properties can hold stable routing metadata for remediation work.
+    decision_questions:
+      - Can ownership and repository routing be derived from DT without a second inventory?
     project:
       name: dt-lab-portfolio-metadata
       version: 1.0.0
@@ -170,6 +202,10 @@ scenarios:
     category: portfolio
     status: implemented
     purpose: Compare direct and transitive dependency graph representation.
+    hypotheses:
+      - DT dependency APIs preserve enough direct and transitive structure for impact context.
+    decision_questions:
+      - Can sbom-ops consume DT graph projections instead of reconstructing the CycloneDX dependency graph?
     project:
       name: dt-lab-dependency-graph
       version: 1.0.0
@@ -191,6 +227,10 @@ scenarios:
     category: triage
     status: implemented
     purpose: Compare CVE, GHSA, OSV, aliases, and vulnerability source identity.
+    hypotheses:
+      - DT correlates vulnerability sources and aliases well enough to prevent duplicate remediation tasks.
+    decision_questions:
+      - Which DT vulnerability identifier should anchor a remediation task across intelligence sources?
     project:
       name: dt-lab-triage-aliases
       version: 1.0.0
@@ -210,8 +250,31 @@ scenarios:
     category: triage
     status: planned
     purpose: Observe every Analysis state separately from Finding and remediation state.
+    hypotheses:
+      - DT Analysis states and audit history can own human security triage without a duplicate sbom-ops state machine.
+    decision_questions:
+      - Which Analysis states are authoritative inputs to task creation, updates, and closure?
+      - Which decisions must remain human-controlled and must never be inferred by sbom-ops?
     project:
       name: dt-lab-triage-analysis
+      version: 1.0.0
+    steps: []
+
+  - id: triage-delegation-boundary
+    category: triage
+    status: planned
+    purpose: Determine the maximum safe triage responsibility that can be delegated to Dependency-Track.
+    hypotheses:
+      - DT can own finding review, Analysis decisions, comments, suppression, VEX state, and their audit trail.
+      - GitHub or Jira only needs workflow state for remediation work that remains actionable after DT triage.
+      - sbom-ops can remain an orchestration bridge instead of maintaining a duplicate triage database.
+    decision_questions:
+      - Which triage data and actions are authoritative in DT, sbom-ops, and the work management system?
+      - Which DT changes can be detected reliably enough to create, update, or close remediation tasks?
+      - What minimal state must sbom-ops retain for idempotency and reconciliation?
+      - Which DT decisions require human approval or explicit workflow logic before downstream action?
+    project:
+      name: dt-lab-triage-delegation
       version: 1.0.0
     steps: []
 
@@ -219,6 +282,11 @@ scenarios:
     category: triage
     status: planned
     purpose: Validate VEX import, Analysis projection, export, and human approval boundaries.
+    hypotheses:
+      - DT can preserve reviewed VEX and Analysis decisions through import and export without semantic loss.
+    decision_questions:
+      - Can DT be the authoritative store for VEX-backed applicability decisions?
+      - What approval boundary must sbom-ops enforce before acting on VEX or Analysis state?
     project:
       name: dt-lab-triage-vex
       version: 1.0.0
@@ -228,6 +296,10 @@ scenarios:
     category: triage
     status: planned
     purpose: Keep vulnerability findings and policy violations as independent workflows.
+    hypotheses:
+      - DT distinguishes policy violation analysis from vulnerability analysis throughout its API and audit model.
+    decision_questions:
+      - Should policy violations create a separate task type or remain outside the first product workflow?
     project:
       name: dt-lab-triage-policy
       version: 1.0.0
@@ -237,6 +309,10 @@ scenarios:
     category: robustness
     status: planned
     purpose: Capture synchronous schema validation and asynchronous processing failure contracts.
+    hypotheses:
+      - DT exposes enough failure detail to classify invalid uploads without reproducing its validation logic.
+    decision_questions:
+      - Which failures should sbom-ops surface, retry, or reject before upload?
     project:
       name: dt-lab-invalid-cyclonedx
       version: 1.0.0
@@ -246,6 +322,10 @@ scenarios:
     category: robustness
     status: planned
     purpose: Compare equivalent supported CycloneDX JSON and XML ingestion results.
+    hypotheses:
+      - Equivalent supported JSON and XML BOMs produce equivalent DT inventory and Findings.
+    decision_questions:
+      - Can sbom-ops remain format-neutral, or must it normalize inputs before upload?
     project:
       name: dt-lab-format-equivalence
       version: 1.0.0
@@ -255,6 +335,10 @@ scenarios:
     category: robustness
     status: planned
     purpose: Measure upload, processing, query latency, and response size at controlled scales.
+    hypotheses:
+      - DT asynchronous processing and pagination remain usable at representative SBOM sizes.
+    decision_questions:
+      - What polling, pagination, timeout, and retry limits belong in the product adapter?
     project:
       name: dt-lab-large-bom
       version: 1.0.0

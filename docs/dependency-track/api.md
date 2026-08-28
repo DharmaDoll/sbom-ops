@@ -37,8 +37,9 @@ The client must expose intent-based methods, not raw endpoint names.
 Exploratory calls belong only in the repository lab adapter at
 [`lab/dependency_track/src/dt_lab/client.py`](../../lab/dependency_track/src/dt_lab/client.py).
 Product modules must not import the lab. A lab observation becomes production
-behavior only after official documentation review and promotion into a minimal
-fixture, client contract, and product test.
+behavior only through an explicit reviewed decision: use the existing DT
+capability, encode a verified constraint in a minimal fixture and product test,
+implement a missing orchestration gap, or reject/defer the hypothesis.
 
 Dependency-Track is the preferred source for EPSS values and VEX-derived
 analysis state. The client should expose normalized finding fields for these
@@ -99,8 +100,10 @@ OpenAPI contract documents `204` on successful deletion and requires
 `PORTFOLIO_MANAGEMENT`; the lookup also requires `VIEW_PORTFOLIO`. These methods
 must not be exposed by the production client merely because the lab uses them.
 
-## Behavior Lab Promotion Boundary
+## Behavior Lab Decision Boundary
 
 The repository-only [Dependency-Track behavior lab](../../lab/dependency_track/README.md)
 owns exploratory endpoints, scenario execution, raw observations, and current
-behavior notes. This product API guide owns only reviewed production contracts.
+behavior notes. It also tests how much triage can remain authoritative in DT
+without duplicating state in sbom-ops. This product API guide owns only reviewed
+production contracts and explicitly justified adapter behavior.

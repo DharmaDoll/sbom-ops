@@ -83,6 +83,20 @@ def _required_string(payload: dict[str, Any], key: str, field_name: str) -> str:
     return value
 
 
+def _required_string_tuple(
+    payload: dict[str, Any], key: str, field_name: str
+) -> tuple[str, ...]:
+    values = _list(payload.get(key), f"{field_name}.{key}")
+    result: list[str] = []
+    for index, value in enumerate(values):
+        if not isinstance(value, str) or not value.strip():
+            raise LabManifestError(
+                f"{field_name}.{key}[{index}] must be a non-empty string"
+            )
+        result.append(value)
+    return tuple(result)
+
+
 def _load_step(payload: Any, scenario_id: str) -> ScenarioStep:
     step = _mapping(payload, f"scenario {scenario_id} step")
     _reject_unknown(
@@ -110,7 +124,16 @@ def _load_scenario(payload: Any) -> LabScenario:
     scenario = _mapping(payload, "scenario")
     _reject_unknown(
         scenario,
-        {"id", "category", "status", "purpose", "project", "steps"},
+        {
+            "id",
+            "category",
+            "status",
+            "purpose",
+            "hypotheses",
+            "decision_questions",
+            "project",
+            "steps",
+        },
         "scenario",
     )
     scenario_id = _required_string(scenario, "id", "scenario")
@@ -140,6 +163,12 @@ def _load_scenario(payload: Any) -> LabScenario:
         ),
         project_version=_required_string(
             project, "version", f"scenario {scenario_id}.project"
+        ),
+        hypotheses=_required_string_tuple(
+            scenario, "hypotheses", f"scenario {scenario_id}"
+        ),
+        decision_questions=_required_string_tuple(
+            scenario, "decision_questions", f"scenario {scenario_id}"
         ),
         steps=steps,
     )

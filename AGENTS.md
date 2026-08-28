@@ -164,7 +164,8 @@ Rules:
 7. Treat GitHub Issues as the source of truth for remediation workflow.
 8. Never overwrite Dependency-Track analysis state without explicit workflow logic.
 9. All production Dependency-Track API changes require integration tests or documented mock fixtures.
-10. Lab observations are not production contracts until reviewed and promoted into product fixtures, code, tests, and documentation.
+10. Lab observations are decision evidence, not code to transfer mechanically. For each hypothesis, decide whether to use an existing Dependency-Track capability, encode a verified constraint in product fixtures and tests, implement only the missing orchestration gap, or reject/defer the hypothesis with evidence.
+11. Prioritize lab work by unresolved product risk and the shortest path to the project goal. Do not implement a planned scenario merely to complete the scenario list.
 
 ## Dependency-Track Lab Isolation Rule
 
@@ -177,7 +178,7 @@ Rules:
 2. Lab scenarios, adapters, domain models, orchestration, and tests stay under `lab/dependency_track/`.
 3. Raw observations and target-specific OpenAPI documents stay under ignored `var/dt-lab/`.
 4. Develop experiments on short-lived `lab/*` or `refactor/*` branches; do not maintain a long-lived lab branch.
-5. Merge only reproducible scenarios, stable lab code, reviewed fixtures, durable documentation, and justified product changes.
+5. Merge only reproducible scenarios, stable lab code, reviewed fixtures, durable documentation, and justified product decisions or changes.
 6. Never merge credentials, raw observations, environment-specific UUIDs, or temporary investigation code.
 7. Mutating Analysis, VEX, suppression, policy, or administrative scenarios require a disposable Project, least-privilege key, and explicit CLI opt-in.
 8. Run product tests and lab tests independently before merge.

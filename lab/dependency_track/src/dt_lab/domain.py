@@ -108,6 +108,8 @@ class LabScenario:
     purpose: str
     project_name: str
     project_version: str
+    hypotheses: tuple[str, ...]
+    decision_questions: tuple[str, ...]
     steps: tuple[ScenarioStep, ...] = ()
 
     def __post_init__(self) -> None:
@@ -121,6 +123,22 @@ class LabScenario:
         if not self.project_name.startswith("dt-lab-"):
             raise LabManifestError(
                 f"scenario {self.id!r} Project name must start with 'dt-lab-'"
+            )
+        if not self.hypotheses:
+            raise LabManifestError(
+                f"scenario {self.id!r} requires at least one hypothesis"
+            )
+        if any(not hypothesis.strip() for hypothesis in self.hypotheses):
+            raise LabManifestError(
+                f"scenario {self.id!r} hypotheses must not contain empty values"
+            )
+        if not self.decision_questions:
+            raise LabManifestError(
+                f"scenario {self.id!r} requires at least one decision question"
+            )
+        if any(not question.strip() for question in self.decision_questions):
+            raise LabManifestError(
+                f"scenario {self.id!r} decision questions must not contain empty values"
             )
         if self.status is ScenarioStatus.IMPLEMENTED and not self.steps:
             raise LabManifestError(
@@ -138,7 +156,7 @@ class LabManifest:
     scenarios: tuple[LabScenario, ...]
 
     def __post_init__(self) -> None:
-        if self.schema_version != 1:
+        if self.schema_version != 2:
             raise LabManifestError(
                 f"unsupported lab manifest schema version: {self.schema_version}"
             )

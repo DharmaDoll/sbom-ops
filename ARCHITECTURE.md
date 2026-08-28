@@ -213,9 +213,11 @@ domain models, orchestration, CLI, scenario corpus, and tests. It is excluded
 from the product wheel and may depend on generic product infrastructure, but
 `src/sbom_ops/` must never depend on it.
 
-Lab behavior is promoted into the product only through a reviewed stable
-fixture, explicit production contract, tests, and documentation. Experiments
-use short-lived branches; the stable lab harness remains on `main`.
+Lab observations feed an explicit product decision: use an existing DT
+capability, encode a verified DT constraint in fixtures and contracts,
+implement only the missing orchestration gap, or reject/defer the hypothesis.
+Lab code is not a staging area for product code. Experiments use short-lived
+branches; the stable lab harness remains on `main`.
 
 The lab owns a run-scoped Project ledger and cleanup service. Cleanup depends on
 the ledger plus a live name/version/UUID lookup, is dry-run by default, and uses

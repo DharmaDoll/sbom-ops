@@ -33,15 +33,23 @@ The repository has a working MVP with:
 - DT lab coverage for Component identity, add/remove lifecycle, Project version
   boundaries, direct/transitive dependency graphs, CycloneDX Services, and
   source/alias/EPSS Finding projections
+- hypothesis and product-decision questions attached to every DT lab scenario
 - a proposed GCP runtime ADR and static Terraform evaluation harness
 
 ## Phase 0: Production Validation (P0)
 
 - Validate Dependency-Track Project, Finding, EPSS, Analysis, pagination, and
   processing-token behavior against a representative environment.
-- Implement the planned Identity, Lifecycle, Portfolio, Triage, and Robustness
-  scenarios in `lab/dependency_track/scenarios/scenarios.yaml`; capture stable
-  observations and promote only reviewed contracts to product test fixtures.
+- Run the highest-value planned Identity, Lifecycle, Portfolio, Triage, and
+  Robustness scenarios in `lab/dependency_track/scenarios/scenarios.yaml` until
+  each product decision has sufficient evidence. The planned list is an
+  uncertainty backlog, not a coverage target.
+- Determine the maximum safe triage boundary delegated to Dependency-Track:
+  Analysis decisions and history, comments, suppression, VEX, change detection,
+  permissions, and the minimum reconciliation state retained by sbom-ops.
+- For each reviewed lab result, explicitly choose DT capability adoption,
+  verified constraint encoding, minimal gap implementation, or evidence-backed
+  rejection/deferment.
 - Validate GitHub Issue create, update, migration, and safe closure after a
   reviewed dry-run.
 - Exercise timeout, `429`, `5xx`, partial reads, analysis-in-progress, and

@@ -27,7 +27,9 @@ def test_repository_lab_manifest_is_valid() -> None:
     manifest = load_lab_manifest(MANIFEST_PATH)
 
     assert manifest.target.dependency_track_version == "4.14.3"
-    assert len(manifest.scenarios) == 16
+    assert len(manifest.scenarios) == 17
+    assert all(scenario.hypotheses for scenario in manifest.scenarios)
+    assert all(scenario.decision_questions for scenario in manifest.scenarios)
     implemented = [
         scenario
         for scenario in manifest.scenarios
@@ -44,13 +46,18 @@ def test_repository_lab_manifest_is_valid() -> None:
         "triage-multiple-sources-aliases",
     ]
     assert sum(len(scenario.steps) for scenario in implemented) == 11
+    assert any(
+        scenario.id == "triage-delegation-boundary"
+        and scenario.status is ScenarioStatus.PLANNED
+        for scenario in manifest.scenarios
+    )
 
 
 def test_lab_manifest_rejects_missing_implemented_bom(tmp_path: Path) -> None:
     manifest_path = tmp_path / "scenarios.yaml"
     manifest_path.write_text(
         """
-schema_version: 1
+schema_version: 2
 target:
   dependency_track_version: 4.14.3
   cyclonedx_versions: ["1.5"]
@@ -59,6 +66,8 @@ scenarios:
     category: robustness
     status: implemented
     purpose: Reject missing scenario files.
+    hypotheses: [A referenced BOM must exist.]
+    decision_questions: ["Does manifest validation fail before execution?"]
     project: {name: dt-lab-missing, version: 1.0.0}
     steps:
       - id: upload
@@ -97,7 +106,7 @@ def test_lab_manifest_rejects_unknown_dependency_reference(tmp_path: Path) -> No
     manifest_path = tmp_path / "scenarios.yaml"
     manifest_path.write_text(
         """
-schema_version: 1
+schema_version: 2
 target:
   dependency_track_version: 4.14.3
   cyclonedx_versions: ["1.5"]
@@ -106,6 +115,8 @@ scenarios:
     category: robustness
     status: implemented
     purpose: Reject an invalid dependency graph.
+    hypotheses: [Unknown dependency references are invalid.]
+    decision_questions: ["Does validation reject the invalid graph?"]
     project: {name: dt-lab-invalid, version: 1.0.0}
     steps:
       - id: upload
@@ -168,7 +179,7 @@ def test_lab_manifest_requires_cleanup_safe_project_prefix(tmp_path: Path) -> No
     manifest_path = tmp_path / "scenarios.yaml"
     manifest_path.write_text(
         """
-schema_version: 1
+schema_version: 2
 target:
   dependency_track_version: 4.14.3
   cyclonedx_versions: ["1.5"]
@@ -177,12 +188,38 @@ scenarios:
     category: robustness
     status: planned
     purpose: Reject a Project outside the lab namespace.
+    hypotheses: [Every scenario must use the lab Project namespace.]
+    decision_questions: ["Does validation reject an unsafe Project name?"]
     project: {name: production-service, version: 1.0.0}
 """.strip(),
         encoding="utf-8",
     )
 
     with pytest.raises(LabManifestError, match="must start with 'dt-lab-'"):
+        load_lab_manifest(manifest_path)
+
+
+def test_lab_manifest_requires_hypotheses_and_decision_questions(
+    tmp_path: Path,
+) -> None:
+    manifest_path = tmp_path / "scenarios.yaml"
+    manifest_path.write_text(
+        """
+schema_version: 2
+target:
+  dependency_track_version: 4.14.3
+  cyclonedx_versions: ["1.5"]
+scenarios:
+  - id: missing-decision-context
+    category: triage
+    status: planned
+    purpose: Reject an experiment without decision context.
+    project: {name: dt-lab-missing-context, version: 1.0.0}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(LabManifestError, match="hypotheses must be a list"):
         load_lab_manifest(manifest_path)
 
 
@@ -209,7 +246,7 @@ def test_lab_cli_validates_repository_manifest(
     )
 
     assert main() == 0
-    assert "scenarios=16 implemented=8 planned=8 steps=11" in capsys.readouterr().out
+    assert "scenarios=17 implemented=8 planned=9 steps=11" in capsys.readouterr().out
 
 
 def test_lab_cli_writes_openapi_inventory(

@@ -18,7 +18,7 @@ Local repository guides:
 - `api.md` for production client implementation rules
 - `operations.md` for day-2 operating flow
 - [`../../lab/dependency_track/README.md`](../../lab/dependency_track/README.md)
-  for repository-only behavior exploration and promotion rules
+  for repository-only behavior exploration and product-decision rules
 
 Dependency-Track is used for:
 

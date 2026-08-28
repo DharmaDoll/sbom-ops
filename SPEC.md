@@ -564,17 +564,35 @@ Fixtures should cover:
 Dependency-Track behavior exploration is a repository-only subsystem under
 `lab/dependency_track/`; it is excluded from the product wheel and runtime CLI.
 Its versioned scenario manifest is
-`lab/dependency_track/scenarios/scenarios.yaml`. Product code must not import lab
-modules. Raw OpenAPI and API observations remain ignored under `var/dt-lab/`;
-only stable, reviewed contract examples belong in product test fixtures. Live
-vulnerability counts, EPSS values, and datasource timing must not be treated as
-deterministic assertions.
+`lab/dependency_track/scenarios/scenarios.yaml`. Every repository scenario must
+state hypotheses and decision questions in addition to its purpose and
+observations. A planned status is an experiment backlog entry, not a requirement
+to implement the scenario for coverage.
 
-Experiments use short-lived branches. A behavior may be promoted from the lab
-only when the change includes official contract verification, a minimal reviewed
-fixture, production tests, and updated product documentation. Branch separation
-alone is not a security boundary; mutating experiments require a disposable
-Project, least-privilege credentials, and an explicit CLI opt-in.
+Each completed experiment must turn observations into one of four reviewed
+decisions:
+
+1. use an existing Dependency-Track capability and keep sbom-ops thin
+2. encode a verified Dependency-Track constraint in product fixtures, contracts,
+   tests, and documentation
+3. implement only the orchestration gap that Dependency-Track does not provide
+4. reject or defer the hypothesis with the supporting evidence recorded
+
+Product code must not import lab modules, and lab code is not mechanically moved
+into `src/sbom_ops/`. Raw OpenAPI and API observations remain ignored under
+`var/dt-lab/`; only minimal, reviewed contract examples belong in product test
+fixtures. Live vulnerability counts, EPSS values, and datasource timing must not
+be treated as deterministic assertions.
+
+The lab must explicitly test how far human security triage can remain in
+Dependency-Track—including Analysis decisions and history, comments,
+suppression, and VEX—and which state is still required in sbom-ops or the work
+management system. Until that boundary is supported by evidence, experiments
+must not create a second authoritative triage state machine.
+
+Experiments use short-lived branches. Branch separation alone is not a security
+boundary; mutating experiments require a disposable Project, least-privilege
+credentials, and an explicit CLI opt-in.
 
 Every lab run must persist a run-scoped Project ledger before upload and update
 it with the observed Project UUID. Lab cleanup must be a local dry-run by
