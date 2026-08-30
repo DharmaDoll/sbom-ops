@@ -1,4 +1,4 @@
-schema_version: 2
+schema_version: 3
 
 target:
   dependency_track_version: 4.14.3
@@ -248,17 +248,89 @@ scenarios:
 
   - id: triage-analysis-states
     category: triage
-    status: planned
-    purpose: Observe every Analysis state separately from Finding and remediation state.
+    status: implemented
+    purpose: Observe an Analysis decision cycle separately from Finding and remediation state.
     hypotheses:
       - DT Analysis states and audit history can own human security triage without a duplicate sbom-ops state machine.
+      - Suppressed Findings remain queryable explicitly while leaving the default unsuppressed Finding view.
+      - The RESOLVED state exposed by the target OpenAPI may be accepted even though the v4.14 Analysis States guide omits it.
     decision_questions:
       - Which Analysis states are authoritative inputs to task creation, updates, and closure?
       - Which decisions must remain human-controlled and must never be inferred by sbom-ops?
+      - Are state, justification, response, detail, comments, and suppression preserved consistently across the update response, audit trail, and Finding projection?
+      - Can suppression or RESOLVED ever justify downstream closure, or must closure remain based on verified Finding absence?
     project:
       name: dt-lab-triage-analysis
       version: 1.0.0
-    steps: []
+    steps:
+      - id: decision-cycle
+        bom: sboms/triage-analysis-states.cdx.json
+        observe:
+          - project
+          - components
+          - findings
+          - metrics
+        analysis_actions:
+          - id: begin-triage
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: IN_TRIAGE
+            justification: NOT_SET
+            response: NOT_SET
+            detail: Synthetic lab finding under investigation.
+            comment: DT lab begins a disposable analysis-state experiment.
+            suppressed: false
+          - id: mark-exploitable
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: EXPLOITABLE
+            justification: NOT_SET
+            response: UPDATE
+            detail: Synthetic lab decision requiring a component update.
+            comment: DT lab records an exploitable decision on a disposable Project.
+            suppressed: false
+          - id: mark-not-affected
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: NOT_AFFECTED
+            justification: CODE_NOT_REACHABLE
+            response: NOT_SET
+            detail: Synthetic lab decision used only to observe suppression behavior.
+            comment: DT lab records a not-affected decision and suppresses the Finding.
+            suppressed: true
+          - id: mark-false-positive
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: FALSE_POSITIVE
+            justification: NOT_SET
+            response: NOT_SET
+            detail: Synthetic lab decision used only to observe audit history.
+            comment: DT lab changes the disposable Finding to false-positive.
+            suppressed: true
+          - id: mark-resolved
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: RESOLVED
+            justification: NOT_SET
+            response: UPDATE
+            detail: Synthetic lab decision testing the OpenAPI-only RESOLVED state.
+            comment: DT lab tests whether DT 4.14.3 accepts and projects RESOLVED.
+            suppressed: false
+          - id: restore-not-set
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: NOT_SET
+            justification: NOT_SET
+            response: NOT_SET
+            detail: Synthetic lab experiment completed and restored to NOT_SET.
+            comment: DT lab restores the disposable Finding before cleanup.
+            suppressed: false
 
   - id: triage-delegation-boundary
     category: triage

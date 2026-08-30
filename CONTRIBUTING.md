@@ -19,5 +19,8 @@
 - Develop lab experiments on short-lived branches and delete them after merge
 - Treat lab findings as decision evidence: adopt DT capabilities first, encode
   verified constraints, and implement only gaps justified by observations
+- Update `lab/dependency_track/EXPERIMENTS.md` after every attempted live
+  experiment, including failed or inconclusive runs; separate observed facts
+  from interpretation and never commit raw evidence or environment UUIDs
 - Keep lab cleanup run-scoped, dry-run by default, fail-closed, and covered by
   adapter, service, CLI, and audit-contract tests

@@ -5,11 +5,13 @@ DT_LAB_DIR ?= var/dt-lab
 DT_LAB_ROOT := lab/dependency_track
 DT_LAB_PYTHONPATH := src:$(DT_LAB_ROOT)/src
 DT_LAB_MANIFEST := $(DT_LAB_ROOT)/scenarios/scenarios.yaml
+DT_LAB_CORPUS_CATALOG := $(DT_LAB_ROOT)/corpus/corpus.yaml
+DT_LAB_CORPUS_DIR := $(DT_LAB_DIR)/corpus
 DT_LAB_EXECUTE_FLAG = $(if $(filter 1 true yes,$(EXECUTE)),--execute,)
-DT_LAB_CLEANUP_ON_SUCCESS_FLAG = $(if $(filter 1 true yes,$(CLEANUP)),--cleanup-on-success,)
+DT_LAB_PROCESSING_TIMEOUT ?= 600
 PYTHON ?= python3.12
 
-.PHONY: dt-up dt-down dt-logs dt-ps dt-openapi-check dt-lab-validate dt-lab-openapi dt-lab-run dt-lab-cleanup dt-lab-test dt-bom-upload dt-demo-upload dt-demo-update-upload infra-gcp-poc-fmt-check infra-gcp-poc-validate test lint
+.PHONY: dt-up dt-down dt-logs dt-ps dt-openapi-check dt-lab-validate dt-lab-openapi dt-lab-run dt-lab-triage-analysis dt-lab-corpus-validate dt-lab-corpus-run dt-lab-cleanup dt-lab-test dt-bom-upload dt-demo-upload dt-demo-update-upload infra-gcp-poc-fmt-check infra-gcp-poc-validate test lint
 
 dt-up:
 	docker compose -f $(COMPOSE_FILE) up -d
@@ -35,7 +37,17 @@ dt-lab-openapi:
 	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m dt_lab.cli openapi-inventory "$(DT_LAB_DIR)/openapi.json" --output "$(DT_LAB_DIR)/openapi-inventory.json"
 
 dt-lab-run:
-	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m dt_lab.cli run-scenarios --manifest "$(DT_LAB_MANIFEST)" --output-dir "$(DT_LAB_DIR)/runs" --openapi-inventory "$(DT_LAB_DIR)/openapi-inventory.json" $(DT_LAB_CLEANUP_ON_SUCCESS_FLAG)
+	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m dt_lab.cli run-scenarios --manifest "$(DT_LAB_MANIFEST)" --output-dir "$(DT_LAB_DIR)/runs" --openapi-inventory "$(DT_LAB_DIR)/openapi-inventory.json"
+
+dt-lab-triage-analysis:
+	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m dt_lab.cli run-scenarios --manifest "$(DT_LAB_MANIFEST)" --output-dir "$(DT_LAB_DIR)/runs" --openapi-inventory "$(DT_LAB_DIR)/openapi-inventory.json" --scenario triage-analysis-states --allow-analysis-mutation
+
+dt-lab-corpus-validate:
+	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m dt_lab.cli validate-corpus --catalog "$(DT_LAB_CORPUS_CATALOG)" --artifact-dir "$(DT_LAB_CORPUS_DIR)" --require-local
+
+dt-lab-corpus-run:
+	$(if $(strip $(CORPUS_ID)),,$(error CORPUS_ID is required, for example: make dt-lab-corpus-run CORPUS_ID=go-otel-obi-0-12-2))
+	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m dt_lab.cli run-corpus --catalog "$(DT_LAB_CORPUS_CATALOG)" --artifact-dir "$(DT_LAB_CORPUS_DIR)" --artifact "$(CORPUS_ID)" --output-dir "$(DT_LAB_DIR)/runs" --openapi-inventory "$(DT_LAB_DIR)/openapi-inventory.json" --processing-timeout "$(DT_LAB_PROCESSING_TIMEOUT)"
 
 dt-lab-cleanup:
 	$(if $(strip $(RUN_ID)),,$(error RUN_ID is required, for example: make dt-lab-cleanup RUN_ID=<uuid>))

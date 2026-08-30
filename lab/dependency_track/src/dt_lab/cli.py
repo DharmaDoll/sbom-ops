@@ -17,7 +17,10 @@ from dt_lab.domain import (
 )
 from dt_lab.service import (
     RELEVANT_OPENAPI_TAGS,
+    build_corpus_lab_manifest,
     build_openapi_inventory,
+    inspect_corpus_catalog,
+    load_corpus_catalog,
     load_lab_manifest,
     openapi_inventory_dict,
     run_lab_scenarios,
@@ -65,9 +68,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=float(os.getenv("SBOM_OPS_DT_ANALYSIS_POLL_INTERVAL_SECONDS", "5")),
     )
     run_parser.add_argument(
-        "--cleanup-on-success",
+        "--allow-analysis-mutation",
         action="store_true",
-        help="delete this run's verified lab Projects after successful observation",
+        help=(
+            "allow selected analysis_actions on disposable lab Projects using "
+            "SBOM_OPS_DT_ANALYSIS_API_KEY"
+        ),
     )
 
     cleanup_parser = subparsers.add_parser("cleanup-run")
@@ -77,6 +83,43 @@ def build_parser() -> argparse.ArgumentParser:
         "--execute",
         action="store_true",
         help="perform verified Project deletion; otherwise only write a plan",
+    )
+
+    corpus_validate_parser = subparsers.add_parser("validate-corpus")
+    corpus_validate_parser.add_argument(
+        "--catalog", default="lab/dependency_track/corpus/corpus.yaml"
+    )
+    corpus_validate_parser.add_argument("--artifact-dir", default="var/dt-lab/corpus")
+    corpus_validate_parser.add_argument(
+        "--require-local",
+        action="store_true",
+        help="verify every local artifact hash and CycloneDX envelope",
+    )
+
+    corpus_run_parser = subparsers.add_parser("run-corpus")
+    corpus_run_parser.add_argument(
+        "--catalog", default="lab/dependency_track/corpus/corpus.yaml"
+    )
+    corpus_run_parser.add_argument("--artifact-dir", default="var/dt-lab/corpus")
+    corpus_run_parser.add_argument(
+        "--artifact",
+        action="append",
+        required=True,
+        help="explicit corpus artifact ID; repeat to select more than one",
+    )
+    corpus_run_parser.add_argument("--output-dir", default="var/dt-lab/runs")
+    corpus_run_parser.add_argument(
+        "--openapi-inventory", default="var/dt-lab/openapi-inventory.json"
+    )
+    corpus_run_parser.add_argument(
+        "--processing-timeout",
+        type=float,
+        default=float(os.getenv("SBOM_OPS_DT_ANALYSIS_WAIT_TIMEOUT_SECONDS", "120")),
+    )
+    corpus_run_parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=float(os.getenv("SBOM_OPS_DT_ANALYSIS_POLL_INTERVAL_SECONDS", "5")),
     )
     return parser
 
@@ -169,20 +212,28 @@ def _run_scenarios(args: argparse.Namespace) -> int:
             "run-scenarios requires SBOM_OPS_SBOM_UPLOAD_API_KEY and "
             "SBOM_OPS_DT_API_KEY"
         )
-    cleanup_key = os.getenv("SBOM_OPS_DT_CLEANUP_API_KEY")
-    if args.cleanup_on_success and not cleanup_key:
-        raise ValueError("--cleanup-on-success requires SBOM_OPS_DT_CLEANUP_API_KEY")
+    analysis_key = os.getenv("SBOM_OPS_DT_ANALYSIS_API_KEY")
+    if args.allow_analysis_mutation and not analysis_key:
+        raise ValueError(
+            "--allow-analysis-mutation requires SBOM_OPS_DT_ANALYSIS_API_KEY"
+        )
     manifest = load_lab_manifest(args.manifest)
     result = run_lab_scenarios(
         manifest,
         manifest_path=args.manifest,
         upload_client=_dependency_track_client(upload_key),
         read_client=_dependency_track_client(read_key),
+        analysis_client=(
+            _dependency_track_client(str(analysis_key))
+            if args.allow_analysis_mutation
+            else None
+        ),
         output_directory=args.output_dir,
         scenario_ids=tuple(args.scenario),
         processing_timeout=args.processing_timeout,
         poll_interval=args.poll_interval,
         openapi_contract_sha256=_openapi_hash(args.openapi_inventory),
+        allow_analysis_mutation=args.allow_analysis_mutation,
     )
     print(
         f"DT lab run completed: run_id={result.run_id} "
@@ -193,14 +244,6 @@ def _run_scenarios(args: argparse.Namespace) -> int:
             f"{step.scenario_id}/{step.step_id}: project={step.project_uuid} "
             f"observations={step.observation_count}"
         )
-    if args.cleanup_on_success:
-        cleanup_result = cleanup_lab_run(
-            output_directory=args.output_dir,
-            run_id=result.run_id,
-            execute=True,
-            client=_dependency_track_client(str(cleanup_key)),
-        )
-        _print_cleanup_result(cleanup_result)
     return 0
 
 
@@ -233,6 +276,66 @@ def _run_cleanup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_validate_corpus(args: argparse.Namespace) -> int:
+    catalog = load_corpus_catalog(args.catalog)
+    if not args.require_local:
+        print(
+            "DT lab corpus catalog valid: "
+            f"target={catalog.target.dependency_track_version} "
+            f"artifacts={len(catalog.artifacts)}"
+        )
+        return 0
+    inspections = inspect_corpus_catalog(catalog, args.artifact_dir)
+    print(
+        "DT lab corpus integrity valid (full schema not checked): "
+        f"artifacts={len(inspections)} "
+        f"bytes={sum(item.byte_count for item in inspections)} "
+        f"components={sum(item.component_count for item in inspections)}"
+    )
+    for item in inspections:
+        print(
+            f"{item.artifact_id}: bytes={item.byte_count} "
+            f"components={item.component_count} "
+            f"dependencies={item.dependency_count} "
+            f"services={item.service_count} "
+            f"vulnerabilities={item.vulnerability_count}"
+        )
+    return 0
+
+
+def _run_corpus(args: argparse.Namespace) -> int:
+    upload_key = os.getenv("SBOM_OPS_SBOM_UPLOAD_API_KEY")
+    read_key = os.getenv("SBOM_OPS_DT_API_KEY")
+    if not upload_key or not read_key:
+        raise ValueError(
+            "run-corpus requires SBOM_OPS_SBOM_UPLOAD_API_KEY and SBOM_OPS_DT_API_KEY"
+        )
+    catalog = load_corpus_catalog(args.catalog)
+    manifest = build_corpus_lab_manifest(
+        catalog, args.artifact_dir, tuple(args.artifact)
+    )
+    result = run_lab_scenarios(
+        manifest,
+        manifest_path=args.catalog,
+        upload_client=_dependency_track_client(upload_key),
+        read_client=_dependency_track_client(read_key),
+        output_directory=args.output_dir,
+        processing_timeout=args.processing_timeout,
+        poll_interval=args.poll_interval,
+        openapi_contract_sha256=_openapi_hash(args.openapi_inventory),
+    )
+    print(
+        f"DT lab corpus run completed: run_id={result.run_id} "
+        f"steps={len(result.steps)} output={result.output_directory}"
+    )
+    for step in result.steps:
+        print(
+            f"{step.scenario_id}/{step.step_id}: project={step.project_uuid} "
+            f"observations={step.observation_count}"
+        )
+    return 0
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -245,6 +348,10 @@ def main() -> int:
             return _run_scenarios(args)
         if args.command == "cleanup-run":
             return _run_cleanup(args)
+        if args.command == "validate-corpus":
+            return _run_validate_corpus(args)
+        if args.command == "run-corpus":
+            return _run_corpus(args)
         parser.error(f"unsupported command: {args.command}")
     except (
         DependencyTrackLabApiError,

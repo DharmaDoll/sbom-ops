@@ -578,6 +578,14 @@ decisions:
 3. implement only the orchestration gap that Dependency-Track does not provide
 4. reject or defer the hypothesis with the supporting evidence recorded
 
+Every attempted live experiment, including a failed, partial, or inconclusive
+run, must update the single durable ledger at
+`lab/dependency_track/EXPERIMENTS.md`. Each entry records the purpose, performed
+work, observed facts, interpretation or product decision, unresolved questions,
+target versions, and ignored local evidence path. Facts must be separated from
+inference. Scenario status `implemented` means runnable and does not by itself
+claim that live behavior has been verified.
+
 Product code must not import lab modules, and lab code is not mechanically moved
 into `src/sbom_ops/`. Raw OpenAPI and API observations remain ignored under
 `var/dt-lab/`; only minimal, reviewed contract examples belong in product test
@@ -594,6 +602,18 @@ Experiments use short-lived branches. Branch separation alone is not a security
 boundary; mutating experiments require a disposable Project, least-privilege
 credentials, and an explicit CLI opt-in.
 
+The Analysis-state experiment has three independent gates: it must be selected
+by scenario ID, `--allow-analysis-mutation` must be present, and a separate
+`SBOM_OPS_DT_ANALYSIS_API_KEY` must be supplied. Before any Project creation,
+`GET /api/v1/team/self` must report exactly `VULNERABILITY_ANALYSIS` and no
+additional permission.
+The normal all-implemented-scenarios run excludes mutation actions. Analysis
+targets must be resolved from the newly created run-scoped Project by stable
+Component and vulnerability identifiers; global Analysis mutation is forbidden.
+Every action must retain its request and response, Analysis trail, applicable
+suppressed or unsuppressed Finding view, metrics, and expected-versus-observed
+projection under ignored `var/dt-lab/` evidence.
+
 Every lab run must persist a run-scoped Project ledger before upload and update
 it with the observed Project UUID. Lab cleanup must be a local dry-run by
 default. Executed cleanup must:
@@ -608,8 +628,11 @@ default. Executed cleanup must:
 - fail closed on every identity mismatch and preserve an immutable local audit
 - retain local observations and failed-run Projects unless explicitly cleaned
 
-Automatic cleanup is permitted only after a successful run and explicit
-`--cleanup-on-success`; failed runs must remain available for diagnosis.
+Immediate automatic cleanup is prohibited. Dependency-Track 4.14.3 may still
+run asynchronous repository metadata work after BOM event-token completion;
+deleting the Project at that point can race the worker. After evidence review
+and target quiescence, cleanup requires a separate explicit run-scoped command.
+Failed runs remain available for diagnosis until explicitly cleaned.
 
 ## Open Items
 

@@ -62,11 +62,13 @@ The upload-and-wait path uses:
 - `GET /api/v1/event/token/{token}` until `processing=false`
 - then the project Finding and vulnerability endpoints above
 
-The event token is the authoritative signal for the tasks created by that BOM
-upload. Finding stability is retained only as a defensive read-side check when
-the sync is started without a token. A stable read is not, on its own, proof
-that a missing Finding is resolved; safe closure therefore also requires
-consecutive successful absence observations and explicit opt-in.
+The event token is the authoritative completion signal for the token-tracked
+BOM processing and vulnerability-analysis workflow. It is not a global
+quiescence signal: on v4.14.3, repository metadata analysis can continue after
+`processing=false`. Finding stability is retained only as a defensive read-side
+check when the sync is started without a token. A stable read is not, on its
+own, proof that a missing Finding is resolved; safe closure therefore also
+requires consecutive successful absence observations and explicit opt-in.
 
 The findings API requires the `VIEW_VULNERABILITY` permission. Endpoint details
 must be validated against the target instance's OpenAPI document before
@@ -77,6 +79,13 @@ listing. Finding and project-vulnerability endpoints return their documented
 collections without pagination parameters in that version, so the client only
 sends pagination parameters where the target contract supports them. This
 avoids silently relying on an undocumented query parameter.
+
+The lab's `GET /api/v1/component/project/{uuid}` observation is a separate
+documented collection contract. On v4.14.3 it uses one-based `pageNumber`,
+`pageSize` defaulting to 100, and the `X-Total-Count` response header. The lab
+retrieves every page and rejects an observation when the combined item count
+does not match the header. This behavior remains lab-only until a production
+use case explicitly requires full Component enumeration.
 
 Good:
 
@@ -99,6 +108,16 @@ verification followed by `DELETE /api/v1/project/{uuid}`. The captured v4.14.3
 OpenAPI contract documents `204` on successful deletion and requires
 `PORTFOLIO_MANAGEMENT`; the lookup also requires `VIEW_PORTFOLIO`. These methods
 must not be exposed by the production client merely because the lab uses them.
+
+The opt-in lab Analysis experiment uses `PUT /api/v1/analysis` with the target
+Project, Component, and vulnerability UUIDs and reads the trail with
+`GET /api/v1/analysis`. The captured v4.14.3 contract requires
+`VULNERABILITY_ANALYSIS` for the write and `VIEW_VULNERABILITY` for the read.
+These methods remain lab-only while the triage delegation boundary is under
+evaluation; their presence is not authorization to mutate product Analysis
+state. Before the experiment creates a Project, `GET /api/v1/team/self` must
+show that its dedicated write key has exactly `VULNERABILITY_ANALYSIS` and no
+additional permission.
 
 ## Behavior Lab Decision Boundary
 

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request
 
-from dt_lab.domain import BomUpload, DependencyTrackObservation
+from dt_lab.domain import AnalysisAction, BomUpload, DependencyTrackObservation
 from sbom_ops.clients.http import HttpApiError, HttpJsonResponse, request_json
 
 
@@ -112,6 +113,182 @@ class DependencyTrackLabClient:
             payload=response.payload,
         )
 
+    def _observe_paginated_json(
+        self,
+        path: str,
+        params: dict[str, str] | None = None,
+        *,
+        page_size: int = 100,
+    ) -> DependencyTrackObservation:
+        """Observe every page of a Dependency-Track list response.
+
+        Dependency-Track's Component collection defaults to 100 items and
+        communicates the complete collection size through ``X-Total-Count``.
+        The lab retains one combined payload so large-corpus observations do
+        not silently represent only the first page.
+        """
+        if page_size < 1:
+            raise ValueError("page_size must be positive")
+
+        base_params = dict(params or {})
+        if "pageNumber" in base_params or "pageSize" in base_params:
+            raise ValueError("pagination parameters are managed by the lab client")
+
+        combined: list[Any] = []
+        first: DependencyTrackObservation | None = None
+        duration_seconds = 0.0
+        total_count: int | None = None
+        page_number = 1
+        while True:
+            page_params = {
+                **base_params,
+                "pageNumber": str(page_number),
+                "pageSize": str(page_size),
+            }
+            page = self._observe_json(path, page_params)
+            if not isinstance(page.payload, list):
+                raise DependencyTrackLabApiError(
+                    "Dependency-Track paginated observation returned a non-list "
+                    f"payload: {path}"
+                )
+            if first is None:
+                first = page
+                raw_total_count = next(
+                    (
+                        value
+                        for key, value in page.headers
+                        if key.lower() == "x-total-count"
+                    ),
+                    None,
+                )
+                if raw_total_count is not None:
+                    try:
+                        total_count = int(raw_total_count)
+                    except ValueError as exc:
+                        raise DependencyTrackLabApiError(
+                            "Dependency-Track returned an invalid X-Total-Count "
+                            f"for {path}: {raw_total_count!r}"
+                        ) from exc
+                    if total_count < 0:
+                        raise DependencyTrackLabApiError(
+                            "Dependency-Track returned a negative X-Total-Count "
+                            f"for {path}: {total_count}"
+                        )
+            duration_seconds += page.duration_seconds
+            combined.extend(page.payload)
+
+            if total_count is not None and len(combined) >= total_count:
+                if len(combined) != total_count:
+                    raise DependencyTrackLabApiError(
+                        "Dependency-Track paginated observation exceeded "
+                        f"X-Total-Count for {path}: expected {total_count}, "
+                        f"observed {len(combined)}"
+                    )
+                break
+            if len(page.payload) < page_size:
+                if total_count is not None and len(combined) != total_count:
+                    raise DependencyTrackLabApiError(
+                        "Dependency-Track paginated observation ended before "
+                        f"X-Total-Count for {path}: expected {total_count}, "
+                        f"observed {len(combined)}"
+                    )
+                break
+            page_number += 1
+            if page_number > 10_000:
+                raise DependencyTrackLabApiError(
+                    "Dependency-Track paginated observation exceeded 10000 pages: "
+                    f"{path}"
+                )
+
+        if first is None:  # pragma: no cover - loop always performs one request
+            raise DependencyTrackLabApiError(
+                f"Dependency-Track paginated observation returned no pages: {path}"
+            )
+        return DependencyTrackObservation(
+            method=first.method,
+            path=path,
+            query=tuple(sorted({**base_params, "pageSize": str(page_size)}.items())),
+            status=first.status,
+            headers=first.headers,
+            duration_seconds=duration_seconds,
+            payload=combined,
+        )
+
+    def record_analysis_decision(
+        self,
+        *,
+        project_uuid: str,
+        component_uuid: str,
+        vulnerability_uuid: str,
+        action: AnalysisAction,
+    ) -> DependencyTrackObservation:
+        path = "/api/v1/analysis"
+        payload = {
+            "project": project_uuid,
+            "component": component_uuid,
+            "vulnerability": vulnerability_uuid,
+            "analysisState": action.state.value,
+            "analysisJustification": action.justification.value,
+            "analysisResponse": action.response.value,
+            "analysisDetails": action.detail,
+            "comment": action.comment,
+            "isSuppressed": action.suppressed,
+        }
+        request = Request(
+            f"{self._base_url}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            method="PUT",
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "X-Api-Key": self._api_key,
+            },
+        )
+        try:
+            response = request_json(
+                request,
+                timeout=self._timeout,
+                max_retries=self._max_retries,
+                backoff_seconds=self._retry_backoff_seconds,
+                error_message="Dependency-Track lab analysis update failed",
+                return_response=True,
+            )
+        except HttpApiError as exc:
+            detail = f" (HTTP {exc.status})" if exc.status else ""
+            raise DependencyTrackLabApiError(
+                f"Dependency-Track lab analysis update failed{detail}",
+                status=exc.status,
+            ) from exc
+        if not isinstance(response, HttpJsonResponse):
+            raise DependencyTrackLabApiError(
+                "Dependency-Track lab analysis update returned no response metadata"
+            )
+        return DependencyTrackObservation(
+            method="PUT",
+            path=path,
+            query=(),
+            status=response.status,
+            headers=tuple(
+                sorted(
+                    (key, value)
+                    for key, value in response.headers.items()
+                    if key.lower()
+                    in {
+                        "content-length",
+                        "content-type",
+                        "date",
+                        "etag",
+                        "last-modified",
+                        "retry-after",
+                        "x-total-count",
+                    }
+                )
+            ),
+            duration_seconds=response.duration_seconds,
+            payload=response.payload,
+            request_payload=payload,
+        )
+
     def upload_bom_by_project_coordinates(
         self, project_name: str, project_version: str, bom_path: str | Path
     ) -> BomUpload:
@@ -208,18 +385,21 @@ class DependencyTrackLabClient:
             {"name": project_name, "version": project_version},
         )
 
+    def observe_current_team(self) -> DependencyTrackObservation:
+        return self._observe_json("/api/v1/team/self")
+
     def observe_project(self, project_uuid: str) -> DependencyTrackObservation:
         return self._observe_json(f"/api/v1/project/{project_uuid}")
 
     def observe_project_components(
         self, project_uuid: str
     ) -> DependencyTrackObservation:
-        return self._observe_json(f"/api/v1/component/project/{project_uuid}")
+        return self._observe_paginated_json(f"/api/v1/component/project/{project_uuid}")
 
     def observe_project_direct_components(
         self, project_uuid: str
     ) -> DependencyTrackObservation:
-        return self._observe_json(
+        return self._observe_paginated_json(
             f"/api/v1/component/project/{project_uuid}", {"onlyDirect": "true"}
         )
 
@@ -233,8 +413,28 @@ class DependencyTrackLabClient:
             f"/api/v1/dependencyGraph/project/{project_uuid}/directDependencies"
         )
 
-    def observe_project_findings(self, project_uuid: str) -> DependencyTrackObservation:
-        return self._observe_json(f"/api/v1/finding/project/{project_uuid}")
+    def observe_project_findings(
+        self, project_uuid: str, *, suppressed: bool = False
+    ) -> DependencyTrackObservation:
+        return self._observe_json(
+            f"/api/v1/finding/project/{project_uuid}",
+            {"suppressed": "true"} if suppressed else None,
+        )
+
+    def observe_analysis_trail(
+        self,
+        project_uuid: str,
+        component_uuid: str,
+        vulnerability_uuid: str,
+    ) -> DependencyTrackObservation:
+        return self._observe_json(
+            "/api/v1/analysis",
+            {
+                "project": project_uuid,
+                "component": component_uuid,
+                "vulnerability": vulnerability_uuid,
+            },
+        )
 
     def observe_project_vulnerabilities(
         self, project_uuid: str

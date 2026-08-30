@@ -75,7 +75,8 @@ export SBOM_OPS_SBOM_UPLOAD_API_KEY=replace-with-upload-key
 
 The repository-only DT lab can additionally use a dedicated cleanup key with
 `VIEW_PORTFOLIO` and `PORTFOLIO_MANAGEMENT`. It is not needed for the product
-Quick Start.
+Quick Start. Its opt-in Analysis experiment uses another lab-only key with
+`VULNERABILITY_ANALYSIS`; neither key is reused by the product runtime.
 
 Upload the demo SBOM:
 
@@ -184,6 +185,9 @@ make dt-lab-validate
 make dt-lab-test
 make dt-lab-openapi
 make dt-lab-run
+make dt-lab-triage-analysis
+make dt-lab-corpus-validate
+make dt-lab-corpus-run CORPUS_ID=go-otel-obi-0-12-2
 make dt-lab-cleanup RUN_ID=<run-uuid>
 make dt-lab-cleanup RUN_ID=<run-uuid> EXECUTE=1
 make infra-gcp-poc-fmt-check
@@ -199,7 +203,8 @@ explicit choice to use a DT capability, encode a verified DT constraint,
 implement only the missing orchestration gap, or reject/defer the hypothesis;
 lab modules are never copied into `src/sbom_ops/` as a shortcut.
 Lab cleanup is run-scoped and dry-run by default; destructive execution requires
-a separate key and explicit `EXECUTE=1`.
+a separate key and explicit `EXECUTE=1` after the target's asynchronous analysis
+has become quiet.
 
 ## Documentation
 

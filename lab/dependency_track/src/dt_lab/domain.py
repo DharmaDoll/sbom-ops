@@ -20,11 +20,18 @@ class ScenarioCategory(StrEnum):
     PORTFOLIO = "portfolio"
     TRIAGE = "triage"
     ROBUSTNESS = "robustness"
+    CORPUS = "corpus"
 
 
 class ScenarioStatus(StrEnum):
     IMPLEMENTED = "implemented"
     PLANNED = "planned"
+
+
+class CorpusSourceKind(StrEnum):
+    RELEASE_ASSET = "release-asset"
+    VERIFIED_OCI_ATTESTATION = "verified-oci-attestation"
+    DERIVED = "derived"
 
 
 class Observation(StrEnum):
@@ -41,6 +48,37 @@ class Observation(StrEnum):
     VEX_EXPORT = "vex-export"
 
 
+class AnalysisState(StrEnum):
+    EXPLOITABLE = "EXPLOITABLE"
+    IN_TRIAGE = "IN_TRIAGE"
+    FALSE_POSITIVE = "FALSE_POSITIVE"
+    NOT_AFFECTED = "NOT_AFFECTED"
+    RESOLVED = "RESOLVED"
+    NOT_SET = "NOT_SET"
+
+
+class AnalysisJustification(StrEnum):
+    CODE_NOT_PRESENT = "CODE_NOT_PRESENT"
+    CODE_NOT_REACHABLE = "CODE_NOT_REACHABLE"
+    REQUIRES_CONFIGURATION = "REQUIRES_CONFIGURATION"
+    REQUIRES_DEPENDENCY = "REQUIRES_DEPENDENCY"
+    REQUIRES_ENVIRONMENT = "REQUIRES_ENVIRONMENT"
+    PROTECTED_BY_COMPILER = "PROTECTED_BY_COMPILER"
+    PROTECTED_AT_RUNTIME = "PROTECTED_AT_RUNTIME"
+    PROTECTED_AT_PERIMETER = "PROTECTED_AT_PERIMETER"
+    PROTECTED_BY_MITIGATING_CONTROL = "PROTECTED_BY_MITIGATING_CONTROL"
+    NOT_SET = "NOT_SET"
+
+
+class AnalysisResponse(StrEnum):
+    CAN_NOT_FIX = "CAN_NOT_FIX"
+    WILL_NOT_FIX = "WILL_NOT_FIX"
+    UPDATE = "UPDATE"
+    ROLLBACK = "ROLLBACK"
+    WORKAROUND_AVAILABLE = "WORKAROUND_AVAILABLE"
+    NOT_SET = "NOT_SET"
+
+
 @dataclass(frozen=True)
 class BomUpload:
     token: str
@@ -55,6 +93,7 @@ class DependencyTrackObservation:
     headers: tuple[tuple[str, str], ...]
     duration_seconds: float
     payload: Any
+    request_payload: Any | None = None
 
 
 _SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -80,11 +119,137 @@ class LabTarget:
 
 
 @dataclass(frozen=True)
+class CorpusArtifact:
+    id: str
+    ecosystem: str
+    source_kind: CorpusSourceKind
+    source: str
+    release: str
+    license: str
+    integrity: str
+    sha256: str
+    local_path: str
+    cyclonedx_version: str
+    project_name: str
+    project_version: str
+    purpose: str
+    hypotheses: tuple[str, ...]
+    decision_questions: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _require_slug(self.id, "corpus artifact id")
+        required_values = {
+            "ecosystem": self.ecosystem,
+            "source": self.source,
+            "release": self.release,
+            "license": self.license,
+            "integrity": self.integrity,
+            "local_path": self.local_path,
+            "cyclonedx_version": self.cyclonedx_version,
+            "project_name": self.project_name,
+            "project_version": self.project_version,
+            "purpose": self.purpose,
+        }
+        for field_name, value in required_values.items():
+            if not value.strip():
+                raise LabManifestError(
+                    f"corpus artifact {self.id!r} requires {field_name}"
+                )
+        if not re.fullmatch(r"[0-9a-f]{64}", self.sha256):
+            raise LabManifestError(
+                f"corpus artifact {self.id!r} requires a lowercase SHA-256"
+            )
+        local_path_parts = self.local_path.replace("\\", "/").split("/")
+        if self.local_path.startswith(("/", "\\")) or ".." in local_path_parts:
+            raise LabManifestError(
+                f"corpus artifact {self.id!r} local_path must stay below the "
+                "artifact directory"
+            )
+        if not self.project_name.startswith("dt-lab-"):
+            raise LabManifestError(
+                f"corpus artifact {self.id!r} Project name must start with 'dt-lab-'"
+            )
+        if not self.hypotheses or any(
+            not hypothesis.strip() for hypothesis in self.hypotheses
+        ):
+            raise LabManifestError(f"corpus artifact {self.id!r} requires hypotheses")
+        if not self.decision_questions or any(
+            not question.strip() for question in self.decision_questions
+        ):
+            raise LabManifestError(
+                f"corpus artifact {self.id!r} requires decision questions"
+            )
+
+
+@dataclass(frozen=True)
+class CorpusCatalog:
+    schema_version: int
+    target: LabTarget
+    artifacts: tuple[CorpusArtifact, ...]
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise LabManifestError(
+                f"unsupported corpus catalog schema version: {self.schema_version}"
+            )
+        if not self.artifacts:
+            raise LabManifestError("corpus catalog requires at least one artifact")
+        artifact_ids = [artifact.id for artifact in self.artifacts]
+        if len(artifact_ids) != len(set(artifact_ids)):
+            raise LabManifestError("corpus catalog has duplicate artifact ids")
+
+
+@dataclass(frozen=True)
+class CorpusArtifactInspection:
+    artifact_id: str
+    path: str
+    byte_count: int
+    component_count: int
+    dependency_count: int
+    service_count: int
+    vulnerability_count: int
+
+
+@dataclass(frozen=True)
+class AnalysisAction:
+    id: str
+    component_purl: str
+    vulnerability_id: str
+    vulnerability_source: str
+    state: AnalysisState
+    justification: AnalysisJustification
+    response: AnalysisResponse
+    detail: str
+    comment: str
+    suppressed: bool
+
+    def __post_init__(self) -> None:
+        _require_slug(self.id, "analysis action id")
+        required_values = {
+            "component_purl": self.component_purl,
+            "vulnerability_id": self.vulnerability_id,
+            "vulnerability_source": self.vulnerability_source,
+            "detail": self.detail,
+            "comment": self.comment,
+        }
+        for field_name, value in required_values.items():
+            if not value.strip():
+                raise LabManifestError(
+                    f"analysis action {self.id!r} requires {field_name}"
+                )
+        if not isinstance(self.suppressed, bool):
+            raise LabManifestError(
+                f"analysis action {self.id!r} suppressed must be a boolean"
+            )
+
+
+@dataclass(frozen=True)
 class ScenarioStep:
     id: str
     bom: str
     observations: tuple[Observation, ...]
     project_version: str | None = None
+    analysis_actions: tuple[AnalysisAction, ...] = ()
 
     def __post_init__(self) -> None:
         _require_slug(self.id, "scenario step id")
@@ -97,6 +262,11 @@ class ScenarioStep:
         if self.project_version is not None and not self.project_version.strip():
             raise LabManifestError(
                 f"scenario step {self.id!r} project_version must not be empty"
+            )
+        action_ids = [action.id for action in self.analysis_actions]
+        if len(action_ids) != len(set(action_ids)):
+            raise LabManifestError(
+                f"scenario step {self.id!r} has duplicate analysis action ids"
             )
 
 
@@ -147,6 +317,12 @@ class LabScenario:
         step_ids = [step.id for step in self.steps]
         if len(step_ids) != len(set(step_ids)):
             raise LabManifestError(f"scenario {self.id!r} has duplicate step ids")
+        if self.category is not ScenarioCategory.TRIAGE and any(
+            step.analysis_actions for step in self.steps
+        ):
+            raise LabManifestError(
+                f"scenario {self.id!r} analysis actions require triage category"
+            )
 
 
 @dataclass(frozen=True)
@@ -156,7 +332,7 @@ class LabManifest:
     scenarios: tuple[LabScenario, ...]
 
     def __post_init__(self) -> None:
-        if self.schema_version != 2:
+        if self.schema_version != 3:
             raise LabManifestError(
                 f"unsupported lab manifest schema version: {self.schema_version}"
             )

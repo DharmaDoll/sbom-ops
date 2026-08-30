@@ -46,6 +46,13 @@ For each hypothesis:
    - implement only the orchestration gap DT does not provide
    - reject or defer the hypothesis with evidence
 
+Every attempted live experiment must update
+[`EXPERIMENTS.md`](EXPERIMENTS.md). That single append-only-style ledger owns
+the durable purpose, performed work, observed facts, interpretation, product
+decision, and remaining uncertainty. Raw evidence under `var/dt-lab/` is local
+supporting material, not a durable result. Failed, partial, and inconclusive
+runs are recorded too.
+
 Prioritize scenarios that retire the largest product risk or remove the most
 duplicate implementation. A `planned` scenario is an uncertainty backlog item;
 it need not be implemented when another experiment or official contract already
@@ -56,6 +63,7 @@ answers its decision questions.
 ```text
 lab/dependency_track/
 ├── README.md
+├── EXPERIMENTS.md
 ├── fixtures/
 ├── scenarios/
 │   ├── scenarios.yaml
@@ -96,6 +104,24 @@ export SBOM_OPS_DT_API_KEY=replace-with-read-key
 make dt-lab-run
 ```
 
+The default command skips every scenario with mutation actions. Run the
+Analysis-state experiment only after creating a separate team whose sole
+permission is `VULNERABILITY_ANALYSIS`:
+
+```bash
+export SBOM_OPS_DT_ANALYSIS_API_KEY=replace-with-analysis-key
+make dt-lab-triage-analysis
+```
+
+This command is explicit opt-in for `triage-analysis-states`. It creates a new
+run-suffixed `dt-lab-triage-analysis` Project, selects one synthetic Log4Shell
+Finding by PURL, vulnerability ID, and source, and records the decision cycle
+`IN_TRIAGE` → `EXPLOITABLE` → `NOT_AFFECTED` → `FALSE_POSITIVE` → `RESOLVED` →
+`NOT_SET`. Each action retains the PUT response, audit trail, suppressed or
+unsuppressed Finding view, metrics, and a compact verification record under the
+ignored run directory. The final action restores the disposable Finding before
+optional run-scoped cleanup.
+
 The optional cleanup key is deliberately separate from upload and read access.
 Its team needs `VIEW_PORTFOLIO` to verify each live Project and
 `PORTFOLIO_MANAGEMENT` to delete it:
@@ -119,6 +145,122 @@ python -m dt_lab.cli openapi-inventory \
   --output var/dt-lab/openapi-inventory-all.json
 ```
 
+## Real-World SBOM Corpus
+
+The synthetic scenario BOMs remain the deterministic contract fixtures. The
+real-world corpus complements them with upstream scale, generator quirks, mixed
+package ecosystems, and incomplete graphs. Its committed catalog is
+[`corpus/corpus.yaml`](corpus/corpus.yaml); downloaded payloads and provenance
+evidence stay under ignored `var/dt-lab/corpus/`.
+
+The catalog currently pins these inputs:
+
+| Ecosystem | Upstream release | Input | Intended probe |
+| --- | --- | --- | --- |
+| Go | OpenTelemetry OBI 0.12.2 | Official CycloneDX 1.6 release asset | Go PURLs and a sparse graph |
+| TypeScript/npm | n8n 2.36.8 | Authoritative CycloneDX 1.6 release SBOM | Large npm inventory without dependency entries |
+| Rails/Ruby | OpenProject 17.7.2 | Verified CycloneDX 1.6 OCI attestation | Signed upstream input-quality rejection |
+| Rails/Ruby | OpenProject 17.7.2 | Schema-valid derivation of the verified attestation | Production-scale, mixed container inventory |
+| Python | Apache Airflow 3.3.0 for Python 3.12 | Official CycloneDX 1.7 SBOM | Compatibility with a newer specification |
+| Python | Apache Airflow 3.3.0 for Python 3.12 | CycloneDX CLI v0.33.1 conversion to 1.6 | Controlled compatibility comparison |
+
+Acquire the release assets into their cataloged paths:
+
+```bash
+mkdir -p \
+  var/dt-lab/corpus/otel-obi-0.12.2 \
+  var/dt-lab/corpus/n8n-2.36.8 \
+  var/dt-lab/corpus/airflow-3.3.0-py312
+
+curl --fail --location \
+  https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation/releases/download/v0.12.2/obi-v0.12.2-linux-amd64.cyclonedx.json \
+  --output var/dt-lab/corpus/otel-obi-0.12.2/sbom.cdx.json
+
+curl --fail --location \
+  'https://github.com/n8n-io/n8n/releases/download/n8n%402.36.8/sbom-source.cdx.json' \
+  --output var/dt-lab/corpus/n8n-2.36.8/sbom.cdx.json
+
+curl --fail --location \
+  https://airflow.apache.org/docs/apache-airflow/3.3.0/sbom/apache-airflow-sbom-3.3.0-python3.12-python-only.json \
+  --output var/dt-lab/corpus/airflow-3.3.0-py312/sbom.cdx.json
+```
+
+OpenProject is extracted only after keyless verification of the signed
+attestation against the immutable image digest and the expected GitHub Actions
+workflow identity:
+
+```bash
+mkdir -p var/dt-lab/corpus/openproject-17.7.2
+
+cosign verify-attestation \
+  --type https://cyclonedx.org/bom/v1.6 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github.com/opf/openproject-flavours/.github/workflows/core-docker.yml@refs/heads/dev$' \
+  openproject/openproject@sha256:19a828d66e7c23322d1fbbaa974e7b712ef03c2badf1b10466ca45710e6bbbe5 \
+  > var/dt-lab/corpus/openproject-17.7.2/verified-attestation.jsonl
+
+jq -r '.payload' \
+  var/dt-lab/corpus/openproject-17.7.2/verified-attestation.jsonl \
+  | base64 --decode \
+  | jq '.predicate' \
+  > var/dt-lab/corpus/openproject-17.7.2/sbom.cdx.json
+```
+
+The signed OpenProject predicate contains one schema-invalid, unexpanded URL
+on the `formatador` Component. Preserve that original as the rejection case.
+The stress input removes only that external reference and must then pass the
+official CycloneDX schema validator:
+
+```bash
+jq '(.components[] | select((.externalReferences // []) | any(.url == "https://github.com/geemus/#{s.name}")) | .externalReferences) |= map(select(.url != "https://github.com/geemus/#{s.name}"))' \
+  var/dt-lab/corpus/openproject-17.7.2/sbom.cdx.json \
+  > var/dt-lab/corpus/openproject-17.7.2/sbom-schema-valid.cdx.json
+
+cyclonedx-cli validate \
+  --input-file var/dt-lab/corpus/openproject-17.7.2/sbom-schema-valid.cdx.json \
+  --input-version v1_6
+```
+
+Do not replace the source artifact or describe the derived file as attested.
+Its provenance is the verified source plus the one documented transform and
+the independently pinned derived hash.
+
+Create the Airflow compatibility artifact with the official CycloneDX CLI:
+
+```bash
+cyclonedx-cli convert \
+  --input-file var/dt-lab/corpus/airflow-3.3.0-py312/sbom.cdx.json \
+  --output-file var/dt-lab/corpus/airflow-3.3.0-py312/sbom-v1.6.cdx.json \
+  --output-format json \
+  --output-version v1_6
+```
+
+Always validate all catalog hashes and CycloneDX envelopes before a live run:
+
+```bash
+make dt-lab-corpus-validate
+```
+
+This integrity command does not replace full CycloneDX schema validation. Run
+the official `cyclonedx-cli validate` for an intended-success input before
+upload. Keep intentionally invalid originals only as explicit rejection cases.
+
+Runs require an explicit single artifact ID. This keeps a 17,000-plus Component
+stress case or an intentionally unsupported-version probe from running by
+accident. The Component observations retrieve every API page and fail if the
+combined count disagrees with `X-Total-Count`.
+
+```bash
+make dt-lab-corpus-run \
+  CORPUS_ID=go-otel-obi-0-12-2
+```
+
+Use a larger `DT_LAB_PROCESSING_TIMEOUT` when the target is resource-constrained.
+Never interpret a source BOM's missing graph, missing PURL, or generator metadata
+as a Dependency-Track behavior; compare the validated input, captured API
+responses, and re-export separately. Record every attempted import in
+[`EXPERIMENTS.md`](EXPERIMENTS.md), including rejected and timed-out inputs.
+
 ## Cleaning a Run
 
 Each new run writes `projects.json` before uploading and updates the ledger with
@@ -137,15 +279,13 @@ make dt-lab-cleanup \
   EXECUTE=1
 ```
 
-For disposable successful runs, cleanup may be requested with the run itself:
-
-```bash
-make dt-lab-run CLEANUP=1
-```
-
-`CLEANUP=1` is equivalent to `--cleanup-on-success`. A failed scenario is never
-cleaned automatically, so its DT Project and local observations remain
-available for diagnosis.
+Cleanup is intentionally a separate command. In Dependency-Track 4.14.3,
+repository metadata analysis may continue after the BOM event token reports
+completion. Immediate deletion was observed to race that worker. Inspect the
+evidence, allow the target's background analysis to become quiet, preview the
+cleanup, and only then execute it. A failed upload can still leave an
+auto-created empty Project, so failed runs require the same explicit review and
+cleanup rather than being abandoned.
 
 Before every deletion, the lab checks all of the following:
 
@@ -173,7 +313,10 @@ The reduced
 [`fixtures/dependency-track-openapi.json`](fixtures/dependency-track-openapi.json)
 preserves the reviewed v4.14.3 delete contract (`204`, `401`, `403`, `404`) and
 `PORTFOLIO_MANAGEMENT` requirement, plus the lookup contract and its
-`VIEW_PORTFOLIO` requirement. Recheck it against the target instance's
+`VIEW_PORTFOLIO` requirement. It records Component pagination defaults and the
+`X-Total-Count` response contract, the Analysis read/write contracts and
+permissions, and the current-team preflight contract used to reject an
+overprivileged Analysis key. Recheck it against the target instance's
 `/api/openapi.json` before upgrading Dependency-Track.
 
 ## Scenario Contract
@@ -182,8 +325,10 @@ The source of truth is [`scenarios/scenarios.yaml`](scenarios/scenarios.yaml).
 Each repository scenario declares a purpose, hypotheses, product decision
 questions, isolated Project identity, implementation status, ordered SBOM
 steps, and the API areas to observe. Implemented scenarios must reference
-existing SBOM files; planned scenarios may omit steps. Manifest schema version 2
+existing SBOM files; planned scenarios may omit steps. Manifest schema version 3
 requires at least one hypothesis and one decision question for every scenario.
+Analysis actions additionally declare an exact Finding selector and a complete
+state, justification, response, detail, comment, and suppression decision.
 
 Project names must use the `dt-lab-` prefix. The manifest validator also checks
 repository-level invariants such as unique CycloneDX serial numbers and valid
@@ -202,7 +347,15 @@ state unless a scenario explicitly covers that mutation, uses a disposable
 Project and least-privilege lab key, and requires an explicit CLI opt-in.
 Project cleanup is the sole generally available mutation: it requires a
 dedicated cleanup key, a run-scoped ledger, live identity verification, and
-`--execute` or `--cleanup-on-success`.
+an explicit `cleanup-run --execute` command after evidence review and target
+quiescence.
+
+Analysis mutation has a second independent gate. The scenario must be selected
+by ID, `--allow-analysis-mutation` must be present, and
+`SBOM_OPS_DT_ANALYSIS_API_KEY` must contain a dedicated key. Mutating scenarios
+are excluded when `run-scenarios` is invoked without `--scenario`. Before a
+Project is created, `/api/v1/team/self` must report exactly one permission:
+`VULNERABILITY_ANALYSIS`.
 
 The planned `triage-delegation-boundary` scenario determines how much security
 triage can stay in DT rather than being duplicated in sbom-ops. Its evidence
@@ -229,31 +382,22 @@ contracts and hide dependency or security updates.
 Before merging an experiment:
 
 1. Rebase or merge the latest `main` into the short-lived branch.
-2. Keep only reproducible scenarios, stable lab code, reviewed fixtures,
+2. Update [`EXPERIMENTS.md`](EXPERIMENTS.md) with the purpose, performed work,
+   observed facts, interpretation or decision, unverified questions, target
+   versions, and local evidence path pattern.
+3. Keep only reproducible scenarios, stable lab code, reviewed fixtures,
    explicit product decisions or contract changes, and durable documentation.
-3. Exclude credentials, raw observations, environment-specific UUIDs, and
+4. Exclude credentials, raw observations, environment-specific UUIDs, and
    temporary investigation code.
-4. Run product and lab tests independently.
-5. Review every product change justified by lab evidence as a production API
+5. Run product and lab tests independently.
+6. Review every product change justified by lab evidence as a production API
    change, including official documentation and minimal fixture evidence. Do
    not copy exploratory lab modules into `src/sbom_ops/`.
-6. Merge the branch and delete it.
+7. Merge the branch and delete it.
 
-## Current v4.14.3 Observations
+## Experiment Results
 
-The following behavior was reproduced against the repository's local v4.14.3
-container on 2026-08-27. It must be rechecked during an upgrade:
-
-- CycloneDX Project JSON export requires
-  `Accept: application/vnd.cyclonedx+json`; generic JSON returned `406`.
-- A retained Component with the same PURL received different Component UUIDs in
-  different Project versions.
-- `onlyDirect=true` returned only the root dependencies from the test graph.
-- Component-to-Service edges appeared in Component `directDependencies` and the
-  dependency-graph response, while Project CycloneDX re-export omitted those
-  Service edges from `dependencies`.
-- With the current datasource configuration, PURL-only samples produced no NVD
-  Findings. Adding matching CPEs produced NVD Findings.
-- NVD Findings included EPSS score and percentile plus CVSS fields. GitHub and
-  OSV records were not present, so cross-source alias behavior remains
-  intentionally unasserted.
+Durable, reviewed observations and decisions live only in
+[`EXPERIMENTS.md`](EXPERIMENTS.md). Do not duplicate result lists here; update
+the ledger after every attempted live run and recheck version-bounded facts
+during a Dependency-Track upgrade.

@@ -184,6 +184,18 @@ Rules:
 8. Run product tests and lab tests independently before merge.
 9. Project cleanup must remain run-scoped and dry-run by default; require the lab namespace, matching run marker, live identity verification, a dedicated cleanup key, explicit execution, and a local audit.
 10. Never add prefix-only bulk deletion or an implicit full-database reset.
+11. Every attempted live experiment must update
+    `lab/dependency_track/EXPERIMENTS.md` before merge, including its purpose,
+    performed work, observed facts, interpretation or product decision,
+    unverified questions, target versions, and local evidence path pattern.
+12. Record failed, partial, and inconclusive experiments. Keep facts separate
+    from inference, and never move credentials, raw payloads, or
+    environment-specific UUIDs from ignored evidence into the ledger.
+13. Scenario status `implemented` means runnable, not live-verified. A behavior
+    becomes evidence only when its result is recorded in the experiment ledger.
+14. Do not delete a Project immediately after BOM event-token completion.
+    Repository metadata work may still be asynchronous; review the evidence,
+    wait for target quiescence, then use the separate run-scoped cleanup command.
 
 
 ## Google Cloud Infrastructure Development Rule

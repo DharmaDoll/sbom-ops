@@ -223,6 +223,19 @@ The lab owns a run-scoped Project ledger and cleanup service. Cleanup depends on
 the ledger plus a live name/version/UUID lookup, is dry-run by default, and uses
 a dedicated least-privilege key when explicitly executed. It removes verified
 DT Projects but retains ignored local observations and immutable cleanup audits.
+Cleanup is never coupled to run completion because BOM event-token completion
+does not cover every asynchronous repository metadata task.
+
+Synthetic scenario BOMs are committed deterministic fixtures. The separate
+real-world corpus commits only provenance, expected hashes, hypotheses, and
+Project coordinates; upstream payloads, attestations, tools, and run evidence
+stay in ignored `var/dt-lab/`. Large Component collections are observed through
+the target's documented pagination and must match `X-Total-Count`.
+
+Mutating Analysis experiments use a separate `VULNERABILITY_ANALYSIS` client,
+an explicit CLI gate, an exact Finding selector, and only the newly created
+run-scoped Project. They are excluded from the default lab run and cannot add
+write behavior to the production Dependency-Track client by implication.
 
 ---
 

@@ -29,14 +29,71 @@
       }
     },
     "/v1/analysis": {
+      "get": {
+        "operationId": "retrieveAnalysis",
+        "tags": ["analysis"],
+        "summary": "Retrieves an analysis trail",
+        "description": "<p>Requires permission <strong>VIEW_VULNERABILITY</strong></p>",
+        "parameters": [
+          {"name": "project", "in": "query"},
+          {"name": "component", "in": "query", "required": true},
+          {"name": "vulnerability", "in": "query", "required": true}
+        ],
+        "responses": {
+          "200": {"content": {"application/json": {}}},
+          "401": {"description": "Unauthorized"},
+          "404": {"description": "Not found"}
+        }
+      },
       "put": {
         "operationId": "updateAnalysis",
         "tags": ["analysis"],
+        "summary": "Records an analysis decision",
         "description": "<p>Requires permission <strong>VULNERABILITY_ANALYSIS</strong></p>",
         "deprecated": false,
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/AnalysisRequest"}
+            }
+          }
+        },
         "responses": {
           "200": {"content": {"application/json": {}}},
-          "401": {"description": "Unauthorized"}
+          "401": {"description": "Unauthorized"},
+          "404": {"description": "Not found"}
+        }
+      }
+    },
+    "/v1/component/project/{uuid}": {
+      "get": {
+        "operationId": "getAllComponents",
+        "tags": ["component"],
+        "summary": "Returns a list of all components for a given project",
+        "description": "<p>Requires permission <strong>VIEW_PORTFOLIO</strong></p>",
+        "parameters": [
+          {"name": "pageNumber", "in": "query", "schema": {"type": "string", "default": "1"}},
+          {"name": "pageSize", "in": "query", "schema": {"type": "string", "default": "100"}},
+          {"name": "offset", "in": "query"},
+          {"name": "limit", "in": "query"},
+          {"name": "sortName", "in": "query"},
+          {"name": "sortOrder", "in": "query"},
+          {"name": "uuid", "in": "path", "required": true},
+          {"name": "onlyOutdated", "in": "query"},
+          {"name": "onlyDirect", "in": "query"}
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "X-Total-Count": {
+                "description": "The total number of components"
+              }
+            },
+            "content": {"application/json": {}}
+          },
+          "401": {"description": "Unauthorized"},
+          "403": {"description": "Forbidden"},
+          "404": {"description": "Not found"}
         }
       }
     },
@@ -75,12 +132,55 @@
         }
       }
     },
+    "/v1/team/self": {
+      "get": {
+        "operationId": "getSelf",
+        "tags": ["team"],
+        "summary": "Returns information about the current team",
+        "responses": {
+          "200": {"content": {"application/json": {}}},
+          "400": {"description": "Invalid API key"},
+          "401": {"description": "Unauthorized"},
+          "404": {"description": "No team found"}
+        }
+      }
+    },
     "/v1/user": {
       "get": {
         "operationId": "getUsers",
         "tags": ["user"],
         "description": "<p>Requires permission <strong>ACCESS_MANAGEMENT</strong></p>",
         "responses": {"200": {"content": {"application/json": {}}}}
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AnalysisRequest": {
+        "required": ["component", "vulnerability"],
+        "type": "object",
+        "properties": {
+          "project": {"type": "string"},
+          "component": {"type": "string"},
+          "vulnerability": {"type": "string"},
+          "analysisState": {
+            "type": "string",
+            "enum": [
+              "EXPLOITABLE",
+              "IN_TRIAGE",
+              "FALSE_POSITIVE",
+              "NOT_AFFECTED",
+              "RESOLVED",
+              "NOT_SET"
+            ]
+          },
+          "analysisJustification": {"type": "string"},
+          "analysisResponse": {"type": "string"},
+          "analysisDetails": {"type": "string"},
+          "comment": {"type": "string"},
+          "isSuppressed": {"type": "boolean", "writeOnly": true},
+          "suppressed": {"type": "boolean"}
+        }
       }
     }
   }

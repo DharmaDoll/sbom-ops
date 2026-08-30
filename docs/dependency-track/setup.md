@@ -162,13 +162,24 @@ Required permissions:
 This key is not required by the product runtime. Do not reuse the upload or
 orchestrator read key for cleanup.
 
-### 4. Future analysis-write key
+### 4. Optional DT lab analysis key
 
-Not required for MVP.
+Purpose:
 
-If analysis state is ever updated intentionally, that key will also need:
+- run the explicit, disposable `triage-analysis-states` experiment
+
+Required permission:
 
 - `VULNERABILITY_ANALYSIS`
+
+This key is not required by the product runtime. Keep read access on the
+orchestrator key, do not add portfolio-management permissions, and use the key
+only with the lab's explicit analysis-mutation flag.
+
+```bash
+export SBOM_OPS_DT_ANALYSIS_API_KEY=replace-with-analysis-key
+make dt-lab-triage-analysis
+```
 
 ## Create Team and API Keys
 
@@ -180,8 +191,10 @@ From the UI:
 4. Assign only read permissions for MVP
 5. If DT lab cleanup is needed, create a third local-only team with
    `VIEW_PORTFOLIO` and `PORTFOLIO_MANAGEMENT`
-6. Generate an API key for each team
-7. Save each key immediately
+6. If the opt-in Analysis experiment is needed, create a fourth local-only team
+   with only `VULNERABILITY_ANALYSIS`
+7. Generate an API key for each team
+8. Save each key immediately
 
 Dependency-Track stores API keys in hashed form and only shows the key at creation time.
 
@@ -332,6 +345,7 @@ export SBOM_OPS_DT_API_KEY=replace-with-orchestrator-read-key
 export SBOM_OPS_SBOM_UPLOAD_API_KEY=replace-with-upload-key
 # Optional and repository-lab-only:
 export SBOM_OPS_DT_CLEANUP_API_KEY=replace-with-cleanup-key
+export SBOM_OPS_DT_ANALYSIS_API_KEY=replace-with-analysis-only-key
 export SBOM_OPS_DT_PROJECT_UUID=replace-with-project-uuid
 export SBOM_OPS_DT_PAGE_SIZE=100
 export SBOM_OPS_DT_MAX_RETRIES=3
@@ -340,7 +354,8 @@ export SBOM_OPS_DT_ANALYSIS_POLL_INTERVAL_SECONDS=5
 export SBOM_OPS_WAIT_FOR_ANALYSIS=false
 ```
 
-The upload, orchestrator, and optional lab cleanup keys should remain separate.
+The upload, orchestrator, optional lab cleanup, and Analysis-only keys must
+remain separate.
 
 For local development, store real secrets in `.env`.
 Do not put real API keys in `.env.example` or committed documentation.
@@ -393,7 +408,7 @@ Use separate keys for separate responsibilities:
 - SBOM upload automation
 - orchestrator read access
 - local DT lab Project cleanup, when used
-- future analysis-write workflows, if explicitly implemented
+- local DT lab Analysis mutation, when explicitly selected
 
 ### Vulnerability database count
 

@@ -1,0 +1,134 @@
+schema_version: 1
+
+target:
+  dependency_track_version: "4.14.3"
+  cyclonedx_versions:
+    - "1.6"
+    - "1.7"
+
+artifacts:
+  - id: go-otel-obi-0-12-2
+    ecosystem: Go
+    source_kind: release-asset
+    source: https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation/releases/download/v0.12.2/obi-v0.12.2-linux-amd64.cyclonedx.json
+    release: v0.12.2
+    license: Apache-2.0
+    integrity: GitHub release asset digest matched before cataloging.
+    sha256: 74fd8a345f32777ab0ab1cf83281cce9d381c1b9127b2d3b09682aa42ce155fa
+    local_path: otel-obi-0.12.2/sbom.cdx.json
+    cyclonedx_version: "1.6"
+    project:
+      name: dt-lab-corpus-otel-obi
+      version: 0.12.2-cdx-1.6
+    purpose: Exercise Dependency-Track with an official Go release SBOM.
+    hypotheses:
+      - Go module PURLs are retained and matched without lab-specific CPE enrichment.
+      - A sparse dependency graph does not prevent a complete Component inventory.
+    decision_questions:
+      - Which Go identity and graph fields can sbom-ops consume directly from Dependency-Track?
+      - Does the generator's temporary metadata root affect Project or Component identity?
+
+  - id: typescript-n8n-2-36-8
+    ecosystem: TypeScript / npm
+    source_kind: release-asset
+    source: https://github.com/n8n-io/n8n/releases/download/n8n%402.36.8/sbom-source.cdx.json
+    release: n8n@2.36.8
+    license: LicenseRef-n8n-sustainable-use
+    integrity: GitHub release asset digest matched before cataloging.
+    sha256: 47cd530c627fbf9f8bae777e21c34faf760a962dd1da7bd322868cc3b1f2b6f3
+    local_path: n8n-2.36.8/sbom.cdx.json
+    cyclonedx_version: "1.6"
+    project:
+      name: dt-lab-corpus-n8n
+      version: 2.36.8-cdx-1.6
+    purpose: Exercise Dependency-Track with an authoritative TypeScript release SBOM.
+    hypotheses:
+      - A large npm inventory remains usable even when the source BOM has no dependency entries.
+      - Scoped npm PURLs and first-party components remain distinguishable after ingestion.
+    decision_questions:
+      - What useful triage context remains when the submitted BOM has no dependency graph?
+      - Which n8n fields survive Dependency-Track ingestion and CycloneDX re-export?
+
+  - id: rails-openproject-17-7-2
+    ecosystem: Rails / Ruby with container dependencies
+    source_kind: verified-oci-attestation
+    source: openproject/openproject:17.7.2
+    release: 17.7.2
+    license: GPL-3.0-only
+    integrity: Cosign verified the CycloneDX predicate and GitHub Actions OIDC certificate for the pinned image digest.
+    sha256: 71f7f758991a9ad6b238fa8631a38cd5eb42c7f25e08f48c13e852348204431d
+    local_path: openproject-17.7.2/sbom.cdx.json
+    cyclonedx_version: "1.6"
+    project:
+      name: dt-lab-corpus-openproject
+      version: 17.7.2-cdx-1.6
+    purpose: Test the schema and ingestion boundary with a signed upstream Rails container SBOM.
+    hypotheses:
+      - A signed upstream attestation can still contain content that Dependency-Track correctly rejects.
+      - Input validation failure can leave an auto-created Project that must be cleaned explicitly.
+    decision_questions:
+      - Does the source document pass the official CycloneDX 1.6 schema and Dependency-Track ingestion?
+      - What evidence and cleanup are required when ingestion fails after Project auto-creation?
+
+  - id: rails-openproject-17-7-2-schema-valid
+    ecosystem: Rails / Ruby with container dependencies
+    source_kind: derived
+    source: openproject/openproject@sha256:19a828d66e7c23322d1fbbaa974e7b712ef03c2badf1b10466ca45710e6bbbe5
+    release: 17.7.2, one invalid formatador external reference removed
+    license: GPL-3.0-only
+    integrity: Derived from the verified attestation; CycloneDX CLI v0.33.1 schema validation succeeded and the output hash is pinned.
+    sha256: d40c1e9bebd6562c2a2c17b6b26edc5892485f6f68d12a563c1e41ad5ed7a27c
+    local_path: openproject-17.7.2/sbom-schema-valid.cdx.json
+    cyclonedx_version: "1.6"
+    project:
+      name: dt-lab-corpus-openproject
+      version: 17.7.2-cdx-1.6-schema-valid
+    purpose: Stress Dependency-Track with a minimally repaired, signed-source multi-ecosystem Rails container SBOM.
+    hypotheses:
+      - More than ten thousand mixed package records can be ingested and observed without truncation after schema repair.
+      - Ruby gems remain separable from operating-system and frontend packages for triage.
+    decision_questions:
+      - What are the processing time, inventory size, and Finding shape for a production-scale container SBOM?
+      - Which package ecosystems should product-side views filter or group without rebuilding inventory?
+
+  - id: python-airflow-3-3-0-cdx-1-7
+    ecosystem: Python
+    source_kind: release-asset
+    source: https://airflow.apache.org/docs/apache-airflow/3.3.0/sbom/apache-airflow-sbom-3.3.0-python3.12-python-only.json
+    release: 3.3.0 / Python 3.12
+    license: Apache-2.0
+    integrity: Local SHA-256 pinned after download from the official Apache Airflow documentation host.
+    sha256: e291cc2dd01cd67a2aab564882e46af9390fc6f659c90f10810c4ad4df79b5db
+    local_path: airflow-3.3.0-py312/sbom.cdx.json
+    cyclonedx_version: "1.7"
+    project:
+      name: dt-lab-corpus-airflow
+      version: 3.3.0-cdx-1.7
+    purpose: Probe the target's behavior for an official Python SBOM newer than its documented CycloneDX support.
+    hypotheses:
+      - Dependency-Track 4.14.3 either rejects CycloneDX 1.7 explicitly or accepts it without silently losing core inventory.
+      - Python package PURLs are retained consistently across original and converted inputs.
+    decision_questions:
+      - What compatibility failure mode must sbom-ops surface for a newer CycloneDX document?
+      - If accepted, does its inventory differ from the same source converted to CycloneDX 1.6?
+
+  - id: python-airflow-3-3-0-cdx-1-6
+    ecosystem: Python
+    source_kind: derived
+    source: https://airflow.apache.org/docs/apache-airflow/3.3.0/sbom/apache-airflow-sbom-3.3.0-python3.12-python-only.json
+    release: 3.3.0 / Python 3.12, converted with CycloneDX CLI v0.33.1
+    license: Apache-2.0
+    integrity: Derived locally from the hash-pinned official 1.7 artifact; output SHA-256 is pinned.
+    sha256: e6a70174dca12d0235fb431e3c8cf14deea9f3c0d78f54f9d293a94b41a47b71
+    local_path: airflow-3.3.0-py312/sbom-v1.6.cdx.json
+    cyclonedx_version: "1.6"
+    project:
+      name: dt-lab-corpus-airflow
+      version: 3.3.0-cdx-1.6
+    purpose: Provide a controlled compatibility pair for the official CycloneDX 1.7 Airflow SBOM.
+    hypotheses:
+      - Conversion to CycloneDX 1.6 preserves the source Component and dependency counts.
+      - The converted artifact is ingestible even when the original 1.7 document is not.
+    decision_questions:
+      - Is pre-ingestion conversion a defensible compatibility measure or should unsupported input fail closed?
+      - Which semantic fields, inventory records, or Finding projections differ from the original input?

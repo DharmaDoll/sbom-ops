@@ -33,3 +33,27 @@ def test_lab_only_reuses_the_generic_product_http_transport() -> None:
     )
 
     assert imports == ALLOWED_PRODUCT_IMPORTS
+
+
+def test_lab_has_one_durable_experiment_ledger_with_required_sections() -> None:
+    ledger = (LAB_ROOT / "EXPERIMENTS.md").read_text(encoding="utf-8")
+
+    assert "## Recording Rules" in ledger
+    assert "## Entry Template" in ledger
+    for heading in (
+        "### Purpose",
+        "### Performed",
+        "### Observed Facts",
+        "### Interpretation and Product Decision",
+        "### Unverified",
+        "### Local Evidence",
+    ):
+        assert heading in ledger
+
+
+def test_lab_does_not_offer_immediate_cleanup_after_a_run() -> None:
+    cli = (LAB_SOURCE / "cli.py").read_text(encoding="utf-8")
+    spec = (LAB_ROOT.parents[1] / "SPEC.md").read_text(encoding="utf-8")
+
+    assert "--cleanup-on-success" not in cli
+    assert "Immediate automatic cleanup is prohibited" in spec

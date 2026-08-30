@@ -34,6 +34,15 @@ The repository has a working MVP with:
   boundaries, direct/transitive dependency graphs, CycloneDX Services, and
   source/alias/EPSS Finding projections
 - hypothesis and product-decision questions attached to every DT lab scenario
+- an opt-in, least-privilege Analysis-state experiment that records decisions,
+  comments, suppression, audit trails, Finding projections, and metrics without
+  entering the default lab run
+- a provenance- and hash-pinned real-world Go, TypeScript, Rails, and Python
+  SBOM corpus, with explicit selection and schema-rejection comparison cases
+- complete paginated Component observations checked against `X-Total-Count`,
+  plus repeatable triage-field coverage summaries
+- an append-only-style experiment ledger that separates observed facts from
+  interpretation and records failed or partial live runs
 - a proposed GCP runtime ADR and static Terraform evaluation harness
 
 ## Phase 0: Production Validation (P0)

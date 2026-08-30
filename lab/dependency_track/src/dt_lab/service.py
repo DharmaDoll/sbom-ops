@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -13,7 +14,15 @@ from uuid import uuid4
 import yaml
 
 from dt_lab.domain import (
+    AnalysisAction,
+    AnalysisJustification,
+    AnalysisResponse,
+    AnalysisState,
     BomUpload,
+    CorpusArtifact,
+    CorpusArtifactInspection,
+    CorpusCatalog,
+    CorpusSourceKind,
     DependencyTrackObservation,
     LabManifest,
     LabManifestError,
@@ -41,6 +50,7 @@ RELEVANT_OPENAPI_TAGS = (
     "project",
     "search",
     "service",
+    "team",
     "vex",
     "violation",
     "violationanalysis",
@@ -97,25 +107,87 @@ def _required_string_tuple(
     return tuple(result)
 
 
+def _required_bool(payload: dict[str, Any], key: str, field_name: str) -> bool:
+    value = payload.get(key)
+    if not isinstance(value, bool):
+        raise LabManifestError(f"{field_name}.{key} must be a boolean")
+    return value
+
+
+def _load_analysis_action(
+    payload: Any, scenario_id: str, step_id: str
+) -> AnalysisAction:
+    field_name = f"scenario {scenario_id} step {step_id} analysis action"
+    action = _mapping(payload, field_name)
+    _reject_unknown(
+        action,
+        {
+            "id",
+            "component_purl",
+            "vulnerability_id",
+            "vulnerability_source",
+            "state",
+            "justification",
+            "response",
+            "detail",
+            "comment",
+            "suppressed",
+        },
+        field_name,
+    )
+    action_id = _required_string(action, "id", field_name)
+    enum_field = f"{field_name} {action_id}"
+    try:
+        state = AnalysisState(_required_string(action, "state", enum_field))
+        justification = AnalysisJustification(
+            _required_string(action, "justification", enum_field)
+        )
+        response = AnalysisResponse(_required_string(action, "response", enum_field))
+    except ValueError as exc:
+        raise LabManifestError(f"{enum_field!r} has an invalid enum") from exc
+    return AnalysisAction(
+        id=action_id,
+        component_purl=_required_string(action, "component_purl", enum_field),
+        vulnerability_id=_required_string(action, "vulnerability_id", enum_field),
+        vulnerability_source=_required_string(
+            action, "vulnerability_source", enum_field
+        ),
+        state=state,
+        justification=justification,
+        response=response,
+        detail=_required_string(action, "detail", enum_field),
+        comment=_required_string(action, "comment", enum_field),
+        suppressed=_required_bool(action, "suppressed", enum_field),
+    )
+
+
 def _load_step(payload: Any, scenario_id: str) -> ScenarioStep:
     step = _mapping(payload, f"scenario {scenario_id} step")
     _reject_unknown(
         step,
-        {"id", "bom", "observe", "project_version"},
+        {"id", "bom", "observe", "project_version", "analysis_actions"},
         f"scenario {scenario_id} step",
     )
+    step_id = _required_string(step, "id", f"scenario {scenario_id} step")
     observations = tuple(
         Observation(str(item))
         for item in _list(step.get("observe"), f"scenario {scenario_id} observe")
     )
     return ScenarioStep(
-        id=_required_string(step, "id", f"scenario {scenario_id} step"),
+        id=step_id,
         bom=_required_string(step, "bom", f"scenario {scenario_id} step"),
         observations=observations,
         project_version=(
             _required_string(step, "project_version", f"scenario {scenario_id} step")
             if step.get("project_version") is not None
             else None
+        ),
+        analysis_actions=tuple(
+            _load_analysis_action(item, scenario_id, step_id)
+            for item in _list(
+                step.get("analysis_actions", []),
+                f"scenario {scenario_id} step {step_id}.analysis_actions",
+            )
         ),
     )
 
@@ -338,6 +410,233 @@ def load_lab_manifest(path: str | Path) -> LabManifest:
     return manifest
 
 
+def _load_corpus_artifact(payload: Any) -> CorpusArtifact:
+    artifact = _mapping(payload, "corpus artifact")
+    _reject_unknown(
+        artifact,
+        {
+            "id",
+            "ecosystem",
+            "source_kind",
+            "source",
+            "release",
+            "license",
+            "integrity",
+            "sha256",
+            "local_path",
+            "cyclonedx_version",
+            "project",
+            "purpose",
+            "hypotheses",
+            "decision_questions",
+        },
+        "corpus artifact",
+    )
+    artifact_id = _required_string(artifact, "id", "corpus artifact")
+    project = _mapping(
+        artifact.get("project"), f"corpus artifact {artifact_id}.project"
+    )
+    _reject_unknown(
+        project, {"name", "version"}, f"corpus artifact {artifact_id}.project"
+    )
+    try:
+        source_kind = CorpusSourceKind(
+            _required_string(artifact, "source_kind", f"corpus artifact {artifact_id}")
+        )
+    except ValueError as exc:
+        raise LabManifestError(
+            f"corpus artifact {artifact_id!r} has an invalid source_kind"
+        ) from exc
+    return CorpusArtifact(
+        id=artifact_id,
+        ecosystem=_required_string(
+            artifact, "ecosystem", f"corpus artifact {artifact_id}"
+        ),
+        source_kind=source_kind,
+        source=_required_string(artifact, "source", f"corpus artifact {artifact_id}"),
+        release=_required_string(artifact, "release", f"corpus artifact {artifact_id}"),
+        license=_required_string(artifact, "license", f"corpus artifact {artifact_id}"),
+        integrity=_required_string(
+            artifact, "integrity", f"corpus artifact {artifact_id}"
+        ),
+        sha256=_required_string(artifact, "sha256", f"corpus artifact {artifact_id}"),
+        local_path=_required_string(
+            artifact, "local_path", f"corpus artifact {artifact_id}"
+        ),
+        cyclonedx_version=_required_string(
+            artifact, "cyclonedx_version", f"corpus artifact {artifact_id}"
+        ),
+        project_name=_required_string(
+            project, "name", f"corpus artifact {artifact_id}.project"
+        ),
+        project_version=_required_string(
+            project, "version", f"corpus artifact {artifact_id}.project"
+        ),
+        purpose=_required_string(artifact, "purpose", f"corpus artifact {artifact_id}"),
+        hypotheses=_required_string_tuple(
+            artifact, "hypotheses", f"corpus artifact {artifact_id}"
+        ),
+        decision_questions=_required_string_tuple(
+            artifact, "decision_questions", f"corpus artifact {artifact_id}"
+        ),
+    )
+
+
+def load_corpus_catalog(path: str | Path) -> CorpusCatalog:
+    catalog_path = Path(path)
+    payload = _mapping(
+        yaml.safe_load(catalog_path.read_text(encoding="utf-8")), "corpus catalog"
+    )
+    _reject_unknown(
+        payload, {"schema_version", "target", "artifacts"}, "corpus catalog"
+    )
+    schema_version = payload.get("schema_version")
+    if not isinstance(schema_version, int):
+        raise LabManifestError("corpus catalog.schema_version must be an integer")
+    target_payload = _mapping(payload.get("target"), "corpus catalog.target")
+    _reject_unknown(
+        target_payload,
+        {"dependency_track_version", "cyclonedx_versions"},
+        "corpus catalog.target",
+    )
+    return CorpusCatalog(
+        schema_version=schema_version,
+        target=LabTarget(
+            dependency_track_version=_required_string(
+                target_payload,
+                "dependency_track_version",
+                "corpus catalog.target",
+            ),
+            cyclonedx_versions=tuple(
+                str(item)
+                for item in _list(
+                    target_payload.get("cyclonedx_versions"),
+                    "corpus catalog.target.cyclonedx_versions",
+                )
+            ),
+        ),
+        artifacts=tuple(
+            _load_corpus_artifact(item)
+            for item in _list(payload.get("artifacts"), "corpus catalog.artifacts")
+        ),
+    )
+
+
+def inspect_corpus_artifact(
+    artifact: CorpusArtifact, artifact_directory: str | Path
+) -> CorpusArtifactInspection:
+    root = Path(artifact_directory).resolve()
+    path = (root / artifact.local_path).resolve()
+    if not path.is_relative_to(root):
+        raise LabManifestError(
+            f"corpus artifact {artifact.id!r} escapes the artifact directory"
+        )
+    if not path.is_file():
+        raise LabManifestError(
+            f"corpus artifact {artifact.id!r} is not available locally: {path}"
+        )
+    content = path.read_bytes()
+    observed_sha256 = hashlib.sha256(content).hexdigest()
+    if observed_sha256 != artifact.sha256:
+        raise LabManifestError(
+            f"corpus artifact {artifact.id!r} SHA-256 mismatch: "
+            f"expected {artifact.sha256}, observed {observed_sha256}"
+        )
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise LabManifestError(
+            f"corpus artifact {artifact.id!r} is not valid JSON"
+        ) from exc
+    if not isinstance(payload, dict) or payload.get("bomFormat") != "CycloneDX":
+        raise LabManifestError(
+            f"corpus artifact {artifact.id!r} is not a CycloneDX BOM"
+        )
+    if payload.get("specVersion") != artifact.cyclonedx_version:
+        raise LabManifestError(
+            f"corpus artifact {artifact.id!r} declares CycloneDX "
+            f"{payload.get('specVersion')!r}, expected {artifact.cyclonedx_version!r}"
+        )
+
+    def count_list(field_name: str) -> int:
+        value = payload.get(field_name, [])
+        if not isinstance(value, list):
+            raise LabManifestError(
+                f"corpus artifact {artifact.id!r} {field_name} must be a list"
+            )
+        return len(value)
+
+    return CorpusArtifactInspection(
+        artifact_id=artifact.id,
+        path=str(path),
+        byte_count=len(content),
+        component_count=count_list("components"),
+        dependency_count=count_list("dependencies"),
+        service_count=count_list("services"),
+        vulnerability_count=count_list("vulnerabilities"),
+    )
+
+
+def inspect_corpus_catalog(
+    catalog: CorpusCatalog, artifact_directory: str | Path
+) -> tuple[CorpusArtifactInspection, ...]:
+    return tuple(
+        inspect_corpus_artifact(artifact, artifact_directory)
+        for artifact in catalog.artifacts
+    )
+
+
+def build_corpus_lab_manifest(
+    catalog: CorpusCatalog,
+    artifact_directory: str | Path,
+    artifact_ids: tuple[str, ...],
+) -> LabManifest:
+    if not artifact_ids:
+        raise LabManifestError("real-world corpus runs require explicit artifact IDs")
+    available = {artifact.id: artifact for artifact in catalog.artifacts}
+    unknown = sorted(set(artifact_ids) - set(available))
+    if unknown:
+        raise LabManifestError(f"unknown corpus artifacts: {', '.join(unknown)}")
+    if len(artifact_ids) != len(set(artifact_ids)):
+        raise LabManifestError("corpus artifact IDs must not be repeated")
+    root = Path(artifact_directory).resolve()
+    scenarios: list[LabScenario] = []
+    for artifact_id in artifact_ids:
+        artifact = available[artifact_id]
+        inspection = inspect_corpus_artifact(artifact, root)
+        scenarios.append(
+            LabScenario(
+                id=artifact.id,
+                category=ScenarioCategory.CORPUS,
+                status=ScenarioStatus.IMPLEMENTED,
+                purpose=artifact.purpose,
+                project_name=artifact.project_name,
+                project_version=artifact.project_version,
+                hypotheses=artifact.hypotheses,
+                decision_questions=artifact.decision_questions,
+                steps=(
+                    ScenarioStep(
+                        id="import",
+                        bom=inspection.path,
+                        observations=(
+                            Observation.PROJECT,
+                            Observation.COMPONENTS,
+                            Observation.DIRECT_COMPONENTS,
+                            Observation.DEPENDENCY_GRAPH,
+                            Observation.FINDINGS,
+                            Observation.VULNERABILITIES,
+                            Observation.METRICS,
+                            Observation.BOM_EXPORT,
+                        ),
+                    ),
+                ),
+            )
+        )
+    return LabManifest(
+        schema_version=3, target=catalog.target, scenarios=tuple(scenarios)
+    )
+
+
 def _permissions(description: Any) -> tuple[str, ...]:
     if not isinstance(description, str):
         return ()
@@ -510,6 +809,8 @@ class DependencyTrackLabApi(Protocol):
         self, project_name: str, project_version: str
     ) -> DependencyTrackObservation: ...
 
+    def observe_current_team(self) -> DependencyTrackObservation: ...
+
     def observe_project(self, project_uuid: str) -> DependencyTrackObservation: ...
 
     def observe_project_components(
@@ -529,7 +830,23 @@ class DependencyTrackLabApi(Protocol):
     ) -> DependencyTrackObservation: ...
 
     def observe_project_findings(
-        self, project_uuid: str
+        self, project_uuid: str, *, suppressed: bool = False
+    ) -> DependencyTrackObservation: ...
+
+    def observe_analysis_trail(
+        self,
+        project_uuid: str,
+        component_uuid: str,
+        vulnerability_uuid: str,
+    ) -> DependencyTrackObservation: ...
+
+    def record_analysis_decision(
+        self,
+        *,
+        project_uuid: str,
+        component_uuid: str,
+        vulnerability_uuid: str,
+        action: AnalysisAction,
     ) -> DependencyTrackObservation: ...
 
     def observe_project_vulnerabilities(
@@ -546,12 +863,15 @@ class DependencyTrackLabApi(Protocol):
 
 
 def _observation_dict(observation: DependencyTrackObservation) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "method": observation.method,
+        "path": observation.path,
+        "query": dict(observation.query),
+    }
+    if observation.request_payload is not None:
+        request["payload"] = observation.request_payload
     return {
-        "request": {
-            "method": observation.method,
-            "path": observation.path,
-            "query": dict(observation.query),
-        },
+        "request": request,
         "response": {
             "status": observation.status,
             "headers": dict(observation.headers),
@@ -695,6 +1015,54 @@ def _finding_projection(finding: Any) -> dict[str, Any]:
     }
 
 
+def _has_value(value: Any) -> bool:
+    return value is not None and value != "" and value != [] and value != {}
+
+
+def _finding_triage_coverage(findings: list[Any]) -> dict[str, int]:
+    coverage = Counter[str]()
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        component = finding.get("component")
+        vulnerability = finding.get("vulnerability")
+        analysis = finding.get("analysis")
+        attribution = finding.get("attribution")
+        if not isinstance(component, dict):
+            component = {}
+        if not isinstance(vulnerability, dict):
+            vulnerability = {}
+        if not isinstance(analysis, dict):
+            analysis = {}
+        if not isinstance(attribution, dict):
+            attribution = {}
+        candidates = {
+            "component_latest_version": component.get("latestVersion"),
+            "vulnerability_aliases": _vulnerability_aliases(
+                vulnerability.get("aliases")
+            ),
+            "severity": vulnerability.get("severity"),
+            "epss_score": vulnerability.get("epssScore"),
+            "epss_percentile": vulnerability.get("epssPercentile"),
+            "cvss_v4": vulnerability.get("cvssV4Score")
+            or vulnerability.get("cvssV4BaseScore"),
+            "cvss_v3": vulnerability.get("cvssV3BaseScore"),
+            "cvss_v2": vulnerability.get("cvssV2BaseScore"),
+            "description": vulnerability.get("description"),
+            "recommendation": vulnerability.get("recommendation"),
+            "references": vulnerability.get("references"),
+            "cwe": vulnerability.get("cwes") or vulnerability.get("cweId"),
+            "published": vulnerability.get("published"),
+            "analysis_state": analysis.get("state"),
+            "analysis_suppressed": analysis.get("isSuppressed"),
+            "analyzer_attribution": attribution.get("analyzerIdentity"),
+        }
+        coverage.update(
+            field_name for field_name, value in candidates.items() if _has_value(value)
+        )
+    return dict(sorted(coverage.items()))
+
+
 def _step_summary(
     observations: dict[Observation, DependencyTrackObservation],
 ) -> dict[str, Any]:
@@ -743,15 +1111,22 @@ def _step_summary(
         str(finding["vulnerability_source"] or "UNKNOWN")
         for finding in finding_projection
     )
+    unique_vulnerabilities = {
+        (finding["vulnerability_source"], finding["vulnerability_id"])
+        for finding in finding_projection
+        if finding["vulnerability_id"]
+    }
     return {
         "component_count": len(components),
         "direct_component_count": len(direct_components),
         "service_count": len(services),
         "finding_count": len(findings),
+        "unique_vulnerability_count": len(unique_vulnerabilities),
         "vulnerability_count": len(vulnerabilities),
         "components": component_projection,
         "finding_sources": dict(sorted(finding_sources.items())),
         "findings": finding_projection,
+        "triage_field_coverage": _finding_triage_coverage(findings),
         "vulnerabilities": vulnerability_projection,
     }
 
@@ -812,6 +1187,34 @@ def _capture_observation(
     return observer(project_uuid)
 
 
+def _scenario_mutates_analysis(scenario: LabScenario) -> bool:
+    return any(step.analysis_actions for step in scenario.steps)
+
+
+def _validate_analysis_team(
+    observation: DependencyTrackObservation,
+) -> None:
+    payload = observation.payload
+    if not isinstance(payload, dict) or not isinstance(
+        payload.get("permissions"), list
+    ):
+        raise LabManifestError(
+            "analysis key team response does not contain a permissions list"
+        )
+    permission_names = {
+        str(permission.get("name"))
+        for permission in payload["permissions"]
+        if isinstance(permission, dict) and permission.get("name")
+    }
+    expected = {"VULNERABILITY_ANALYSIS"}
+    if permission_names != expected:
+        rendered = ", ".join(sorted(permission_names)) or "none"
+        raise LabManifestError(
+            "analysis key team must have only VULNERABILITY_ANALYSIS; observed: "
+            f"{rendered}"
+        )
+
+
 def _selected_scenarios(
     manifest: LabManifest, scenario_ids: tuple[str, ...]
 ) -> tuple[LabScenario, ...]:
@@ -821,7 +1224,11 @@ def _selected_scenarios(
         if scenario.status is ScenarioStatus.IMPLEMENTED
     )
     if not scenario_ids:
-        return implemented
+        return tuple(
+            scenario
+            for scenario in implemented
+            if not _scenario_mutates_analysis(scenario)
+        )
     available = {scenario.id: scenario for scenario in implemented}
     unknown = sorted(set(scenario_ids) - set(available))
     if unknown:
@@ -829,6 +1236,195 @@ def _selected_scenarios(
             f"unknown or unimplemented lab scenarios: {', '.join(unknown)}"
         )
     return tuple(available[scenario_id] for scenario_id in scenario_ids)
+
+
+def _matching_finding(finding: Any, action: AnalysisAction) -> bool:
+    if not isinstance(finding, dict):
+        return False
+    component = finding.get("component")
+    vulnerability = finding.get("vulnerability")
+    if not isinstance(component, dict) or not isinstance(vulnerability, dict):
+        return False
+    component_purl = component.get("purl") or component.get("purlCoordinates")
+    vulnerability_id = (
+        vulnerability.get("vulnId")
+        or vulnerability.get("vulnID")
+        or vulnerability.get("id")
+    )
+    return (
+        component_purl == action.component_purl
+        and vulnerability_id == action.vulnerability_id
+        and str(vulnerability.get("source") or "").upper()
+        == action.vulnerability_source.upper()
+    )
+
+
+def _analysis_target(
+    findings: DependencyTrackObservation, action: AnalysisAction
+) -> tuple[str, str, dict[str, Any]] | None:
+    matches = [
+        finding
+        for finding in _payload_list(findings)
+        if _matching_finding(finding, action)
+    ]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise LabManifestError(
+            f"analysis action {action.id!r} matched {len(matches)} findings"
+        )
+    finding = matches[0]
+    component = finding.get("component")
+    vulnerability = finding.get("vulnerability")
+    component_uuid = component.get("uuid") if isinstance(component, dict) else None
+    vulnerability_uuid = (
+        vulnerability.get("uuid") if isinstance(vulnerability, dict) else None
+    )
+    if not component_uuid or not vulnerability_uuid:
+        raise LabManifestError(
+            f"analysis action {action.id!r} target has no component or "
+            "vulnerability UUID"
+        )
+    return str(component_uuid), str(vulnerability_uuid), finding
+
+
+def _wait_for_analysis_target(
+    *,
+    client: DependencyTrackLabApi,
+    project_uuid: str,
+    action: AnalysisAction,
+    timeout: float,
+    poll_interval: float,
+) -> tuple[DependencyTrackObservation, str, str, dict[str, Any]]:
+    deadline = time.monotonic() + timeout
+    while True:
+        findings = client.observe_project_findings(project_uuid)
+        target = _analysis_target(findings, action)
+        if target is None:
+            suppressed_findings = client.observe_project_findings(
+                project_uuid, suppressed=True
+            )
+            suppressed_target = _analysis_target(suppressed_findings, action)
+            if suppressed_target is not None:
+                findings = suppressed_findings
+                target = suppressed_target
+        if target is not None:
+            component_uuid, vulnerability_uuid, finding = target
+            return findings, component_uuid, vulnerability_uuid, finding
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise LabManifestError(
+                f"analysis action {action.id!r} target finding was not observed"
+            )
+        time.sleep(min(max(0.0, poll_interval), remaining))
+
+
+def _analysis_state(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return None
+    return payload.get("analysisState") or payload.get("state")
+
+
+def _analysis_suppressed(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return None
+    if "isSuppressed" in payload:
+        return payload["isSuppressed"]
+    return payload.get("suppressed")
+
+
+def _analysis_verification(
+    *,
+    action: AnalysisAction,
+    update: DependencyTrackObservation,
+    trail: DependencyTrackObservation,
+    finding: dict[str, Any],
+) -> dict[str, Any]:
+    finding_analysis = finding.get("analysis")
+    if not isinstance(finding_analysis, dict):
+        finding_analysis = {}
+    return {
+        "action_id": action.id,
+        "expected": {
+            "state": action.state.value,
+            "suppressed": action.suppressed,
+        },
+        "observed": {
+            "update_state": _analysis_state(update.payload),
+            "update_suppressed": _analysis_suppressed(update.payload),
+            "trail_state": _analysis_state(trail.payload),
+            "trail_suppressed": _analysis_suppressed(trail.payload),
+            "finding_state": _analysis_state(finding_analysis),
+            "finding_suppressed": _analysis_suppressed(finding_analysis),
+            "trail_comment_count": (
+                len(trail.payload.get("analysisComments", []))
+                if isinstance(trail.payload, dict)
+                and isinstance(trail.payload.get("analysisComments"), list)
+                else None
+            ),
+        },
+    }
+
+
+def _run_analysis_actions(
+    *,
+    step: ScenarioStep,
+    step_directory: Path,
+    project_uuid: str,
+    read_client: DependencyTrackLabApi,
+    analysis_client: DependencyTrackLabApi,
+    timeout: float,
+    poll_interval: float,
+) -> int:
+    observation_count = 0
+    for index, action in enumerate(step.analysis_actions, start=1):
+        action_directory = (
+            step_directory / "analysis-actions" / f"{index:02d}-{action.id}"
+        )
+        action_directory.mkdir(parents=True, exist_ok=False)
+        before, component_uuid, vulnerability_uuid, _ = _wait_for_analysis_target(
+            client=read_client,
+            project_uuid=project_uuid,
+            action=action,
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
+        _write_json(
+            action_directory / "findings-before.json", _observation_dict(before)
+        )
+        update = analysis_client.record_analysis_decision(
+            project_uuid=project_uuid,
+            component_uuid=component_uuid,
+            vulnerability_uuid=vulnerability_uuid,
+            action=action,
+        )
+        _write_json(action_directory / "update.json", _observation_dict(update))
+        trail = read_client.observe_analysis_trail(
+            project_uuid, component_uuid, vulnerability_uuid
+        )
+        _write_json(action_directory / "trail.json", _observation_dict(trail))
+        after = read_client.observe_project_findings(
+            project_uuid, suppressed=action.suppressed
+        )
+        _write_json(action_directory / "findings-after.json", _observation_dict(after))
+        target = _analysis_target(after, action)
+        if target is None:
+            raise LabManifestError(
+                f"analysis action {action.id!r} target disappeared after update"
+            )
+        metrics = read_client.observe_project_metrics(project_uuid)
+        _write_json(action_directory / "metrics.json", _observation_dict(metrics))
+        _write_json(
+            action_directory / "verification.json",
+            _analysis_verification(
+                action=action,
+                update=update,
+                trail=trail,
+                finding=target[2],
+            ),
+        )
+        observation_count += 5
+    return observation_count
 
 
 def _run_scenario_steps(
@@ -839,6 +1435,7 @@ def _run_scenario_steps(
     run_id: str,
     upload_client: DependencyTrackLabApi,
     read_client: DependencyTrackLabApi,
+    analysis_client: DependencyTrackLabApi | None,
     processing_timeout: float,
     poll_interval: float,
     results: list[LabStepResult],
@@ -909,13 +1506,28 @@ def _run_scenario_steps(
             if delta is not None:
                 _write_json(step_directory / "delta.json", delta)
             previous_summary = summary
+            analysis_observation_count = 0
+            if step.analysis_actions:
+                if analysis_client is None:
+                    raise LabManifestError(
+                        f"scenario {scenario.id!r} requires an analysis client"
+                    )
+                analysis_observation_count = _run_analysis_actions(
+                    step=step,
+                    step_directory=step_directory,
+                    project_uuid=project_uuid,
+                    read_client=read_client,
+                    analysis_client=analysis_client,
+                    timeout=processing_timeout,
+                    poll_interval=poll_interval,
+                )
             results.append(
                 LabStepResult(
                     scenario_id=scenario.id,
                     step_id=step.id,
                     project_uuid=project_uuid,
                     snapshot_directory=str(step_directory),
-                    observation_count=len(captured) + 1,
+                    observation_count=len(captured) + 1 + analysis_observation_count,
                 )
             )
 
@@ -927,18 +1539,36 @@ def run_lab_scenarios(
     upload_client: DependencyTrackLabApi,
     read_client: DependencyTrackLabApi,
     output_directory: str | Path,
+    analysis_client: DependencyTrackLabApi | None = None,
     scenario_ids: tuple[str, ...] = (),
     processing_timeout: float = 120.0,
     poll_interval: float = 5.0,
     openapi_contract_sha256: str | None = None,
+    allow_analysis_mutation: bool = False,
 ) -> LabRunResult:
+    selected = _selected_scenarios(manifest, scenario_ids)
+    mutating_scenarios = [
+        scenario.id for scenario in selected if _scenario_mutates_analysis(scenario)
+    ]
+    if mutating_scenarios and not allow_analysis_mutation:
+        raise LabManifestError(
+            "analysis mutation requires explicit opt-in for scenarios: "
+            + ", ".join(mutating_scenarios)
+        )
+    if mutating_scenarios and analysis_client is None:
+        raise LabManifestError(
+            "analysis mutation requires a dedicated VULNERABILITY_ANALYSIS client"
+        )
+    analysis_team: DependencyTrackObservation | None = None
+    if mutating_scenarios and analysis_client is not None:
+        analysis_team = analysis_client.observe_current_team()
+        _validate_analysis_team(analysis_team)
     run_id = str(uuid4())
     run_directory = Path(output_directory) / run_id
     run_directory.mkdir(parents=True, exist_ok=False)
     manifest_root = Path(manifest_path).resolve().parent
     results: list[LabStepResult] = []
     project_records: list[LabProjectRecord] = []
-    selected = _selected_scenarios(manifest, scenario_ids)
     started_at = datetime.now(UTC).isoformat()
     run_metadata = {
         "run_id": run_id,
@@ -947,12 +1577,18 @@ def run_lab_scenarios(
         "dependency_track_version": manifest.target.dependency_track_version,
         "openapi_contract_sha256": openapi_contract_sha256,
         "scenarios": [scenario.id for scenario in selected],
+        "analysis_mutation_enabled": bool(mutating_scenarios),
         "project_ledger": "projects.json",
     }
     _write_json(
         run_directory / "run.json",
         run_metadata,
     )
+    if analysis_team is not None:
+        _write_json(
+            run_directory / "analysis-key-team.json",
+            _observation_dict(analysis_team),
+        )
     _write_project_ledger(run_directory, run_id, project_records)
     try:
         _run_scenario_steps(
@@ -962,6 +1598,7 @@ def run_lab_scenarios(
             run_id=run_id,
             upload_client=upload_client,
             read_client=read_client,
+            analysis_client=analysis_client,
             processing_timeout=processing_timeout,
             poll_interval=poll_interval,
             results=results,
