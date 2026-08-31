@@ -603,10 +603,13 @@ boundary; mutating experiments require a disposable Project, least-privilege
 credentials, and an explicit CLI opt-in.
 
 The Analysis-state experiment has three independent gates: it must be selected
-by scenario ID, `--allow-analysis-mutation` must be present, and a separate
-`SBOM_OPS_DT_ANALYSIS_API_KEY` must be supplied. Before any Project creation,
-`GET /api/v1/team/self` must report exactly `VULNERABILITY_ANALYSIS` and no
-additional permission.
+by scenario ID, `--allow-analysis-mutation` must be present, and the selected API
+key must have `VULNERABILITY_ANALYSIS`. The lab prefers
+`SBOM_OPS_DT_ANALYSIS_API_KEY` when supplied and otherwise reuses
+`SBOM_OPS_DT_API_KEY`. Before any Project creation, `GET /api/v1/team/self` must
+report `VULNERABILITY_ANALYSIS` and no permission outside
+`VIEW_BADGES`, `VIEW_POLICY_VIOLATION`, `VIEW_PORTFOLIO`,
+`VIEW_VULNERABILITY`, and `VULNERABILITY_ANALYSIS`.
 The normal all-implemented-scenarios run excludes mutation actions. Analysis
 targets must be resolved from the newly created run-scoped Project by stable
 Component and vulnerability identifiers; global Analysis mutation is forbidden.

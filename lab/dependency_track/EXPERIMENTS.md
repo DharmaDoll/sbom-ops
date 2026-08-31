@@ -389,8 +389,8 @@ counts in the Airflow conversion, correctness of generic fallback for
 platform-suffixed gem versions, GitHub/OSV enrichment, and larger-scale limits
 remain unverified. The 285 OpenProject Findings provide a useful future corpus
 for read-only prioritization and triage-delegation experiments, but a separate
-run and the exact least-privilege Analysis key are required before mutating any
-decision state.
+run and a preflight-validated key with `VULNERABILITY_ANALYSIS` and no unrelated
+write permission are required before mutating any decision state.
 
 ### Local Evidence
 
@@ -398,3 +398,133 @@ decision state.
 - `var/dt-lab/tools/` (ignored; local only)
 - `var/dt-lab/runs/<run-id>/<artifact-id>/` (ignored; local only)
 - `var/dt-lab/runs/<run-id>/cleanups/` (ignored; local only)
+
+## 2026-08-31 — Shared Analysis Key Preflight
+
+- Status: failed
+- Target: Dependency-Track 4.14.3; CycloneDX 1.5
+- Scenarios: `triage-analysis-states`
+
+### Purpose
+
+Determine whether the existing orchestrator read key can safely replace the
+optional dedicated Analysis key for the explicit Analysis-state experiment.
+
+### Performed
+
+Invoked the Analysis-state scenario with its explicit scenario selector and
+mutation opt-in, leaving `SBOM_OPS_DT_ANALYSIS_API_KEY` unset so the runner used
+`SBOM_OPS_DT_API_KEY`. The runner queried `GET /api/v1/team/self` before run
+directory or Project creation. After the preflight rejected that key, queried
+the team permissions for each configured lab key without recording key values.
+
+### Observed Facts
+
+- The orchestrator key reported `VIEW_BADGES`, `VIEW_POLICY_VIOLATION`,
+  `VIEW_PORTFOLIO`, and `VIEW_VULNERABILITY`; it did not report
+  `VULNERABILITY_ANALYSIS`.
+- The upload key reported `BOM_UPLOAD` and `PROJECT_CREATION_UPLOAD`.
+- The cleanup key reported `PORTFOLIO_MANAGEMENT`, `VIEW_PORTFOLIO`,
+  `VULNERABILITY_ANALYSIS`, and `VULNERABILITY_MANAGEMENT`.
+- The required-permission preflight stopped the scenario before a run directory,
+  Project, BOM upload, or Analysis mutation was created.
+- An initial restricted-network invocation failed before receiving an HTTP
+  response and did not add behavioral evidence.
+
+### Interpretation and Product Decision
+
+The dedicated Analysis environment variable is optional: the lab may reuse the
+orchestrator key when its team includes `VULNERABILITY_ANALYSIS`. Existing
+read-only permissions are accepted alongside that permission. The cleanup key
+is not selected automatically because it also grants Project and vulnerability
+management capabilities that are outside the Analysis experiment allowlist.
+This keeps the user's requested credential reuse compatible with fail-closed
+preflight and prevents an accidental expansion of the experiment's authority.
+
+### Unverified
+
+The actual Analysis decision cycle remains unverified. Add
+`VULNERABILITY_ANALYSIS` to the team behind `SBOM_OPS_DT_API_KEY`, or configure
+a dedicated Analysis-only key, then repeat this scenario.
+
+### Local Evidence
+
+- No run directory was created; the failure occurred during preflight.
+
+## 2026-08-31 — Analysis Decision Cycle with the Shared Read Key
+
+- Status: completed
+- Target: Dependency-Track 4.14.3; CycloneDX 1.5
+- Scenarios: `triage-analysis-states`
+
+### Purpose
+
+Verify that Dependency-Track can remain authoritative for Finding Analysis
+state, suppression, comments, and audit history when the existing orchestrator
+key is explicitly granted `VULNERABILITY_ANALYSIS`.
+
+### Performed
+
+Repeated the previously failed scenario with `SBOM_OPS_DT_ANALYSIS_API_KEY`
+unset. The runner reused `SBOM_OPS_DT_API_KEY`, verified its team permissions,
+created one run-scoped disposable Project, imported the synthetic Log4Shell BOM,
+and selected only the NVD `CVE-2021-44228` Finding by Project, Component PURL,
+vulnerability ID, and source. Applied and verified the explicit decision cycle
+`IN_TRIAGE` → `EXPLOITABLE` → `NOT_AFFECTED` → `FALSE_POSITIVE` → `RESOLVED` →
+`NOT_SET`, capturing the update response, appropriate suppressed or unsuppressed
+Finding projection, Analysis trail, metrics, and expected-versus-observed values
+after every action.
+
+### Observed Facts
+
+- The shared key reported `VIEW_BADGES`, `VIEW_POLICY_VIOLATION`,
+  `VIEW_PORTFOLIO`, `VIEW_VULNERABILITY`, and `VULNERABILITY_ANALYSIS`; the
+  permission preflight passed.
+- The imported Project contained one Component and ten NVD Findings. The exact
+  selector isolated `CVE-2021-44228`; the other nine Findings were not mutated.
+- All six requested states were accepted. For every action, the update response,
+  Finding projection, and Analysis trail immediately agreed with the requested
+  state and suppression flag.
+- The explicitly suppressed `NOT_AFFECTED` and `FALSE_POSITIVE` decisions were
+  visible through the suppressed Finding projection. The other four actions
+  were visible through the unsuppressed projection.
+- The final `NOT_SET` action restored the Finding to unsuppressed while retaining
+  the prior audit trail. The trail contained 26 comments generated from state,
+  justification, response, details, suppression, and caller-comment changes
+  across the six updates.
+- Immediate Project metrics remained unchanged throughout the decision cycle:
+  zero audited Findings, ten unaudited Findings, zero suppressed Findings, and
+  the same risk score. The synchronous Finding and Analysis endpoints therefore
+  changed before the Project metrics projection in this run.
+- The completed run retained 35 API observations. The disposable Project remains
+  available for evidence review and later run-scoped cleanup after target
+  quiescence.
+
+### Interpretation and Product Decision
+
+Dependency-Track can own the authoritative human Analysis decision, suppression
+flag, comments, and audit history. sbom-ops should read and reconcile that state
+instead of creating a duplicate triage state machine. It may use the shared
+orchestrator key for this explicitly gated local experiment when the permission
+preflight passes; a dedicated Analysis-only key remains the preferred deployment
+boundary.
+
+Finding and Analysis responses are suitable for immediate post-write
+verification. Project metrics are not: the unchanged values show that metric
+refresh timing must be treated as asynchronous and must not be used to confirm
+an Analysis write without a separate convergence wait. `RESOLVED` is accepted
+by the DT 4.14.3 API, but its intended product semantics still require comparison
+with the UI and VEX behavior before sbom-ops relies on it.
+
+### Unverified
+
+Metric convergence time, UI presentation of `RESOLVED`, VEX import/export
+effects, concurrent analyst edits, idempotent replay, comment-only updates,
+bulk triage, and the precise boundary between DT Analysis and GitHub/Jira task
+state remain unverified. These belong in the planned
+`triage-delegation-boundary` scenario.
+
+### Local Evidence
+
+- `var/dt-lab/runs/<run-id>/analysis-key-team.json` (ignored; local only)
+- `var/dt-lab/runs/<run-id>/triage-analysis-states/` (ignored; local only)

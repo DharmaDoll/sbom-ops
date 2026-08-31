@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from dt_lab.cli import main
@@ -478,7 +479,7 @@ def test_lab_cli_writes_openapi_inventory(
     )
 
 
-def test_lab_cli_requires_dedicated_key_for_analysis_mutation(
+def test_lab_cli_reuses_read_key_for_analysis_mutation(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -486,6 +487,19 @@ def test_lab_cli_requires_dedicated_key_for_analysis_mutation(
     monkeypatch.setenv("SBOM_OPS_SBOM_UPLOAD_API_KEY", "upload-key")
     monkeypatch.setenv("SBOM_OPS_DT_API_KEY", "read-key")
     monkeypatch.delenv("SBOM_OPS_DT_ANALYSIS_API_KEY", raising=False)
+    client_keys: list[str] = []
+
+    def fake_client(api_key: str) -> object:
+        client_keys.append(api_key)
+        return object()
+
+    monkeypatch.setattr("dt_lab.cli._dependency_track_client", fake_client)
+    monkeypatch.setattr(
+        "dt_lab.cli.run_lab_scenarios",
+        lambda *args, **kwargs: SimpleNamespace(
+            run_id="run-1", steps=(), output_directory="runs/run-1"
+        ),
+    )
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -499,8 +513,46 @@ def test_lab_cli_requires_dedicated_key_for_analysis_mutation(
         ],
     )
 
-    assert main() == 2
-    assert "requires SBOM_OPS_DT_ANALYSIS_API_KEY" in capsys.readouterr().err
+    assert main() == 0
+    assert client_keys == ["upload-key", "read-key", "read-key"]
+    assert "DT lab run completed" in capsys.readouterr().out
+
+
+def test_lab_cli_prefers_dedicated_analysis_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SBOM_OPS_DT_BASE_URL", "https://dtrack.example")
+    monkeypatch.setenv("SBOM_OPS_SBOM_UPLOAD_API_KEY", "upload-key")
+    monkeypatch.setenv("SBOM_OPS_DT_API_KEY", "read-key")
+    monkeypatch.setenv("SBOM_OPS_DT_ANALYSIS_API_KEY", "analysis-key")
+    client_keys: list[str] = []
+
+    def fake_client(api_key: str) -> object:
+        client_keys.append(api_key)
+        return object()
+
+    monkeypatch.setattr("dt_lab.cli._dependency_track_client", fake_client)
+    monkeypatch.setattr(
+        "dt_lab.cli.run_lab_scenarios",
+        lambda *args, **kwargs: SimpleNamespace(
+            run_id="run-1", steps=(), output_directory="runs/run-1"
+        ),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "dt-lab",
+            "run-scenarios",
+            "--manifest",
+            str(MANIFEST_PATH),
+            "--scenario",
+            "triage-analysis-states",
+            "--allow-analysis-mutation",
+        ],
+    )
+
+    assert main() == 0
+    assert client_keys == ["upload-key", "read-key", "analysis-key"]
 
 
 def test_lab_cli_cleanup_defaults_to_a_local_plan(
@@ -614,7 +666,13 @@ class FakeLabClient:
             {
                 "uuid": "analysis-team-1",
                 "name": "dt-lab-analysis",
-                "permissions": [{"name": "VULNERABILITY_ANALYSIS"}],
+                "permissions": [
+                    {"name": "VIEW_BADGES"},
+                    {"name": "VIEW_POLICY_VIOLATION"},
+                    {"name": "VIEW_PORTFOLIO"},
+                    {"name": "VIEW_VULNERABILITY"},
+                    {"name": "VULNERABILITY_ANALYSIS"},
+                ],
             },
         )
 
@@ -981,7 +1039,9 @@ def test_lab_runner_requires_explicit_analysis_mutation_opt_in(
     assert list(tmp_path.iterdir()) == []
 
 
-def test_lab_runner_rejects_overprivileged_analysis_key(tmp_path: Path) -> None:
+def test_lab_runner_rejects_disallowed_analysis_key_permissions(
+    tmp_path: Path,
+) -> None:
     client = FakeLabClient()
 
     def overprivileged_team() -> DependencyTrackObservation:
@@ -997,7 +1057,41 @@ def test_lab_runner_rejects_overprivileged_analysis_key(tmp_path: Path) -> None:
 
     client.observe_current_team = overprivileged_team  # type: ignore[method-assign]
 
-    with pytest.raises(LabManifestError, match="must have only"):
+    with pytest.raises(LabManifestError, match="outside the lab analysis allowlist"):
+        run_lab_scenarios(
+            load_lab_manifest(MANIFEST_PATH),
+            manifest_path=MANIFEST_PATH,
+            upload_client=client,
+            read_client=client,
+            analysis_client=client,
+            output_directory=tmp_path,
+            scenario_ids=("triage-analysis-states",),
+            poll_interval=0,
+            allow_analysis_mutation=True,
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_lab_runner_requires_vulnerability_analysis_permission(
+    tmp_path: Path,
+) -> None:
+    client = FakeLabClient()
+
+    def read_only_team() -> DependencyTrackObservation:
+        return client._observation(
+            "/api/v1/team/self",
+            {
+                "permissions": [
+                    {"name": "VIEW_PORTFOLIO"},
+                    {"name": "VIEW_VULNERABILITY"},
+                ]
+            },
+        )
+
+    client.observe_current_team = read_only_team  # type: ignore[method-assign]
+
+    with pytest.raises(LabManifestError, match="must include VULNERABILITY_ANALYSIS"):
         run_lab_scenarios(
             load_lab_manifest(MANIFEST_PATH),
             manifest_path=MANIFEST_PATH,

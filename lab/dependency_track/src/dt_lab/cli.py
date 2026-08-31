@@ -72,7 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "allow selected analysis_actions on disposable lab Projects using "
-            "SBOM_OPS_DT_ANALYSIS_API_KEY"
+            "SBOM_OPS_DT_ANALYSIS_API_KEY, or SBOM_OPS_DT_API_KEY as a fallback"
         ),
     )
 
@@ -212,11 +212,7 @@ def _run_scenarios(args: argparse.Namespace) -> int:
             "run-scenarios requires SBOM_OPS_SBOM_UPLOAD_API_KEY and "
             "SBOM_OPS_DT_API_KEY"
         )
-    analysis_key = os.getenv("SBOM_OPS_DT_ANALYSIS_API_KEY")
-    if args.allow_analysis_mutation and not analysis_key:
-        raise ValueError(
-            "--allow-analysis-mutation requires SBOM_OPS_DT_ANALYSIS_API_KEY"
-        )
+    analysis_key = os.getenv("SBOM_OPS_DT_ANALYSIS_API_KEY") or read_key
     manifest = load_lab_manifest(args.manifest)
     result = run_lab_scenarios(
         manifest,

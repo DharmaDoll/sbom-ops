@@ -122,7 +122,9 @@ Recommended local convention:
 
 ## API Key Model
 
-This project requires separate API keys for separate responsibilities.
+This project recommends separate API keys for separate responsibilities. The
+local Analysis experiment may reuse the orchestrator read key as described
+below; cleanup remains strictly separate because it can delete Projects.
 
 ### 1. SBOM upload key
 
@@ -162,19 +164,28 @@ Required permissions:
 This key is not required by the product runtime. Do not reuse the upload or
 orchestrator read key for cleanup.
 
-### 4. Optional DT lab analysis key
+### 4. DT lab Analysis permission and optional key
 
 Purpose:
 
 - run the explicit, disposable `triage-analysis-states` experiment
 
-Required permission:
+Required permission for the selected key:
 
 - `VULNERABILITY_ANALYSIS`
 
-This key is not required by the product runtime. Keep read access on the
-orchestrator key, do not add portfolio-management permissions, and use the key
-only with the lab's explicit analysis-mutation flag.
+For the simplest local setup, add `VULNERABILITY_ANALYSIS` to the orchestrator
+read team. When `SBOM_OPS_DT_ANALYSIS_API_KEY` is absent, the lab reuses
+`SBOM_OPS_DT_API_KEY`. Do not add portfolio-management permissions, and use the
+write capability only through the lab's explicit analysis-mutation flag.
+
+```bash
+make dt-lab-triage-analysis
+```
+
+Credential separation is still supported and preferred outside a disposable
+local lab. Set the optional override to a dedicated key whose only permission is
+`VULNERABILITY_ANALYSIS`:
 
 ```bash
 export SBOM_OPS_DT_ANALYSIS_API_KEY=replace-with-analysis-key
@@ -188,11 +199,13 @@ From the UI:
 1. Create a dedicated team for SBOM upload automation
 2. Assign only the permissions needed for upload
 3. Create a second team for the orchestrator
-4. Assign only read permissions for MVP
+4. Assign read permissions for MVP; add `VULNERABILITY_ANALYSIS` only when that
+   same key will run the opt-in local Analysis experiment
 5. If DT lab cleanup is needed, create a third local-only team with
    `VIEW_PORTFOLIO` and `PORTFOLIO_MANAGEMENT`
-6. If the opt-in Analysis experiment is needed, create a fourth local-only team
-   with only `VULNERABILITY_ANALYSIS`
+6. Optionally create a fourth local-only team with only
+   `VULNERABILITY_ANALYSIS` when the Analysis experiment should use a separate
+   key
 7. Generate an API key for each team
 8. Save each key immediately
 
@@ -345,7 +358,8 @@ export SBOM_OPS_DT_API_KEY=replace-with-orchestrator-read-key
 export SBOM_OPS_SBOM_UPLOAD_API_KEY=replace-with-upload-key
 # Optional and repository-lab-only:
 export SBOM_OPS_DT_CLEANUP_API_KEY=replace-with-cleanup-key
-export SBOM_OPS_DT_ANALYSIS_API_KEY=replace-with-analysis-only-key
+# Optional override; otherwise the lab reuses SBOM_OPS_DT_API_KEY:
+export SBOM_OPS_DT_ANALYSIS_API_KEY=replace-with-analysis-key
 export SBOM_OPS_DT_PROJECT_UUID=replace-with-project-uuid
 export SBOM_OPS_DT_PAGE_SIZE=100
 export SBOM_OPS_DT_MAX_RETRIES=3
@@ -354,8 +368,9 @@ export SBOM_OPS_DT_ANALYSIS_POLL_INTERVAL_SECONDS=5
 export SBOM_OPS_WAIT_FOR_ANALYSIS=false
 ```
 
-The upload, orchestrator, optional lab cleanup, and Analysis-only keys must
-remain separate.
+The upload and cleanup keys remain separate. The optional Analysis key may also
+remain separate; when it is unset, the opt-in lab Analysis command reuses the
+orchestrator key after validating its permission allowlist.
 
 For local development, store real secrets in `.env`.
 Do not put real API keys in `.env.example` or committed documentation.
@@ -403,7 +418,7 @@ Creating a team does not automatically create an API key.
 New API keys are shown once when created and are stored hashed afterward, so save
 the key immediately in a local secret store such as `.env`.
 
-Use separate keys for separate responsibilities:
+Prefer separate keys for separate responsibilities:
 
 - SBOM upload automation
 - orchestrator read access

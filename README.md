@@ -75,8 +75,10 @@ export SBOM_OPS_SBOM_UPLOAD_API_KEY=replace-with-upload-key
 
 The repository-only DT lab can additionally use a dedicated cleanup key with
 `VIEW_PORTFOLIO` and `PORTFOLIO_MANAGEMENT`. It is not needed for the product
-Quick Start. Its opt-in Analysis experiment uses another lab-only key with
-`VULNERABILITY_ANALYSIS`; neither key is reused by the product runtime.
+Quick Start. Its opt-in Analysis experiment requires `VULNERABILITY_ANALYSIS`;
+for local evaluation, that permission may be added to the orchestrator read
+team and the existing `SBOM_OPS_DT_API_KEY` reused. A separate
+`SBOM_OPS_DT_ANALYSIS_API_KEY` remains an optional least-privilege override.
 
 Upload the demo SBOM:
 

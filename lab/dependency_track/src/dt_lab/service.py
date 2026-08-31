@@ -1206,11 +1206,25 @@ def _validate_analysis_team(
         for permission in payload["permissions"]
         if isinstance(permission, dict) and permission.get("name")
     }
-    expected = {"VULNERABILITY_ANALYSIS"}
-    if permission_names != expected:
+    required = "VULNERABILITY_ANALYSIS"
+    allowed = {
+        required,
+        "VIEW_BADGES",
+        "VIEW_POLICY_VIOLATION",
+        "VIEW_PORTFOLIO",
+        "VIEW_VULNERABILITY",
+    }
+    if required not in permission_names:
         rendered = ", ".join(sorted(permission_names)) or "none"
         raise LabManifestError(
-            "analysis key team must have only VULNERABILITY_ANALYSIS; observed: "
+            "analysis key team must include VULNERABILITY_ANALYSIS; observed: "
+            f"{rendered}"
+        )
+    disallowed = permission_names - allowed
+    if disallowed:
+        rendered = ", ".join(sorted(disallowed))
+        raise LabManifestError(
+            "analysis key team has permissions outside the lab analysis allowlist: "
             f"{rendered}"
         )
 
@@ -1557,7 +1571,7 @@ def run_lab_scenarios(
         )
     if mutating_scenarios and analysis_client is None:
         raise LabManifestError(
-            "analysis mutation requires a dedicated VULNERABILITY_ANALYSIS client"
+            "analysis mutation requires a VULNERABILITY_ANALYSIS client"
         )
     analysis_team: DependencyTrackObservation | None = None
     if mutating_scenarios and analysis_client is not None:

@@ -104,14 +104,17 @@ export SBOM_OPS_DT_API_KEY=replace-with-read-key
 make dt-lab-run
 ```
 
-The default command skips every scenario with mutation actions. Run the
-Analysis-state experiment only after creating a separate team whose sole
-permission is `VULNERABILITY_ANALYSIS`:
+The default command skips every scenario with mutation actions. For local
+evaluation, add `VULNERABILITY_ANALYSIS` to the existing orchestrator read team;
+the lab then reuses `SBOM_OPS_DT_API_KEY`:
 
 ```bash
-export SBOM_OPS_DT_ANALYSIS_API_KEY=replace-with-analysis-key
 make dt-lab-triage-analysis
 ```
+
+For stricter credential separation, set `SBOM_OPS_DT_ANALYSIS_API_KEY` to a
+dedicated key with only `VULNERABILITY_ANALYSIS`; this optional override takes
+precedence over the read key.
 
 This command is explicit opt-in for `triage-analysis-states`. It creates a new
 run-suffixed `dt-lab-triage-analysis` Project, selects one synthetic Log4Shell
@@ -351,11 +354,13 @@ an explicit `cleanup-run --execute` command after evidence review and target
 quiescence.
 
 Analysis mutation has a second independent gate. The scenario must be selected
-by ID, `--allow-analysis-mutation` must be present, and
-`SBOM_OPS_DT_ANALYSIS_API_KEY` must contain a dedicated key. Mutating scenarios
-are excluded when `run-scenarios` is invoked without `--scenario`. Before a
-Project is created, `/api/v1/team/self` must report exactly one permission:
-`VULNERABILITY_ANALYSIS`.
+by ID and `--allow-analysis-mutation` must be present. The lab prefers
+`SBOM_OPS_DT_ANALYSIS_API_KEY` and falls back to `SBOM_OPS_DT_API_KEY`. Mutating
+scenarios are excluded when `run-scenarios` is invoked without `--scenario`.
+Before a Project is created, `/api/v1/team/self` must include
+`VULNERABILITY_ANALYSIS`; only the read-only `VIEW_BADGES`,
+`VIEW_POLICY_VIOLATION`, `VIEW_PORTFOLIO`, and `VIEW_VULNERABILITY` permissions
+may appear alongside it.
 
 The planned `triage-delegation-boundary` scenario determines how much security
 triage can stay in DT rather than being duplicated in sbom-ops. Its evidence

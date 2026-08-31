@@ -232,10 +232,13 @@ Project coordinates; upstream payloads, attestations, tools, and run evidence
 stay in ignored `var/dt-lab/`. Large Component collections are observed through
 the target's documented pagination and must match `X-Total-Count`.
 
-Mutating Analysis experiments use a separate `VULNERABILITY_ANALYSIS` client,
-an explicit CLI gate, an exact Finding selector, and only the newly created
-run-scoped Project. They are excluded from the default lab run and cannot add
-write behavior to the production Dependency-Track client by implication.
+Mutating Analysis experiments use a `VULNERABILITY_ANALYSIS` client, an explicit
+CLI gate, an exact Finding selector, and only the newly created run-scoped
+Project. The client prefers the optional lab-only Analysis key and otherwise
+reuses the orchestrator read key after checking that its team has the required
+Analysis permission and no write permission outside the lab allowlist. These
+scenarios are excluded from the default lab run and cannot add write behavior
+to the production Dependency-Track client by implication.
 
 ---
 

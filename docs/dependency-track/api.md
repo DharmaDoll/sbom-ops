@@ -116,8 +116,9 @@ Project, Component, and vulnerability UUIDs and reads the trail with
 These methods remain lab-only while the triage delegation boundary is under
 evaluation; their presence is not authorization to mutate product Analysis
 state. Before the experiment creates a Project, `GET /api/v1/team/self` must
-show that its dedicated write key has exactly `VULNERABILITY_ANALYSIS` and no
-additional permission.
+show that the selected key has `VULNERABILITY_ANALYSIS`. The lab accepts the
+read-only permissions `VIEW_BADGES`, `VIEW_POLICY_VIOLATION`, `VIEW_PORTFOLIO`,
+and `VIEW_VULNERABILITY`, but rejects any other permission.
 
 ## Behavior Lab Decision Boundary
 
