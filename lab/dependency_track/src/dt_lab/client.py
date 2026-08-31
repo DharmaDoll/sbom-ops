@@ -458,6 +458,16 @@ class DependencyTrackLabClient:
             accept="application/vnd.cyclonedx+json",
         )
 
+    def observe_project_vex_export(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation:
+        """Observe the CycloneDX VEX generated from a Project's audit state."""
+        return self._observe_json(
+            f"/api/v1/vex/cyclonedx/project/{project_uuid}",
+            {"download": "false", "version": "1.5"},
+            accept="application/vnd.cyclonedx+json",
+        )
+
     def delete_project(self, project_uuid: str) -> None:
         """Delete one verified lab Project using DT's project API."""
         path = f"/api/v1/project/{project_uuid}"

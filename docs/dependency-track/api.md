@@ -120,6 +120,13 @@ show that the selected key has `VULNERABILITY_ANALYSIS`. The lab accepts the
 read-only permissions `VIEW_BADGES`, `VIEW_POLICY_VIOLATION`, `VIEW_PORTFOLIO`,
 and `VIEW_VULNERABILITY`, but rejects any other permission.
 
+The lab adapter also exposes the read-only CycloneDX VEX export observation at
+`GET /api/v1/vex/cyclonedx/project/{uuid}`. The v4.14.3 contract requires
+`VULNERABILITY_ANALYSIS` and returns `application/vnd.cyclonedx+json`; the
+adapter requests the 1.5 variant. VEX upload and round-trip mutation remain in
+the planned `triage-vex-round-trip` scenario and are not enabled by this
+observation alone.
+
 ## Behavior Lab Decision Boundary
 
 The repository-only [Dependency-Track behavior lab](../../lab/dependency_track/README.md)

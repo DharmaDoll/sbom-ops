@@ -192,6 +192,33 @@ def test_bom_export_requests_cyclonedx_json(monkeypatch) -> None:
     assert observation.payload == {"bomFormat": "CycloneDX"}
 
 
+def test_vex_export_requests_cyclonedx_json(monkeypatch) -> None:
+    captured = {}
+
+    def fake_request_json(request, **kwargs):
+        captured["request"] = request
+        return HttpJsonResponse(
+            payload={"bomFormat": "CycloneDX", "specVersion": "1.5"},
+            status=200,
+            headers={"Content-Type": "application/vnd.cyclonedx+json"},
+            duration_seconds=0.01,
+        )
+
+    monkeypatch.setattr(client_module, "request_json", fake_request_json)
+
+    observation = DependencyTrackLabClient(
+        "https://dtrack.example", "api-key"
+    ).observe_project_vex_export("project-1")
+
+    assert captured["request"].get_header("Accept") == (
+        "application/vnd.cyclonedx+json"
+    )
+    assert captured["request"].full_url.endswith(
+        "/api/v1/vex/cyclonedx/project/project-1?download=false&version=1.5"
+    )
+    assert observation.payload["specVersion"] == "1.5"
+
+
 def test_wait_for_bom_processing_polls_until_complete(monkeypatch) -> None:
     client = DependencyTrackLabClient("https://dtrack.example", "api-key")
     responses = iter([{"processing": True}, {"processing": False}])

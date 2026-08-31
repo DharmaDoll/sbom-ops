@@ -270,10 +270,10 @@ def test_openapi_inventory_extracts_contract_details() -> None:
     inventory = build_openapi_inventory(payload)
     rendered = openapi_inventory_dict(inventory)
 
-    assert inventory.path_count == 7
-    assert inventory.operation_count == 8
-    assert inventory.tag_count == 6
-    assert len(inventory.operations) == 7
+    assert inventory.path_count == 8
+    assert inventory.operation_count == 9
+    assert inventory.tag_count == 7
+    assert len(inventory.operations) == 8
     finding = next(
         operation
         for operation in inventory.operations
@@ -348,7 +348,7 @@ def test_openapi_inventory_extracts_contract_details() -> None:
     )
     assert team_self.path == "/v1/team/self"
     assert team_self.response_statuses == ("200", "400", "401", "404")
-    assert rendered["summary"]["selected_operation_count"] == 7
+    assert rendered["summary"]["selected_operation_count"] == 8
     assert len(rendered["source"]["contract_sha256"]) == 64
 
 
@@ -405,7 +405,7 @@ def test_openapi_inventory_can_include_all_tags() -> None:
 
     inventory = build_openapi_inventory(payload, selected_tags=None)
 
-    assert len(inventory.operations) == 8
+    assert len(inventory.operations) == 9
     assert inventory.selected_tags == (
         "analysis",
         "component",
@@ -413,6 +413,7 @@ def test_openapi_inventory_can_include_all_tags() -> None:
         "project",
         "team",
         "user",
+        "vex",
     )
 
 
@@ -452,9 +453,9 @@ def test_lab_cli_writes_openapi_inventory(
 
     assert main() == 0
     assert json.loads(output_path.read_text(encoding="utf-8"))["summary"] == {
-        "operation_count": 8,
-        "path_count": 7,
-        "selected_operation_count": 7,
+        "operation_count": 9,
+        "path_count": 8,
+        "selected_operation_count": 8,
         "selected_tags": [
             "analysis",
             "bom",
@@ -472,9 +473,9 @@ def test_lab_cli_writes_openapi_inventory(
             "violationanalysis",
             "vulnerability",
         ],
-        "tag_count": 6,
+        "tag_count": 7,
     }
-    assert "OpenAPI inventory: paths=7 operations=8 selected=7 tags=6" in (
+    assert "OpenAPI inventory: paths=8 operations=9 selected=8 tags=7" in (
         capsys.readouterr().out
     )
 
@@ -862,6 +863,14 @@ class FakeLabClient:
         self, project_uuid: str
     ) -> DependencyTrackObservation:
         return self._observation(f"/api/v1/bom/cyclonedx/project/{project_uuid}", {})
+
+    def observe_project_vex_export(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation:
+        return self._observation(
+            f"/api/v1/vex/cyclonedx/project/{project_uuid}",
+            {"bomFormat": "CycloneDX", "specVersion": "1.5"},
+        )
 
 
 def test_default_lab_run_excludes_analysis_mutations(tmp_path: Path) -> None:

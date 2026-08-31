@@ -528,3 +528,54 @@ state remain unverified. These belong in the planned
 
 - `var/dt-lab/runs/<run-id>/analysis-key-team.json` (ignored; local only)
 - `var/dt-lab/runs/<run-id>/triage-analysis-states/` (ignored; local only)
+
+## 2026-08-31 — CycloneDX VEX Export Observation
+
+- Status: completed
+- Target: Dependency-Track 4.14.3; CycloneDX 1.5
+- Scenarios: `triage-analysis-states` (read-only follow-up)
+
+### Purpose
+
+Determine whether DT's generated CycloneDX VEX is a suitable authoritative
+projection of the current Analysis decision for downstream reconciliation.
+
+### Performed
+
+Using the completed disposable Analysis run, requested
+`GET /api/v1/vex/cyclonedx/project/{uuid}` with `download=false` and
+`version=1.5` through the shared orchestrator key. No Project, Finding, or
+Analysis state was changed.
+
+### Observed Facts
+
+- DT returned HTTP 200 with `Content-Type: application/vnd.cyclonedx+json`.
+- The response declared CycloneDX 1.5 and contained `bomFormat`, `metadata`,
+  `serialNumber`, `specVersion`, `version`, and `vulnerabilities` top-level
+  fields; it did not contain a `components` collection.
+- The VEX contained ten vulnerability entries with ten unique IDs. The first
+  entry was `CVE-2021-44228` from NVD and included the current Analysis detail.
+- The endpoint is guarded by `VULNERABILITY_ANALYSIS` in the live OpenAPI
+  contract, even though this observation is read-only from the lab's point of
+  view.
+
+### Interpretation and Product Decision
+
+DT's VEX export is a vulnerability-centric projection of the Project's current
+audit state, not a replacement for the SBOM inventory or Component graph. The
+product should consume it only when a VEX-specific integration is needed and
+must retain the source Project/Finding coordinates for reconciliation. The
+read-only export observation is now available in the lab adapter; VEX upload,
+round-trip processing, and approval policy remain separate work.
+
+### Unverified
+
+VEX import behavior, whether every Analysis state maps to an expected VEX
+response, preservation of comments and suppression across a round trip, schema
+validation failures, and concurrent VEX or Analysis edits remain unverified.
+These are the scope of the planned `triage-vex-round-trip` scenario.
+
+### Local Evidence
+
+- `var/dt-lab/runs/<run-id>/triage-analysis-states/` (ignored; local only)
+- `var/dt-lab/openapi.json` (ignored; local only)

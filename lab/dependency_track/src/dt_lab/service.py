@@ -861,6 +861,10 @@ class DependencyTrackLabApi(Protocol):
         self, project_uuid: str
     ) -> DependencyTrackObservation: ...
 
+    def observe_project_vex_export(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation: ...
+
 
 def _observation_dict(observation: DependencyTrackObservation) -> dict[str, Any]:
     request: dict[str, Any] = {
@@ -1178,6 +1182,7 @@ def _capture_observation(
         Observation.VULNERABILITIES: client.observe_project_vulnerabilities,
         Observation.METRICS: client.observe_project_metrics,
         Observation.BOM_EXPORT: client.observe_project_bom_export,
+        Observation.VEX_EXPORT: client.observe_project_vex_export,
     }
     observer = observers.get(observation)
     if observer is None:
