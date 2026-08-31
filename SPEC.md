@@ -366,6 +366,12 @@ automatically in the MVP.
 Supplier or CI-generated CycloneDX VEX should be uploaded to Dependency-Track
 through the Dependency-Track integration boundary. The orchestrator consumes
 the resulting state; it does not implement an independent VEX decision engine.
+Before any future production upload, it must resolve every `affects.ref` within
+the VEX document, classify the target as Component- or Project-scoped, reject
+unresolved references, and require explicit approval for the complete expected
+Finding set. After DT's event token completes, it must reconcile that exact set
+and fail closed on missing or additional changes. Schema validity and an
+accepted upload are not evidence that the intended Finding was updated.
 
 Findings marked `NOT_AFFECTED`, `FALSE_POSITIVE`, or suppressed are excluded
 from new remediation issues unless an explicit future policy says otherwise.
@@ -625,6 +631,14 @@ failure. Dependency-Track suppression is evaluated separately because it is not
 a CycloneDX VEX field. An explicitly declared replay must compare both state and
 audit-comment changes so retry safety is not inferred from an unchanged final
 state. This lab behavior does not authorize product VEX writes.
+
+A VEX targeting experiment must use at least two run-scoped Findings for the
+same vulnerability. It compares unresolved DT-exported and source Component
+`bom-ref` values, a `components[]`-declared Component reference, and the
+Project-level `affects.ref`. It records both target and control projections
+after each import and restores both Findings between probes and on every exit
+path. Product code must not infer Component isolation from a bare reference or
+a Project-scoped export.
 
 Every lab run must persist a run-scoped Project ledger before upload and update
 it with the observed Project UUID. Lab cleanup must be a local dry-run by

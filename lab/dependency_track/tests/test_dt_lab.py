@@ -88,7 +88,7 @@ def test_repository_lab_manifest_is_valid() -> None:
     manifest = load_lab_manifest(MANIFEST_PATH)
 
     assert manifest.target.dependency_track_version == "4.14.3"
-    assert len(manifest.scenarios) == 17
+    assert len(manifest.scenarios) == 18
     assert all(scenario.hypotheses for scenario in manifest.scenarios)
     assert all(scenario.decision_questions for scenario in manifest.scenarios)
     implemented = [
@@ -107,8 +107,9 @@ def test_repository_lab_manifest_is_valid() -> None:
         "triage-multiple-sources-aliases",
         "triage-analysis-states",
         "triage-vex-round-trip",
+        "triage-vex-targeting",
     ]
-    assert sum(len(scenario.steps) for scenario in implemented) == 13
+    assert sum(len(scenario.steps) for scenario in implemented) == 14
     assert any(
         scenario.id == "triage-delegation-boundary"
         and scenario.status is ScenarioStatus.PLANNED
@@ -442,7 +443,7 @@ def test_lab_cli_validates_repository_manifest(
     )
 
     assert main() == 0
-    assert "scenarios=17 implemented=10 planned=7 steps=13" in capsys.readouterr().out
+    assert "scenarios=18 implemented=11 planned=7 steps=14" in capsys.readouterr().out
 
 
 def test_lab_cli_writes_openapi_inventory(
@@ -900,6 +901,16 @@ class FakeLabClient:
             },
         )
 
+    def observe_analysis_trail_if_present(
+        self,
+        project_uuid: str,
+        component_uuid: str,
+        vulnerability_uuid: str,
+    ) -> DependencyTrackObservation:
+        return self.observe_analysis_trail(
+            project_uuid, component_uuid, vulnerability_uuid
+        )
+
     def observe_project_vulnerabilities(
         self, project_uuid: str
     ) -> DependencyTrackObservation:
@@ -953,6 +964,225 @@ class FakeLabClient:
         )
 
 
+class FakeVexTargetingClient(FakeLabClient):
+    PRIMARY_PURL = "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1"
+    CONTROL_PURL = "pkg:maven/org.apache.logging.log4j/log4j-core@2.13.3"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.scope_analysis: dict[str, dict[str, object]] = {
+            self.PRIMARY_PURL: {
+                "state": "NOT_SET",
+                "suppressed": False,
+                "justification": "NOT_SET",
+                "detail": "",
+                "comments": [],
+            },
+            self.CONTROL_PURL: {
+                "state": "NOT_SET",
+                "suppressed": False,
+                "justification": "NOT_SET",
+                "detail": "",
+                "comments": [],
+            },
+        }
+        self.component_uuids = {
+            self.PRIMARY_PURL: "component-primary",
+            self.CONTROL_PURL: "component-control",
+        }
+
+    def _scope_finding(self, purl: str) -> dict[str, object]:
+        state = self.scope_analysis[purl]
+        return {
+            "uuid": f"finding-{self.component_uuids[purl]}",
+            "component": {
+                "uuid": self.component_uuids[purl],
+                "name": "log4j-core",
+                "version": purl.rsplit("@", 1)[-1],
+                "purl": purl,
+            },
+            "vulnerability": {
+                "uuid": "vulnerability-log4shell",
+                "vulnId": "CVE-2021-44228",
+                "source": "NVD",
+                "severity": "CRITICAL",
+            },
+            "analysis": {
+                "state": state["state"],
+                "isSuppressed": state["suppressed"],
+            },
+        }
+
+    def observe_project_findings(
+        self, project_uuid: str, *, suppressed: bool = False
+    ) -> DependencyTrackObservation:
+        if self.last_bom != "triage-vex-targeting.cdx.json":
+            return super().observe_project_findings(project_uuid, suppressed=suppressed)
+        findings = [
+            self._scope_finding(purl)
+            for purl, state in self.scope_analysis.items()
+            if state["suppressed"] is suppressed
+        ]
+        return self._observation(f"/api/v1/finding/project/{project_uuid}", findings)
+
+    def observe_project_bom_export(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation:
+        if self.last_bom != "triage-vex-targeting.cdx.json":
+            return super().observe_project_bom_export(project_uuid)
+        return self._observation(
+            f"/api/v1/bom/cyclonedx/project/{project_uuid}",
+            {
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.5",
+                "metadata": {
+                    "component": {
+                        "type": "application",
+                        "name": "dt-lab-vex-targeting",
+                        "bom-ref": project_uuid,
+                    }
+                },
+                "components": [
+                    {
+                        "bom-ref": component_uuid,
+                        "purl": purl,
+                        "type": "library",
+                        "name": "log4j-core",
+                    }
+                    for purl, component_uuid in self.component_uuids.items()
+                ],
+            },
+        )
+
+    def observe_project_vex_export(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation:
+        if self.last_bom != "triage-vex-targeting.cdx.json":
+            return super().observe_project_vex_export(project_uuid)
+        return self._observation(
+            f"/api/v1/vex/cyclonedx/project/{project_uuid}",
+            {
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.5",
+                "metadata": {
+                    "component": {
+                        "type": "application",
+                        "name": "dt-lab-vex-targeting",
+                        "bom-ref": project_uuid,
+                    }
+                },
+                "vulnerabilities": [
+                    {
+                        "id": "CVE-2021-44228",
+                        "source": {"name": "NVD"},
+                        "affects": [{"ref": project_uuid}],
+                    }
+                ],
+            },
+        )
+
+    def upload_vex_for_project(
+        self, project_uuid: str, vex_path: str | Path
+    ) -> VexUpload:
+        if self.last_bom != "triage-vex-targeting.cdx.json":
+            return super().upload_vex_for_project(project_uuid, vex_path)
+        payload = json.loads(Path(vex_path).read_text(encoding="utf-8"))
+        vulnerability = payload["vulnerabilities"][0]
+        affects_ref = vulnerability["affects"][0]["ref"]
+        analysis = vulnerability["analysis"]
+        declared_components = {
+            component.get("bom-ref"): component.get("purl")
+            for component in payload.get("components", [])
+            if isinstance(component, dict)
+        }
+        if affects_ref == project_uuid:
+            targets = tuple(self.scope_analysis)
+        elif declared_components.get(affects_ref) in self.scope_analysis:
+            targets = (declared_components[affects_ref],)
+        else:
+            targets = ()
+        for purl in targets:
+            state = self.scope_analysis[purl]
+            state["state"] = str(analysis["state"]).upper()
+            state["suppressed"] = state["state"] == "NOT_AFFECTED"
+            state["justification"] = str(
+                analysis.get("justification", "not_set")
+            ).upper()
+            state["detail"] = str(analysis.get("detail", ""))
+            comments = state["comments"]
+            assert isinstance(comments, list)
+            comments.append("CycloneDX VEX")
+        return VexUpload(token="vex-targeting-token")
+
+    def record_analysis_decision(
+        self,
+        *,
+        project_uuid: str,
+        component_uuid: str,
+        vulnerability_uuid: str,
+        action: AnalysisAction,
+    ) -> DependencyTrackObservation:
+        if self.last_bom != "triage-vex-targeting.cdx.json":
+            return super().record_analysis_decision(
+                project_uuid=project_uuid,
+                component_uuid=component_uuid,
+                vulnerability_uuid=vulnerability_uuid,
+                action=action,
+            )
+        purl = next(
+            purl
+            for purl, observed_uuid in self.component_uuids.items()
+            if observed_uuid == component_uuid
+        )
+        state = self.scope_analysis[purl]
+        state["state"] = action.state.value
+        state["suppressed"] = action.suppressed
+        state["justification"] = action.justification.value
+        state["detail"] = action.detail
+        comments = state["comments"]
+        assert isinstance(comments, list)
+        comments.append(action.comment)
+        return DependencyTrackObservation(
+            method="PUT",
+            path="/api/v1/analysis",
+            query=(),
+            status=200,
+            headers=(),
+            duration_seconds=0.01,
+            payload={
+                "analysisState": action.state.value,
+                "isSuppressed": action.suppressed,
+            },
+        )
+
+    def observe_analysis_trail(
+        self,
+        project_uuid: str,
+        component_uuid: str,
+        vulnerability_uuid: str,
+    ) -> DependencyTrackObservation:
+        if self.last_bom != "triage-vex-targeting.cdx.json":
+            return super().observe_analysis_trail(
+                project_uuid, component_uuid, vulnerability_uuid
+            )
+        purl = next(
+            purl
+            for purl, observed_uuid in self.component_uuids.items()
+            if observed_uuid == component_uuid
+        )
+        state = self.scope_analysis[purl]
+        return self._observation(
+            "/api/v1/analysis",
+            {
+                "analysisState": state["state"],
+                "analysisJustification": state["justification"],
+                "analysisDetails": state["detail"],
+                "isSuppressed": state["suppressed"],
+                "analysisComments": state["comments"],
+            },
+        )
+
+
 def test_default_lab_run_excludes_analysis_mutations(tmp_path: Path) -> None:
     client = FakeLabClient()
 
@@ -970,6 +1200,7 @@ def test_default_lab_run_excludes_analysis_mutations(tmp_path: Path) -> None:
     )
     assert "triage-analysis-states" not in run_metadata["scenarios"]
     assert "triage-vex-round-trip" not in run_metadata["scenarios"]
+    assert "triage-vex-targeting" not in run_metadata["scenarios"]
     assert run_metadata["analysis_mutation_enabled"] is False
     assert client.analysis_comments == []
 
@@ -1333,6 +1564,62 @@ def test_lab_runner_emergency_restores_analysis_when_vex_upload_fails(
     assert json.loads(verification_path.read_text(encoding="utf-8"))["observed"] == {
         "state": "NOT_SET",
         "suppressed": False,
+    }
+
+
+def test_lab_runner_compares_component_and_project_vex_targeting(
+    tmp_path: Path,
+) -> None:
+    client = FakeVexTargetingClient()
+
+    result = run_lab_scenarios(
+        load_lab_manifest(MANIFEST_PATH),
+        manifest_path=MANIFEST_PATH,
+        upload_client=client,
+        read_client=client,
+        analysis_client=client,
+        output_directory=tmp_path,
+        scenario_ids=("triage-vex-targeting",),
+        poll_interval=0,
+        allow_analysis_mutation=True,
+    )
+
+    assert len(result.steps) == 1
+    assert result.steps[0].observation_count == 45
+    directory = (
+        Path(result.steps[0].snapshot_directory)
+        / "vex-targeting"
+        / "project-and-component-scope"
+    )
+    verification = json.loads(
+        (directory / "verification.json").read_text(encoding="utf-8")
+    )
+    assert verification["exported_component_scope"]["primary"]["state"] == "NOT_SET"
+    assert verification["exported_component_scope"]["control"]["state"] == "NOT_SET"
+    assert verification["input_component_scope"]["primary"]["state"] == "NOT_SET"
+    assert verification["input_component_scope"]["control"]["state"] == "NOT_SET"
+    assert verification["declared_component_scope"]["primary"]["state"] == (
+        "NOT_AFFECTED"
+    )
+    assert verification["declared_component_scope"]["control"]["state"] == "NOT_SET"
+    assert verification["project_scope"]["primary"]["state"] == "NOT_AFFECTED"
+    assert verification["project_scope"]["control"]["state"] == "NOT_AFFECTED"
+    assert verification["comparison"] == {
+        "declared_component_scope_control_unchanged": True,
+        "declared_component_scope_primary_changed": True,
+        "exported_component_scope_control_unchanged": True,
+        "exported_component_scope_primary_changed": False,
+        "input_component_scope_control_unchanged": True,
+        "input_component_scope_primary_changed": False,
+        "project_scope_control_changed": True,
+        "project_scope_primary_changed": True,
+    }
+    final_verification = json.loads(
+        (directory / "final-restore" / "verification.json").read_text(encoding="utf-8")
+    )
+    assert final_verification == {
+        "control": {"state": "NOT_SET", "suppressed": False},
+        "primary": {"state": "NOT_SET", "suppressed": False},
     }
 
 

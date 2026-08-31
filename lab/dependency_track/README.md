@@ -159,6 +159,28 @@ suppression flag. The scenario finally restores `NOT_SET`; a failed round trip
 also attempts and verifies an emergency restore. Evidence remains under the
 ignored run directory for review before any separate cleanup.
 
+The targeting probe is a separate opt-in scenario:
+
+```bash
+make dt-lab-triage-vex-targeting
+```
+
+It imports two vulnerable versions of the same Component and compares four VEX
+forms: bare DT-exported and source-SBOM Component `bom-ref` values, a
+DT-exported Component declared in the VEX `components[]` collection, and DT's
+Project-level `affects.ref`. After each upload it captures both Findings and
+Analysis trails, restoring both Findings between probes and after completion.
+This establishes whether a reviewed decision stays Component-scoped, is
+unresolved, or expands to every matching Finding in the Project without placing
+the probe in the default lab run.
+
+On DT 4.14.3, both bare Component references were unresolved. The VEX-declared
+Component changed only its identity-matched Finding, while the Project reference
+changed both Findings for the shared CVE. A completed upload token therefore
+requires post-import target reconciliation; it does not prove the intended
+reference was applied. Version-bounded observations and evidence are recorded
+in [EXPERIMENTS.md](EXPERIMENTS.md).
+
 The optional cleanup key is deliberately separate from upload and read access.
 Its team needs `VIEW_PORTFOLIO` to verify each live Project and
 `PORTFOLIO_MANAGEMENT` to delete it:
@@ -368,7 +390,9 @@ Analysis actions additionally declare an exact Finding selector and a complete
 state, justification, response, detail, comment, and suppression decision. A
 VEX round-trip step declares one non-`NOT_SET` seed decision and cannot be
 combined with a normal Analysis action sequence. Its `replay_import` flag makes
-the otherwise identical second import explicit in the scenario contract.
+the otherwise identical second import explicit in the scenario contract. A VEX
+targeting probe declares distinct primary and control Component PURLs plus the
+source SBOM reference and cannot be combined with another mutation mode.
 
 Project names must use the `dt-lab-` prefix. The manifest validator also checks
 repository-level invariants such as unique CycloneDX serial numbers and valid

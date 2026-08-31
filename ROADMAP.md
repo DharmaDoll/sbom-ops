@@ -41,6 +41,8 @@ The repository has a working MVP with:
   resets it, re-imports the exported CycloneDX VEX, compares semantic and
   suppression behavior, measures replay idempotency, and safely restores the
   disposable Finding
+- an isolated VEX targeting probe that compares unresolved, explicitly declared
+  Component, and Project references across two Findings for the same vulnerability
 - a provenance- and hash-pinned real-world Go, TypeScript, Rails, and Python
   SBOM corpus, with explicit selection and schema-rejection comparison cases
 - complete paginated Component observations checked against `X-Total-Count`,
@@ -109,8 +111,9 @@ The runtime decision and PoC gates are in
 - Add a Security team candidate queue and cross-project context view.
 - Add mandatory rationale/evidence templates and Draft / Review / Approve /
   Publish states.
-- Validate CycloneDX schema and SBOM/VEX identity, show a publication diff, and
-  require explicit approval before Dependency-Track ingestion.
+- Validate CycloneDX schema, resolve Component versus Project target scope,
+  reject unresolved references, show the complete Finding diff, and require
+  explicit approval before Dependency-Track ingestion.
 - Add VEX versioning, expiry, re-evaluation triggers, and reviewer audit history.
 
 ## Phase 3: Reachability Evidence (P2)

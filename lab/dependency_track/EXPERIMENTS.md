@@ -720,3 +720,200 @@ Component-scoped `affects` is still the next higher-value targeting experiment.
 ### Local Evidence
 
 - `var/dt-lab/runs/<run-id>/triage-vex-round-trip/` (ignored; local only)
+
+## 2026-08-31 — VEX Targeting Probe: DT-exported Component Reference
+
+- Status: failed safely; evidence retained and state restored
+- Target: Dependency-Track 4.14.3; CycloneDX 1.5
+- Scenarios: `triage-vex-targeting`
+
+### Purpose
+
+Determine whether a Component `bom-ref` from DT's SBOM re-export can constrain
+one VEX Analysis decision to one of two Components that share the same
+vulnerability.
+
+### Performed
+
+Created one run-scoped disposable Project containing `log4j-core` 2.14.1 and
+2.13.3, selected the NVD `CVE-2021-44228` Finding for each version, and uploaded
+a one-entry VEX whose `affects.ref` was the primary Component's `bom-ref` from
+DT's CycloneDX SBOM export. Waited for the import token and captured both
+Findings. The first implementation then requested each Analysis trail as though
+an Analysis row necessarily existed; DT returned HTTP 404 for the untouched
+control Finding, so the run failed and executed its emergency restore for both
+targets.
+
+### Observed Facts
+
+- The Project contained two Components and nineteen NVD Findings. Both exact
+  Component/version selectors had an NVD `CVE-2021-44228` Finding.
+- DT's SBOM export represented each Component `bom-ref` as a DT UUID rather than
+  preserving the PURL-valued `bom-ref` from the imported SBOM.
+- Multipart `POST /api/v1/vex` accepted the schema-valid VEX containing the
+  DT-exported Component UUID, and its asynchronous token completed.
+- Neither the primary nor the control Finding changed: both remained clean,
+  unsuppressed, and without an Analysis state.
+- `GET /api/v1/analysis` returned HTTP 404 for a Finding that had no Analysis
+  row. This is a meaningful absence, not evidence that Finding observation or
+  the VEX event failed.
+- Emergency restore wrote and verified unsuppressed `NOT_SET` for both Findings.
+  The disposable Project and failed-run evidence remain for reviewed cleanup.
+
+### Interpretation and Product Decision
+
+A DT-exported Component UUID must not be assumed to be a valid exact-match VEX
+target merely because the upload is accepted. For this DT version and fixture,
+it matched neither Finding. The lab now preserves a 404 Analysis observation as
+`trail_present=false` so untouched controls remain part of the evidence rather
+than aborting the experiment.
+
+This failed attempt is not enough to select the product targeting rule. The
+next run must compare the original imported SBOM `bom-ref` and DT's
+Project-level `affects.ref` against the same two Findings, with restoration
+between candidates.
+
+### Unverified
+
+Matching with the original input Component `bom-ref`, Project-wide expansion,
+supplier-generated identifiers, other Component/vulnerability combinations,
+cross-Project reuse, and concurrent analyst edits remain unverified.
+
+### Local Evidence
+
+- `var/dt-lab/runs/<run-id>/triage-vex-targeting/` (ignored; local only)
+
+## 2026-08-31 — VEX Targeting Probe: Bare References and Project Scope
+
+- Status: completed
+- Target: Dependency-Track 4.14.3; CycloneDX 1.5
+- Scenarios: `triage-vex-targeting`
+
+### Purpose
+
+Compare two bare Component references with DT's generated Project reference in
+one Project where two Component versions share the same vulnerability.
+
+### Performed
+
+Repeated the two-Component Log4Shell probe with optional Analysis-trail absence
+preserved as evidence. Uploaded one-entry VEX documents in sequence using the
+primary Component's DT-exported UUID `bom-ref`, its original PURL-valued source
+SBOM `bom-ref`, and the Project-level reference from DT's VEX export. Captured
+both Findings and trails after every import, restored both targets between
+candidates, and performed a final verified restore.
+
+### Observed Facts
+
+- Both bare Component references were schema-valid and their asynchronous VEX
+  tokens completed, but neither changed the primary or control Finding.
+- Before an explicit Analysis row existed, the trail observation was HTTP 404.
+  After the first restore created `NOT_SET` rows, the source-reference probe
+  left both rows and their two existing comments unchanged.
+- The Project-level reference changed both Component Findings for
+  `CVE-2021-44228` to `NOT_AFFECTED` and `isSuppressed=true`. Each Analysis trail
+  contained seven comments after the import.
+- The final restore verified both Findings as `NOT_SET` and unsuppressed. The
+  successful run retained 36 observations, and its disposable Project remains
+  available for reviewed cleanup.
+
+### Implementation Corroboration
+
+The official DT 4.14.3 `CycloneDXVexImporter` indexes `metadata.component` and
+`components[]` from the uploaded VEX itself. An `affects.ref` that resolves to
+the VEX metadata Component is Project-scoped; one that resolves to a declared
+non-metadata Component is matched to Project Components by `ComponentIdentity`;
+an otherwise unresolved reference is skipped. This explains the live result
+without treating successful schema validation or token completion as proof that
+a target was found.
+
+### Interpretation and Product Decision
+
+`affects.ref` is resolved in the context of the uploaded VEX document, not by
+looking up the target Project's inventory UUID or source SBOM reference in
+isolation. sbom-ops must therefore reject or flag an unresolved bare reference
+rather than reporting a successful decision merely because DT accepted the
+upload. A Project-scoped reference is unsafe when only one Component Finding
+was reviewed because DT deliberately expands it to every vulnerable Component
+for the matching vulnerability in that Project.
+
+The next probe must make the Component target self-contained by including its
+identity in the VEX `components[]` collection and verify that only the primary
+Finding changes.
+
+### Unverified
+
+Exact matching with a VEX-declared Component, ambiguous Component identities,
+nested Components, BOM-Link Project references, supplier-generated documents,
+cross-Project reuse, and concurrent analyst edits remain unverified.
+
+### Local Evidence
+
+- `var/dt-lab/runs/<run-id>/triage-vex-targeting/` (ignored; local only)
+- [DT 4.14.3 `CycloneDXVexImporter`](https://github.com/DependencyTrack/dependency-track/blob/4.14.3/src/main/java/org/dependencytrack/parser/cyclonedx/CycloneDXVexImporter.java)
+
+## 2026-09-01 — Self-contained Component-scoped VEX
+
+- Status: completed
+- Target: Dependency-Track 4.14.3; CycloneDX 1.5
+- Scenarios: `triage-vex-targeting`
+
+### Purpose
+
+Verify that a Component reference becomes exact and actionable when the same
+VEX document declares the target Component identity, and compare that scope
+with unresolved and Project-scoped forms.
+
+### Performed
+
+Extended the two-Component Log4Shell probe with a fourth VEX form. It copied the
+primary Component from DT's CycloneDX SBOM export into the VEX `components[]`
+collection and pointed `affects.ref` to that declared Component's `bom-ref`.
+Executed the bare DT-exported reference, bare source-SBOM reference,
+self-contained Component reference, and Project reference in sequence. Captured
+the primary and control Finding/trail projection after every upload, restored
+both Findings between candidates, and validated the generated self-contained
+document against the CycloneDX 1.5 schema.
+
+### Observed Facts
+
+- Both bare references again completed without changing either Finding.
+- The self-contained Component VEX changed only `log4j-core` 2.14.1 to
+  `NOT_AFFECTED` and `isSuppressed=true`. The 2.13.3 control remained `NOT_SET`
+  and unsuppressed.
+- The subsequent Project-scoped VEX changed both versions to `NOT_AFFECTED` and
+  suppressed both Findings.
+- The generated self-contained VEX passed the official CycloneDX CLI 1.5 schema
+  validation. DT accepted each upload and completed every event token.
+- The final restore verified both Findings as `NOT_SET` and unsuppressed. The
+  run retained 45 observations, and its disposable Project remains available
+  for reviewed cleanup.
+
+### Interpretation and Product Decision
+
+DT 4.14.3 Component targeting is document-relative and identity-based. An exact
+Component decision requires an `affects.ref` that resolves to a non-metadata
+Component declared in the same VEX; DT then matches that declared identity to
+the target Project. A valid document and completed token do not guarantee that
+an unresolved reference affected anything, while a metadata Project reference
+can intentionally affect multiple Components.
+
+A future sbom-ops VEX plan must classify every reference before upload as
+unresolved, Component-scoped, or Project-scoped. It must reject unresolved
+references, require explicit broad-scope approval for Project targets, preview
+the exact expected Finding set, and reconcile that set after token completion.
+Schema validation alone is insufficient. The decision and the target-set diff
+remain human-approved; neither LLM output nor an accepted DT upload may expand
+scope automatically.
+
+### Unverified
+
+Ambiguous identity matches, nested Component declarations, BOM-Link Project
+references, range-bearing `affects.versions`, non-PURL identities,
+supplier-generated signatures, cross-Project reuse, and concurrent analyst
+changes remain unverified.
+
+### Local Evidence
+
+- `var/dt-lab/runs/<run-id>/triage-vex-targeting/` (ignored; local only)
+- [DT 4.14.3 `CycloneDXVexImporter`](https://github.com/DependencyTrack/dependency-track/blob/4.14.3/src/main/java/org/dependencytrack/parser/cyclonedx/CycloneDXVexImporter.java)

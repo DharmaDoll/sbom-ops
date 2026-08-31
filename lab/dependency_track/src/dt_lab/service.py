@@ -6,6 +6,7 @@ import re
 import time
 from collections import Counter
 from collections.abc import Callable
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -38,6 +39,7 @@ from dt_lab.domain import (
     ScenarioStatus,
     ScenarioStep,
     VexRoundTrip,
+    VexTargetingProbe,
     VexUpload,
 )
 
@@ -176,6 +178,28 @@ def _load_vex_round_trip(payload: Any, scenario_id: str, step_id: str) -> VexRou
     )
 
 
+def _load_vex_targeting_probe(
+    payload: Any, scenario_id: str, step_id: str
+) -> VexTargetingProbe:
+    field_name = f"scenario {scenario_id} step {step_id}.vex_targeting_probe"
+    probe = _mapping(payload, field_name)
+    _reject_unknown(
+        probe,
+        {"id", "decision", "control_component_purl", "input_component_bom_ref"},
+        field_name,
+    )
+    return VexTargetingProbe(
+        id=_required_string(probe, "id", field_name),
+        decision=_load_analysis_action(probe.get("decision"), scenario_id, step_id),
+        control_component_purl=_required_string(
+            probe, "control_component_purl", field_name
+        ),
+        input_component_bom_ref=_required_string(
+            probe, "input_component_bom_ref", field_name
+        ),
+    )
+
+
 def _load_step(payload: Any, scenario_id: str) -> ScenarioStep:
     step = _mapping(payload, f"scenario {scenario_id} step")
     _reject_unknown(
@@ -187,6 +211,7 @@ def _load_step(payload: Any, scenario_id: str) -> ScenarioStep:
             "project_version",
             "analysis_actions",
             "vex_round_trip",
+            "vex_targeting_probe",
         },
         f"scenario {scenario_id} step",
     )
@@ -214,6 +239,11 @@ def _load_step(payload: Any, scenario_id: str) -> ScenarioStep:
         vex_round_trip=(
             _load_vex_round_trip(step["vex_round_trip"], scenario_id, step_id)
             if step.get("vex_round_trip") is not None
+            else None
+        ),
+        vex_targeting_probe=(
+            _load_vex_targeting_probe(step["vex_targeting_probe"], scenario_id, step_id)
+            if step.get("vex_targeting_probe") is not None
             else None
         ),
     )
@@ -871,6 +901,13 @@ class DependencyTrackLabApi(Protocol):
         vulnerability_uuid: str,
     ) -> DependencyTrackObservation: ...
 
+    def observe_analysis_trail_if_present(
+        self,
+        project_uuid: str,
+        component_uuid: str,
+        vulnerability_uuid: str,
+    ) -> DependencyTrackObservation: ...
+
     def record_analysis_decision(
         self,
         *,
@@ -1225,7 +1262,9 @@ def _capture_observation(
 
 def _scenario_mutates_analysis(scenario: LabScenario) -> bool:
     return any(
-        step.analysis_actions or step.vex_round_trip is not None
+        step.analysis_actions
+        or step.vex_round_trip is not None
+        or step.vex_targeting_probe is not None
         for step in scenario.steps
     )
 
@@ -1576,6 +1615,216 @@ def _analysis_comment_count(observation: DependencyTrackObservation) -> int | No
     return len(comments) if isinstance(comments, list) else None
 
 
+def _retarget_analysis_action(
+    source: AnalysisAction, *, action_id: str, component_purl: str
+) -> AnalysisAction:
+    return AnalysisAction(
+        id=action_id,
+        component_purl=component_purl,
+        vulnerability_id=source.vulnerability_id,
+        vulnerability_source=source.vulnerability_source,
+        state=source.state,
+        justification=source.justification,
+        response=source.response,
+        detail=source.detail,
+        comment=source.comment,
+        suppressed=source.suppressed,
+    )
+
+
+def _component_by_purl(payload: Any, component_purl: str) -> dict[str, Any]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("components"), list):
+        raise LabManifestError("CycloneDX export does not contain Components")
+    matches = [
+        component
+        for component in payload["components"]
+        if isinstance(component, dict) and component.get("purl") == component_purl
+    ]
+    if len(matches) != 1:
+        raise LabManifestError(
+            f"CycloneDX export matched {len(matches)} Components for {component_purl}"
+        )
+    return matches[0]
+
+
+def _component_bom_ref(component: dict[str, Any], component_purl: str) -> str:
+    bom_ref = component.get("bom-ref")
+    if not isinstance(bom_ref, str) or not bom_ref:
+        raise LabManifestError(f"CycloneDX Component {component_purl} has no bom-ref")
+    return bom_ref
+
+
+def _analysis_to_vex(action: AnalysisAction) -> dict[str, Any]:
+    analysis: dict[str, Any] = {
+        "state": action.state.value.lower(),
+        "detail": action.detail,
+    }
+    if action.justification is not AnalysisJustification.NOT_SET:
+        analysis["justification"] = action.justification.value.lower()
+    if action.response is not AnalysisResponse.NOT_SET:
+        analysis["response"] = [action.response.value.lower()]
+    return analysis
+
+
+def _targeted_vex_document(
+    source_payload: Any,
+    source_entry: dict[str, Any],
+    *,
+    affects_ref: str,
+    action: AnalysisAction,
+    components: tuple[dict[str, Any], ...] = (),
+) -> dict[str, Any]:
+    if not isinstance(source_payload, dict):
+        raise LabManifestError("VEX export is not a JSON object")
+    required = ("bomFormat", "specVersion", "metadata")
+    missing = [key for key in required if key not in source_payload]
+    if missing:
+        raise LabManifestError(
+            "VEX export is missing required fields: " + ", ".join(missing)
+        )
+    document = {
+        key: deepcopy(source_payload[key])
+        for key in ("bomFormat", "specVersion", "metadata")
+    }
+    document["serialNumber"] = f"urn:uuid:{uuid4()}"
+    document["version"] = 1
+    if components:
+        document["components"] = deepcopy(list(components))
+    target_entry = deepcopy(source_entry)
+    target_entry["analysis"] = _analysis_to_vex(action)
+    target_entry["affects"] = [{"ref": affects_ref}]
+    document["vulnerabilities"] = [target_entry]
+    return document
+
+
+def _finding_analysis_projection(finding: dict[str, Any]) -> dict[str, Any]:
+    analysis = finding.get("analysis")
+    if not isinstance(analysis, dict):
+        analysis = {}
+    return {
+        "state": _analysis_state(analysis),
+        "suppressed": _analysis_suppressed(analysis),
+    }
+
+
+def _capture_vex_targeting_projection(
+    *,
+    client: DependencyTrackLabApi,
+    project_uuid: str,
+    action: AnalysisAction,
+    component_uuid: str,
+    vulnerability_uuid: str,
+    directory: Path,
+    prefix: str,
+    timeout: float,
+    poll_interval: float,
+) -> dict[str, Any]:
+    findings, observed_component_uuid, observed_vulnerability_uuid, finding = (
+        _wait_for_analysis_target(
+            client=client,
+            project_uuid=project_uuid,
+            action=action,
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
+    )
+    if (
+        observed_component_uuid != component_uuid
+        or observed_vulnerability_uuid != vulnerability_uuid
+    ):
+        raise LabManifestError(
+            f"VEX targeting probe {action.id!r} target identity changed"
+        )
+    _write_json(directory / f"{prefix}-findings.json", _observation_dict(findings))
+    trail = client.observe_analysis_trail_if_present(
+        project_uuid, component_uuid, vulnerability_uuid
+    )
+    _write_json(directory / f"{prefix}-trail.json", _observation_dict(trail))
+    return {
+        **_finding_analysis_projection(finding),
+        "trail_present": trail.status != 404,
+        "trail_comment_count": _analysis_comment_count(trail),
+    }
+
+
+def _restore_vex_targeting_targets(
+    *,
+    targets: tuple[tuple[str, AnalysisAction, str, str], ...],
+    project_uuid: str,
+    read_client: DependencyTrackLabApi,
+    analysis_client: DependencyTrackLabApi,
+    directory: Path,
+    phase: str,
+    timeout: float,
+    poll_interval: float,
+) -> dict[str, dict[str, Any]]:
+    phase_directory = directory / phase
+    phase_directory.mkdir(parents=True, exist_ok=True)
+    verification: dict[str, dict[str, Any]] = {}
+    for label, selector, component_uuid, vulnerability_uuid in targets:
+        reset = _not_set_action(
+            selector,
+            action_id=f"{phase}-{label}",
+            detail=f"DT lab {phase} restores the VEX targeting probe to NOT_SET.",
+            comment=f"DT lab {phase} restores the {label} Finding.",
+        )
+        update = analysis_client.record_analysis_decision(
+            project_uuid=project_uuid,
+            component_uuid=component_uuid,
+            vulnerability_uuid=vulnerability_uuid,
+            action=reset,
+        )
+        _write_json(phase_directory / f"{label}-update.json", _observation_dict(update))
+        findings, finding = _wait_for_analysis_projection(
+            client=read_client,
+            project_uuid=project_uuid,
+            action=reset,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            expected_suppressed=False,
+        )
+        _write_json(
+            phase_directory / f"{label}-findings.json",
+            _observation_dict(findings),
+        )
+        verification[label] = _finding_analysis_projection(finding)
+    _write_json(phase_directory / "verification.json", verification)
+    return verification
+
+
+def _apply_vex_targeting_document(
+    *,
+    label: str,
+    vex_path: Path,
+    targets: tuple[tuple[str, AnalysisAction, str, str], ...],
+    project_uuid: str,
+    read_client: DependencyTrackLabApi,
+    analysis_client: DependencyTrackLabApi,
+    directory: Path,
+    timeout: float,
+    poll_interval: float,
+) -> dict[str, dict[str, Any]]:
+    upload = analysis_client.upload_vex_for_project(project_uuid, vex_path)
+    _write_json(directory / f"{label}-upload.json", {"token": upload.token})
+    analysis_client.wait_for_bom_processing(
+        upload.token, timeout=timeout, poll_interval=poll_interval
+    )
+    return {
+        target_label: _capture_vex_targeting_projection(
+            client=read_client,
+            project_uuid=project_uuid,
+            action=action,
+            component_uuid=component_uuid,
+            vulnerability_uuid=vulnerability_uuid,
+            directory=directory,
+            prefix=f"{label}-{target_label}",
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
+        for target_label, action, component_uuid, vulnerability_uuid in targets
+    }
+
+
 def _run_vex_round_trip(
     *,
     round_trip: VexRoundTrip,
@@ -1902,6 +2151,330 @@ def _run_vex_round_trip(
     return observation_count
 
 
+def _run_vex_targeting_probe(
+    *,
+    probe: VexTargetingProbe,
+    step_directory: Path,
+    project_uuid: str,
+    read_client: DependencyTrackLabApi,
+    analysis_client: DependencyTrackLabApi,
+    timeout: float,
+    poll_interval: float,
+) -> int:
+    directory = step_directory / "vex-targeting" / probe.id
+    directory.mkdir(parents=True, exist_ok=False)
+    primary = probe.decision
+    control = _retarget_analysis_action(
+        primary,
+        action_id="control-component",
+        component_purl=probe.control_component_purl,
+    )
+    (
+        primary_before,
+        primary_component_uuid,
+        primary_vulnerability_uuid,
+        primary_finding,
+    ) = _wait_for_analysis_target(
+        client=read_client,
+        project_uuid=project_uuid,
+        action=primary,
+        timeout=timeout,
+        poll_interval=poll_interval,
+    )
+    _write_json(
+        directory / "primary-findings-before.json",
+        _observation_dict(primary_before),
+    )
+    (
+        control_before,
+        control_component_uuid,
+        control_vulnerability_uuid,
+        control_finding,
+    ) = _wait_for_analysis_target(
+        client=read_client,
+        project_uuid=project_uuid,
+        action=control,
+        timeout=timeout,
+        poll_interval=poll_interval,
+    )
+    _write_json(
+        directory / "control-findings-before.json",
+        _observation_dict(control_before),
+    )
+    before = {
+        "primary": _finding_analysis_projection(primary_finding),
+        "control": _finding_analysis_projection(control_finding),
+    }
+    if any(
+        projection["state"] not in (None, AnalysisState.NOT_SET.value)
+        or projection["suppressed"] is True
+        for projection in before.values()
+    ):
+        raise LabManifestError(
+            f"VEX targeting probe {probe.id!r} requires clean unsuppressed Findings"
+        )
+
+    bom_export = read_client.observe_project_bom_export(project_uuid)
+    _write_json(directory / "bom-export.json", _observation_dict(bom_export))
+    exported_primary_component = _component_by_purl(
+        bom_export.payload, primary.component_purl
+    )
+    exported_control_component = _component_by_purl(
+        bom_export.payload, control.component_purl
+    )
+    exported_component_ref = _component_bom_ref(
+        exported_primary_component, primary.component_purl
+    )
+    control_component_ref = _component_bom_ref(
+        exported_control_component, control.component_purl
+    )
+    source_vex = analysis_client.observe_project_vex_export(project_uuid)
+    _write_json(directory / "source-vex.json", _observation_dict(source_vex))
+    source_entry = _matching_vex_entry(source_vex.payload, primary)
+    project_refs = _vex_affects_refs(source_entry)
+    if len(project_refs) != 1:
+        raise LabManifestError(
+            f"VEX targeting probe {probe.id!r} expected one Project affects ref"
+        )
+    project_ref = project_refs[0]
+    exported_component_vex_path = directory / "exported-component-targeted-vex.cdx.json"
+    _write_json(
+        exported_component_vex_path,
+        _targeted_vex_document(
+            source_vex.payload,
+            source_entry,
+            affects_ref=exported_component_ref,
+            action=primary,
+        ),
+    )
+    input_component_vex_path = directory / "input-component-targeted-vex.cdx.json"
+    _write_json(
+        input_component_vex_path,
+        _targeted_vex_document(
+            source_vex.payload,
+            source_entry,
+            affects_ref=probe.input_component_bom_ref,
+            action=primary,
+        ),
+    )
+    declared_component_vex_path = directory / "declared-component-targeted-vex.cdx.json"
+    _write_json(
+        declared_component_vex_path,
+        _targeted_vex_document(
+            source_vex.payload,
+            source_entry,
+            affects_ref=exported_component_ref,
+            action=primary,
+            components=(exported_primary_component,),
+        ),
+    )
+    project_vex_path = directory / "project-targeted-vex.cdx.json"
+    _write_json(
+        project_vex_path,
+        _targeted_vex_document(
+            source_vex.payload,
+            source_entry,
+            affects_ref=project_ref,
+            action=primary,
+        ),
+    )
+    targets = (
+        (
+            "primary",
+            primary,
+            primary_component_uuid,
+            primary_vulnerability_uuid,
+        ),
+        (
+            "control",
+            control,
+            control_component_uuid,
+            control_vulnerability_uuid,
+        ),
+    )
+    observation_count = 4
+    restored = False
+    try:
+        exported_component_scope = _apply_vex_targeting_document(
+            label="exported-component-scope",
+            vex_path=exported_component_vex_path,
+            targets=targets,
+            project_uuid=project_uuid,
+            read_client=read_client,
+            analysis_client=analysis_client,
+            directory=directory,
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
+        observation_count += 5
+
+        after_exported_component_restore = _restore_vex_targeting_targets(
+            targets=targets,
+            project_uuid=project_uuid,
+            read_client=read_client,
+            analysis_client=analysis_client,
+            directory=directory,
+            phase="after-exported-component-restore",
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
+        observation_count += 4
+
+        input_component_scope = _apply_vex_targeting_document(
+            label="input-component-scope",
+            vex_path=input_component_vex_path,
+            targets=targets,
+            project_uuid=project_uuid,
+            read_client=read_client,
+            analysis_client=analysis_client,
+            directory=directory,
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
+        observation_count += 5
+
+        after_input_component_restore = _restore_vex_targeting_targets(
+            targets=targets,
+            project_uuid=project_uuid,
+            read_client=read_client,
+            analysis_client=analysis_client,
+            directory=directory,
+            phase="after-input-component-restore",
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
+        observation_count += 4
+
+        declared_component_scope = _apply_vex_targeting_document(
+            label="declared-component-scope",
+            vex_path=declared_component_vex_path,
+            targets=targets,
+            project_uuid=project_uuid,
+            read_client=read_client,
+            analysis_client=analysis_client,
+            directory=directory,
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
+        observation_count += 5
+
+        after_declared_component_restore = _restore_vex_targeting_targets(
+            targets=targets,
+            project_uuid=project_uuid,
+            read_client=read_client,
+            analysis_client=analysis_client,
+            directory=directory,
+            phase="after-declared-component-restore",
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
+        observation_count += 4
+
+        project_scope = _apply_vex_targeting_document(
+            label="project-scope",
+            vex_path=project_vex_path,
+            targets=targets,
+            project_uuid=project_uuid,
+            read_client=read_client,
+            analysis_client=analysis_client,
+            directory=directory,
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
+        observation_count += 5
+
+        _write_json(
+            directory / "verification.json",
+            {
+                "references": {
+                    "project": project_ref,
+                    "exported_primary_component": exported_component_ref,
+                    "exported_control_component": control_component_ref,
+                    "input_primary_component": probe.input_component_bom_ref,
+                },
+                "before": before,
+                "exported_component_scope": exported_component_scope,
+                "after_exported_component_restore": (after_exported_component_restore),
+                "input_component_scope": input_component_scope,
+                "after_input_component_restore": after_input_component_restore,
+                "declared_component_scope": declared_component_scope,
+                "after_declared_component_restore": (after_declared_component_restore),
+                "project_scope": project_scope,
+                "comparison": {
+                    "exported_component_scope_primary_changed": (
+                        exported_component_scope["primary"]["state"]
+                        == primary.state.value
+                    ),
+                    "exported_component_scope_control_unchanged": (
+                        exported_component_scope["control"]["state"]
+                        in (None, AnalysisState.NOT_SET.value)
+                    ),
+                    "input_component_scope_primary_changed": (
+                        input_component_scope["primary"]["state"] == primary.state.value
+                    ),
+                    "input_component_scope_control_unchanged": (
+                        input_component_scope["control"]["state"]
+                        in (None, AnalysisState.NOT_SET.value)
+                    ),
+                    "declared_component_scope_primary_changed": (
+                        declared_component_scope["primary"]["state"]
+                        == primary.state.value
+                    ),
+                    "declared_component_scope_control_unchanged": (
+                        declared_component_scope["control"]["state"]
+                        in (None, AnalysisState.NOT_SET.value)
+                    ),
+                    "project_scope_primary_changed": (
+                        project_scope["primary"]["state"] == primary.state.value
+                    ),
+                    "project_scope_control_changed": (
+                        project_scope["control"]["state"] == primary.state.value
+                    ),
+                },
+            },
+        )
+
+        final_verification = _restore_vex_targeting_targets(
+            targets=targets,
+            project_uuid=project_uuid,
+            read_client=read_client,
+            analysis_client=analysis_client,
+            directory=directory,
+            phase="final-restore",
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
+        observation_count += 4
+        if any(
+            projection["state"] != AnalysisState.NOT_SET.value
+            or projection["suppressed"] is not False
+            for projection in final_verification.values()
+        ):
+            raise LabManifestError(
+                f"VEX targeting probe {probe.id!r} final restore did not converge"
+            )
+        restored = True
+    except Exception:
+        if not restored:
+            try:
+                _restore_vex_targeting_targets(
+                    targets=targets,
+                    project_uuid=project_uuid,
+                    read_client=read_client,
+                    analysis_client=analysis_client,
+                    directory=directory,
+                    phase="emergency-restore",
+                    timeout=timeout,
+                    poll_interval=poll_interval,
+                )
+            except Exception as restore_error:
+                raise LabManifestError(
+                    "VEX targeting probe failed and emergency restore also failed"
+                ) from restore_error
+        raise
+    return observation_count
+
+
 def _run_scenario_steps(
     *,
     selected: tuple[LabScenario, ...],
@@ -2003,6 +2576,20 @@ def _run_scenario_steps(
                     )
                 mutation_observation_count = _run_vex_round_trip(
                     round_trip=step.vex_round_trip,
+                    step_directory=step_directory,
+                    project_uuid=project_uuid,
+                    read_client=read_client,
+                    analysis_client=analysis_client,
+                    timeout=processing_timeout,
+                    poll_interval=poll_interval,
+                )
+            if step.vex_targeting_probe is not None:
+                if analysis_client is None:
+                    raise LabManifestError(
+                        f"scenario {scenario.id!r} requires an analysis client"
+                    )
+                mutation_observation_count = _run_vex_targeting_probe(
+                    probe=step.vex_targeting_probe,
                     step_directory=step_directory,
                     project_uuid=project_uuid,
                     read_client=read_client,

@@ -495,6 +495,33 @@ class DependencyTrackLabClient:
             },
         )
 
+    def observe_analysis_trail_if_present(
+        self,
+        project_uuid: str,
+        component_uuid: str,
+        vulnerability_uuid: str,
+    ) -> DependencyTrackObservation:
+        """Observe an Analysis trail while preserving an expected absent row."""
+        query = {
+            "project": project_uuid,
+            "component": component_uuid,
+            "vulnerability": vulnerability_uuid,
+        }
+        try:
+            return self._observe_json("/api/v1/analysis", query)
+        except DependencyTrackLabApiError as exc:
+            if exc.status != 404:
+                raise
+            return DependencyTrackObservation(
+                method="GET",
+                path="/api/v1/analysis",
+                query=tuple(sorted(query.items())),
+                status=404,
+                headers=(),
+                duration_seconds=0.0,
+                payload=None,
+            )
+
     def observe_project_vulnerabilities(
         self, project_uuid: str
     ) -> DependencyTrackObservation:

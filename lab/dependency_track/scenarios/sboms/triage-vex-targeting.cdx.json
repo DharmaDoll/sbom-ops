@@ -1,0 +1,60 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:dfc39f68-458e-4d75-bc75-2ef1be6ad7c1",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-08-31T00:00:00Z",
+    "tools": [
+      {
+        "vendor": "sbom-ops",
+        "name": "dt-lab",
+        "version": "1"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:generic/dt-lab-vex-targeting@1.0.0",
+      "name": "dt-lab-vex-targeting",
+      "version": "1.0.0",
+      "purl": "pkg:generic/dt-lab-vex-targeting@1.0.0"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1",
+      "group": "org.apache.logging.log4j",
+      "name": "log4j-core",
+      "version": "2.14.1",
+      "purl": "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1",
+      "cpe": "cpe:2.3:a:apache:log4j:2.14.1:*:*:*:*:*:*:*"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:maven/org.apache.logging.log4j/log4j-core@2.13.3",
+      "group": "org.apache.logging.log4j",
+      "name": "log4j-core",
+      "version": "2.13.3",
+      "purl": "pkg:maven/org.apache.logging.log4j/log4j-core@2.13.3",
+      "cpe": "cpe:2.3:a:apache:log4j:2.13.3:*:*:*:*:*:*:*"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:generic/dt-lab-vex-targeting@1.0.0",
+      "dependsOn": [
+        "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1",
+        "pkg:maven/org.apache.logging.log4j/log4j-core@2.13.3"
+      ]
+    },
+    {
+      "ref": "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:maven/org.apache.logging.log4j/log4j-core@2.13.3",
+      "dependsOn": []
+    }
+  ]
+}

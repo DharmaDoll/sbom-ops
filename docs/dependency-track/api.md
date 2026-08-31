@@ -131,8 +131,19 @@ default lab run and is available only through scenario selection plus the
 Analysis-mutation opt-in. This does not enable VEX writes in the product client.
 In the completed one-Component v4.14.3 round trip, DT exported the Project UUID
 as `vulnerabilities[].affects[].ref`, not the vulnerable Component PURL. Treat
-that as a version-bounded Project-scoped observation; Component-scoped matching
-remains unverified and must not be inferred from this sample.
+that as a version-bounded Project-scoped observation. The completed
+multi-Component probe showed that bare DT-exported and source-SBOM Component
+references changed no Finding. Declaring the exact Component in the uploaded
+VEX `components[]` collection and referencing its `bom-ref` changed only the
+identity-matched Finding; referencing `metadata.component` changed both
+Components that shared the vulnerability. This matches the official 4.14.3
+importer, which resolves references within the VEX document before matching a
+declared Component identity to the Project.
+
+A future product VEX uploader must classify all `affects.ref` targets before
+upload, reject unresolved references, distinguish Component and Project scope,
+and reconcile the exact expected Finding set after the event token completes.
+HTTP acceptance and schema validity do not prove that DT applied a decision.
 
 ## Behavior Lab Decision Boundary
 

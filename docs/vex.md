@@ -115,6 +115,9 @@ PUBLISHED
 
 公開前に、VEX反映によって何が変わるかを表示する。
 
+- `affects.ref`がVEX内のどのProjectまたはComponent宣言へ解決されたか
+- Component単位かProject全体か、および変更予定Findingの完全な一覧
+- 未解決参照や、同一性照合が曖昧なComponent
 - 新たに除外されるFinding
 - 新たにIssue化されるFinding
 - 既存Issueが更新・クローズ候補になるもの
@@ -124,12 +127,21 @@ PUBLISHED
 ### 6. 検証と公開
 
 - CycloneDXスキーマ検証
+- 全`affects.ref`の文書内解決（未解決参照は拒否）
+- Component対象とProject対象の区別、およびProject対象の明示承認
 - 製品・バージョン・脆弱性識別子の存在確認
 - `not_affected`の理由必須チェック
 - `affected`の対応方法必須チェック
 - VEXと対象SBOMのバージョン整合性確認
 - 署名または生成者・承認者・時刻の記録
 - Dependency-Track投入後のAnalysis state確認
+- 非同期token完了後の予定Finding集合と実変更集合の完全一致確認
+
+Dependency-Track 4.14.3のラボでは、`affects.ref`だけを記述したComponent
+参照はFindingを変更しなかった。同じVEXの`components[]`にComponent identityを
+宣言した参照は該当Findingだけを変更し、`metadata.component`への参照は同じ
+脆弱性を持つProject内の複数Componentへ展開された。このため、スキーマ検証と
+upload成功だけで公開成功とは判定しない。
 
 ### 7. 再評価と期限
 

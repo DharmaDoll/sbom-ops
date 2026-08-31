@@ -345,6 +345,28 @@ def test_observes_analysis_trail_with_all_finding_coordinates() -> None:
     ]
 
 
+def test_optional_analysis_trail_preserves_absent_row() -> None:
+    client = DependencyTrackLabClient("https://dtrack.example", "read-key")
+
+    def absent_trail(path, params=None):
+        raise DependencyTrackLabApiError("not found", status=404)
+
+    client._observe_json = absent_trail  # type: ignore[method-assign]
+
+    observation = client.observe_analysis_trail_if_present(
+        "project-1", "component-1", "vulnerability-1"
+    )
+
+    assert observation.status == 404
+    assert observation.path == "/api/v1/analysis"
+    assert dict(observation.query) == {
+        "component": "component-1",
+        "project": "project-1",
+        "vulnerability": "vulnerability-1",
+    }
+    assert observation.payload is None
+
+
 def test_observes_current_team_for_least_privilege_preflight() -> None:
     client = DependencyTrackLabClient("https://dtrack.example", "analysis-key")
     requests: list[str] = []

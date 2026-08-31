@@ -385,6 +385,42 @@ scenarios:
             comment: DT lab seeds a reviewed not-affected decision for VEX export.
             suppressed: true
 
+  - id: triage-vex-targeting
+    category: triage
+    status: implemented
+    purpose: Distinguish Project-scoped and Component-scoped CycloneDX VEX effects.
+    hypotheses:
+      - An affects ref resolved through a declared VEX Component limits a decision to its identity match, while a metadata Project ref applies it to every matching Finding in that Project.
+    decision_questions:
+      - Must sbom-ops reject Project-scoped VEX when only one Component was reviewed?
+      - Which Component declaration and reference are required for an exact Component-scoped VEX decision?
+    project:
+      name: dt-lab-triage-vex-targeting
+      version: 1.0.0
+    steps:
+      - id: compare-project-and-component-scope
+        bom: sboms/triage-vex-targeting.cdx.json
+        observe:
+          - project
+          - components
+          - findings
+          - metrics
+        vex_targeting_probe:
+          id: project-and-component-scope
+          control_component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.13.3
+          input_component_bom_ref: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+          decision:
+            id: target-primary-component
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: NOT_AFFECTED
+            justification: CODE_NOT_REACHABLE
+            response: NOT_SET
+            detail: Synthetic targeting probe limited to one reviewed Component.
+            comment: DT lab compares Component-scoped and Project-scoped VEX targeting.
+            suppressed: true
+
   - id: triage-policy-violations
     category: triage
     status: planned

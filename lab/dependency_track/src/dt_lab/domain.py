@@ -267,6 +267,33 @@ class VexRoundTrip:
 
 
 @dataclass(frozen=True)
+class VexTargetingProbe:
+    id: str
+    decision: AnalysisAction
+    control_component_purl: str
+    input_component_bom_ref: str
+
+    def __post_init__(self) -> None:
+        _require_slug(self.id, "VEX targeting probe id")
+        if self.decision.state is AnalysisState.NOT_SET:
+            raise LabManifestError(
+                f"VEX targeting probe {self.id!r} decision must not be NOT_SET"
+            )
+        if not self.control_component_purl.strip():
+            raise LabManifestError(
+                f"VEX targeting probe {self.id!r} requires control_component_purl"
+            )
+        if self.control_component_purl == self.decision.component_purl:
+            raise LabManifestError(
+                f"VEX targeting probe {self.id!r} requires two Component PURLs"
+            )
+        if not self.input_component_bom_ref.strip():
+            raise LabManifestError(
+                f"VEX targeting probe {self.id!r} requires input_component_bom_ref"
+            )
+
+
+@dataclass(frozen=True)
 class ScenarioStep:
     id: str
     bom: str
@@ -274,6 +301,7 @@ class ScenarioStep:
     project_version: str | None = None
     analysis_actions: tuple[AnalysisAction, ...] = ()
     vex_round_trip: VexRoundTrip | None = None
+    vex_targeting_probe: VexTargetingProbe | None = None
 
     def __post_init__(self) -> None:
         _require_slug(self.id, "scenario step id")
@@ -292,10 +320,16 @@ class ScenarioStep:
             raise LabManifestError(
                 f"scenario step {self.id!r} has duplicate analysis action ids"
             )
-        if self.analysis_actions and self.vex_round_trip is not None:
+        mutation_modes = sum(
+            (
+                bool(self.analysis_actions),
+                self.vex_round_trip is not None,
+                self.vex_targeting_probe is not None,
+            )
+        )
+        if mutation_modes > 1:
             raise LabManifestError(
-                f"scenario step {self.id!r} cannot combine analysis_actions and "
-                "vex_round_trip"
+                f"scenario step {self.id!r} cannot combine triage mutation modes"
             )
 
 
@@ -347,7 +381,9 @@ class LabScenario:
         if len(step_ids) != len(set(step_ids)):
             raise LabManifestError(f"scenario {self.id!r} has duplicate step ids")
         if self.category is not ScenarioCategory.TRIAGE and any(
-            step.analysis_actions or step.vex_round_trip is not None
+            step.analysis_actions
+            or step.vex_round_trip is not None
+            or step.vex_targeting_probe is not None
             for step in self.steps
         ):
             raise LabManifestError(
