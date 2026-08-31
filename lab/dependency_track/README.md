@@ -142,6 +142,23 @@ unsuppressed Finding view, metrics, and a compact verification record under the
 ignored run directory. The final action restores the disposable Finding before
 optional run-scoped cleanup.
 
+The VEX round-trip experiment uses the same credential and opt-in boundary:
+
+```bash
+make dt-lab-triage-vex
+```
+
+It creates a separate run-suffixed `dt-lab-triage-vex` Project, seeds one
+reviewed `NOT_AFFECTED` Analysis decision, exports CycloneDX VEX 1.5, restores
+the Finding to `NOT_SET`, uploads that exact exported document, and compares
+the resulting Finding, Analysis trail, and re-exported VEX. It then replays the
+same document to distinguish state idempotency from duplicate audit history. It
+records Analysis semantic preservation separately from the DT suppression
+projection because CycloneDX VEX does not represent Dependency-Track's Finding
+suppression flag. The scenario finally restores `NOT_SET`; a failed round trip
+also attempts and verifies an emergency restore. Evidence remains under the
+ignored run directory for review before any separate cleanup.
+
 The optional cleanup key is deliberately separate from upload and read access.
 Its team needs `VIEW_PORTFOLIO` to verify each live Project and
 `PORTFOLIO_MANAGEMENT` to delete it:
@@ -348,7 +365,10 @@ steps, and the API areas to observe. Implemented scenarios must reference
 existing SBOM files; planned scenarios may omit steps. Manifest schema version 3
 requires at least one hypothesis and one decision question for every scenario.
 Analysis actions additionally declare an exact Finding selector and a complete
-state, justification, response, detail, comment, and suppression decision.
+state, justification, response, detail, comment, and suppression decision. A
+VEX round-trip step declares one non-`NOT_SET` seed decision and cannot be
+combined with a normal Analysis action sequence. Its `replay_import` flag makes
+the otherwise identical second import explicit in the scenario contract.
 
 Project names must use the `dt-lab-` prefix. The manifest validator also checks
 repository-level invariants such as unique CycloneDX serial numbers and valid

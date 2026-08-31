@@ -85,6 +85,11 @@ class BomUpload:
 
 
 @dataclass(frozen=True)
+class VexUpload:
+    token: str
+
+
+@dataclass(frozen=True)
 class DependencyTrackObservation:
     method: str
     path: str
@@ -244,12 +249,31 @@ class AnalysisAction:
 
 
 @dataclass(frozen=True)
+class VexRoundTrip:
+    id: str
+    seed_analysis: AnalysisAction
+    replay_import: bool
+
+    def __post_init__(self) -> None:
+        _require_slug(self.id, "VEX round-trip id")
+        if self.seed_analysis.state is AnalysisState.NOT_SET:
+            raise LabManifestError(
+                f"VEX round-trip {self.id!r} seed state must not be NOT_SET"
+            )
+        if not isinstance(self.replay_import, bool):
+            raise LabManifestError(
+                f"VEX round-trip {self.id!r} replay_import must be a boolean"
+            )
+
+
+@dataclass(frozen=True)
 class ScenarioStep:
     id: str
     bom: str
     observations: tuple[Observation, ...]
     project_version: str | None = None
     analysis_actions: tuple[AnalysisAction, ...] = ()
+    vex_round_trip: VexRoundTrip | None = None
 
     def __post_init__(self) -> None:
         _require_slug(self.id, "scenario step id")
@@ -267,6 +291,11 @@ class ScenarioStep:
         if len(action_ids) != len(set(action_ids)):
             raise LabManifestError(
                 f"scenario step {self.id!r} has duplicate analysis action ids"
+            )
+        if self.analysis_actions and self.vex_round_trip is not None:
+            raise LabManifestError(
+                f"scenario step {self.id!r} cannot combine analysis_actions and "
+                "vex_round_trip"
             )
 
 
@@ -318,10 +347,11 @@ class LabScenario:
         if len(step_ids) != len(set(step_ids)):
             raise LabManifestError(f"scenario {self.id!r} has duplicate step ids")
         if self.category is not ScenarioCategory.TRIAGE and any(
-            step.analysis_actions for step in self.steps
+            step.analysis_actions or step.vex_round_trip is not None
+            for step in self.steps
         ):
             raise LabManifestError(
-                f"scenario {self.id!r} analysis actions require triage category"
+                f"scenario {self.id!r} triage mutations require triage category"
             )
 
 

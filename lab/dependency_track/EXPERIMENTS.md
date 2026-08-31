@@ -579,3 +579,144 @@ These are the scope of the planned `triage-vex-round-trip` scenario.
 
 - `var/dt-lab/runs/<run-id>/triage-analysis-states/` (ignored; local only)
 - `var/dt-lab/openapi.json` (ignored; local only)
+
+## 2026-08-31 — CycloneDX VEX Analysis Round Trip
+
+- Status: completed
+- Target: Dependency-Track 4.14.3; CycloneDX 1.5
+- Scenarios: `triage-vex-round-trip`
+
+### Purpose
+
+Determine whether a reviewed Dependency-Track Analysis decision survives a
+DT-generated CycloneDX VEX export and re-import, and identify which Analysis,
+suppression, targeting, and audit semantics sbom-ops may safely delegate to DT.
+
+### Performed
+
+Created one run-scoped disposable Project from a dedicated synthetic Log4Shell
+SBOM and selected the NVD `CVE-2021-44228` Finding by Project, Component PURL,
+vulnerability ID, and source. Seeded `NOT_AFFECTED` with
+`CODE_NOT_REACHABLE`, detail, a caller comment, and explicit suppression;
+exported CycloneDX VEX 1.5; reset the Finding to unsuppressed `NOT_SET`; uploaded
+the unchanged export to the same Project; waited for its event token; compared
+the Finding, Analysis trail, and second VEX export; and finally restored and
+verified unsuppressed `NOT_SET`.
+
+### Observed Facts
+
+- The Analysis-key preflight passed with `VULNERABILITY_ANALYSIS` and only the
+  allowed read permissions. The Project contained one Component and ten NVD
+  Findings; only the exact `CVE-2021-44228` target was mutated.
+- The first export contained ten vulnerability entries but no Components
+  collection. Every `affects.ref` was the Project UUID. The target entry
+  contained `state=not_affected`, `justification=code_not_reachable`, and the
+  exact Analysis detail; it did not contain the explicit suppression flag or
+  the caller comment.
+- After the explicit reset, the target Finding projected `NOT_SET` and
+  `isSuppressed=false`. The unchanged exported VEX was accepted by multipart
+  `POST /api/v1/vex`, and its asynchronous event token completed.
+- The imported Finding and Analysis trail projected `NOT_AFFECTED`,
+  `CODE_NOT_REACHABLE`, `NOT_SET` response, and the exact original detail. The
+  second VEX export preserved the target Analysis object and `affects` reference.
+- The imported Finding also projected `isSuppressed=true`, even though the VEX
+  document had no suppression field. The import added state, justification, and
+  detail audit comments attributed to `CycloneDX VEX`; it did not add the
+  original caller comment as a VEX-authored comment or add an explicit
+  suppression audit comment.
+- The final restore projected `NOT_SET` and `isSuppressed=false`. The run
+  completed with 18 retained observations. Its disposable Project remains for
+  reviewed, run-scoped cleanup after target quiescence.
+
+### Interpretation and Product Decision
+
+DT 4.14.3 can own the reviewed VEX-backed applicability state and its audit
+projection. sbom-ops should not create an independent VEX state machine or
+rewrite the decision automatically; it should reconcile DT's Finding/Analysis
+state and keep human approval ahead of VEX publication or downstream task
+closure.
+
+The returned suppression is a DT projection derived during import, not a
+CycloneDX field that round-tripped verbatim. Consumers must therefore treat
+Analysis state and DT suppression as separate facts even when this version
+couples `NOT_AFFECTED` import to suppression. Caller comments and actor identity
+are not portable through this VEX document: the semantic detail survives, while
+the import audit actor is DT's `CycloneDX VEX` identity.
+
+The generated document was Project-scoped: its Project UUID reference can apply
+one vulnerability decision across affected Components in that Project. The
+one-Component run does not prove Component-level isolation. Before accepting
+supplier VEX or automating task closure, sbom-ops needs an explicit targeting
+check and evidence for multiple Components sharing a vulnerability.
+
+### Unverified
+
+Component-scoped versus Project-scoped `affects` matching, multiple Components
+sharing one CVE, externally generated VEX identifiers, fresh-Project transfer,
+idempotent replay, concurrent analyst edits, schema rejection, authorship,
+metrics convergence, and mappings for `EXPLOITABLE`, `FALSE_POSITIVE`, and
+`RESOLVED` remain unverified. The next discriminating experiment should compare
+Project and Component `bom-ref` targets in one multi-Component Project.
+
+### Local Evidence
+
+- `var/dt-lab/runs/<run-id>/analysis-key-team.json` (ignored; local only)
+- `var/dt-lab/runs/<run-id>/triage-vex-round-trip/` (ignored; local only)
+
+## 2026-08-31 — Identical VEX Replay
+
+- Status: completed
+- Target: Dependency-Track 4.14.3; CycloneDX 1.5
+- Scenarios: `triage-vex-round-trip`
+
+### Purpose
+
+Determine whether retrying the exact same VEX import is idempotent in both the
+current Analysis projection and its audit trail, rather than judging retry
+safety only from the final Finding state.
+
+### Performed
+
+Repeated the guarded Analysis-to-VEX round trip in a new disposable Project.
+After the first unchanged DT-generated VEX import completed and its Finding,
+trail, and re-export were captured, uploaded the same local VEX bytes to the same
+Project a second time, waited for the second event token, and captured the same
+three projections again before the final `NOT_SET` restore.
+
+### Observed Facts
+
+- Both multipart VEX uploads returned tokens that completed successfully.
+- After the first import, the target projected `NOT_AFFECTED`,
+  `CODE_NOT_REACHABLE`, the original detail, and `isSuppressed=true`. Its trail
+  contained 13 comments, including three attributed to `CycloneDX VEX`.
+- After the identical replay, Finding state, suppression, VEX Analysis, and
+  `affects` were unchanged. The trail still contained 13 comments: the replay
+  added zero state, justification, detail, suppression, or other comments.
+- The final restore again projected unsuppressed `NOT_SET`. The completed run
+  retained 22 observations, and its disposable Project remains available for
+  later reviewed cleanup.
+
+### Interpretation and Product Decision
+
+On DT 4.14.3, an identical VEX replay against the same Project and already
+matching Analysis state was state-idempotent and audit-idempotent in this case.
+A future product VEX uploader may retry an identical payload after an ambiguous
+transport outcome, provided it still waits for the returned event token and
+reconciles the exact target state. Retaining a payload digest and token outcome
+would reduce unnecessary uploads, but a second authoritative workflow record is
+not needed for this observed behavior.
+
+This does not authorize automatic VEX publication or task closure. Human review
+and exact Project/Finding identity remain required, and replay safety must be
+revalidated when the payload, baseline Analysis state, or DT version changes.
+
+### Unverified
+
+Replay after concurrent analyst changes, replay after a partial or failed event,
+different VEX serial/version values with identical Analysis, cross-Project
+reuse, and multiple target Findings remain unverified. Project-scoped versus
+Component-scoped `affects` is still the next higher-value targeting experiment.
+
+### Local Evidence
+
+- `var/dt-lab/runs/<run-id>/triage-vex-round-trip/` (ignored; local only)

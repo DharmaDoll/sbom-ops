@@ -352,7 +352,7 @@ scenarios:
 
   - id: triage-vex-round-trip
     category: triage
-    status: planned
+    status: implemented
     purpose: Validate VEX import, Analysis projection, export, and human approval boundaries.
     hypotheses:
       - DT can preserve reviewed VEX and Analysis decisions through import and export without semantic loss.
@@ -362,7 +362,28 @@ scenarios:
     project:
       name: dt-lab-triage-vex
       version: 1.0.0
-    steps: []
+    steps:
+      - id: not-affected-round-trip
+        bom: sboms/triage-vex-round-trip.cdx.json
+        observe:
+          - project
+          - components
+          - findings
+          - metrics
+        vex_round_trip:
+          id: not-affected-round-trip
+          replay_import: true
+          seed_analysis:
+            id: seed-not-affected
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: NOT_AFFECTED
+            justification: CODE_NOT_REACHABLE
+            response: NOT_SET
+            detail: Synthetic VEX round-trip decision with unreachable code.
+            comment: DT lab seeds a reviewed not-affected decision for VEX export.
+            suppressed: true
 
   - id: triage-policy-violations
     category: triage

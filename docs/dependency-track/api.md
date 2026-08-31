@@ -124,8 +124,15 @@ The lab adapter also exposes the read-only CycloneDX VEX export observation at
 `GET /api/v1/vex/cyclonedx/project/{uuid}`. The v4.14.3 contract requires
 `VULNERABILITY_ANALYSIS` and returns `application/vnd.cyclonedx+json`; the
 adapter requests the 1.5 variant. VEX upload and round-trip mutation remain in
-the planned `triage-vex-round-trip` scenario and are not enabled by this
-observation alone.
+the explicit `triage-vex-round-trip` lab scenario. The lab-only adapter sends
+the documented multipart `POST /api/v1/vex` request for an existing Project and
+waits on its asynchronous processing token. The scenario is excluded from the
+default lab run and is available only through scenario selection plus the
+Analysis-mutation opt-in. This does not enable VEX writes in the product client.
+In the completed one-Component v4.14.3 round trip, DT exported the Project UUID
+as `vulnerabilities[].affects[].ref`, not the vulnerable Component PURL. Treat
+that as a version-bounded Project-scoped observation; Component-scoped matching
+remains unverified and must not be inferred from this sample.
 
 ## Behavior Lab Decision Boundary
 

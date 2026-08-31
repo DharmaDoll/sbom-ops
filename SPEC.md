@@ -617,6 +617,15 @@ Every action must retain its request and response, Analysis trail, applicable
 suppressed or unsuppressed Finding view, metrics, and expected-versus-observed
 projection under ignored `var/dt-lab/` evidence.
 
+The VEX round-trip lab experiment uses the same three gates. It must export a
+decision from the run-scoped Project, reset that exact Finding before import,
+upload the captured VEX only to the same Project, compare Finding state and VEX
+Analysis semantics after ingestion, and restore `NOT_SET` after success or
+failure. Dependency-Track suppression is evaluated separately because it is not
+a CycloneDX VEX field. An explicitly declared replay must compare both state and
+audit-comment changes so retry safety is not inferred from an unchanged final
+state. This lab behavior does not authorize product VEX writes.
+
 Every lab run must persist a run-scoped Project ledger before upload and update
 it with the observed Project UUID. Lab cleanup must be a local dry-run by
 default. Executed cleanup must:
@@ -642,7 +651,7 @@ Failed runs remain available for diagnosis until explicitly cleaned.
 These are intentionally deferred, not blockers for the first implementation:
 
 - issue reopen policy
-- VEX upload and ingestion workflow
+- production VEX upload and ingestion workflow
 - Jira adapter
 - live Dependency-Track and GitHub contract validation
 - provider-backed Google Cloud runtime proof of concept

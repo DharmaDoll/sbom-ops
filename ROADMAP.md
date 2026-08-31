@@ -37,6 +37,10 @@ The repository has a working MVP with:
 - an opt-in, least-privilege Analysis-state experiment that records decisions,
   comments, suppression, audit trails, Finding projections, and metrics without
   entering the default lab run
+- an opt-in VEX round-trip experiment that exports a reviewed Analysis decision,
+  resets it, re-imports the exported CycloneDX VEX, compares semantic and
+  suppression behavior, measures replay idempotency, and safely restores the
+  disposable Finding
 - a provenance- and hash-pinned real-world Go, TypeScript, Rails, and Python
   SBOM corpus, with explicit selection and schema-rejection comparison cases
 - complete paginated Component observations checked against `X-Total-Count`,

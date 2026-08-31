@@ -13,6 +13,7 @@ from dt_lab.domain import (
     DependencyTrackObservation,
     LabManifestError,
     ScenarioStatus,
+    VexUpload,
 )
 from dt_lab.service import (
     build_corpus_lab_manifest,
@@ -105,8 +106,9 @@ def test_repository_lab_manifest_is_valid() -> None:
         "portfolio-direct-transitive-graph",
         "triage-multiple-sources-aliases",
         "triage-analysis-states",
+        "triage-vex-round-trip",
     ]
-    assert sum(len(scenario.steps) for scenario in implemented) == 12
+    assert sum(len(scenario.steps) for scenario in implemented) == 13
     assert any(
         scenario.id == "triage-delegation-boundary"
         and scenario.status is ScenarioStatus.PLANNED
@@ -270,10 +272,10 @@ def test_openapi_inventory_extracts_contract_details() -> None:
     inventory = build_openapi_inventory(payload)
     rendered = openapi_inventory_dict(inventory)
 
-    assert inventory.path_count == 8
-    assert inventory.operation_count == 9
+    assert inventory.path_count == 9
+    assert inventory.operation_count == 10
     assert inventory.tag_count == 7
-    assert len(inventory.operations) == 8
+    assert len(inventory.operations) == 9
     finding = next(
         operation
         for operation in inventory.operations
@@ -348,7 +350,16 @@ def test_openapi_inventory_extracts_contract_details() -> None:
     )
     assert team_self.path == "/v1/team/self"
     assert team_self.response_statuses == ("200", "400", "401", "404")
-    assert rendered["summary"]["selected_operation_count"] == 8
+    vex_upload = next(
+        operation
+        for operation in inventory.operations
+        if operation.operation_id == "uploadVex_1"
+    )
+    assert vex_upload.method == "POST"
+    assert vex_upload.path == "/v1/vex"
+    assert vex_upload.permissions == ("VULNERABILITY_ANALYSIS",)
+    assert vex_upload.response_statuses == ("200", "400", "401", "403", "404")
+    assert rendered["summary"]["selected_operation_count"] == 9
     assert len(rendered["source"]["contract_sha256"]) == 64
 
 
@@ -405,7 +416,7 @@ def test_openapi_inventory_can_include_all_tags() -> None:
 
     inventory = build_openapi_inventory(payload, selected_tags=None)
 
-    assert len(inventory.operations) == 9
+    assert len(inventory.operations) == 10
     assert inventory.selected_tags == (
         "analysis",
         "component",
@@ -431,7 +442,7 @@ def test_lab_cli_validates_repository_manifest(
     )
 
     assert main() == 0
-    assert "scenarios=17 implemented=9 planned=8 steps=12" in capsys.readouterr().out
+    assert "scenarios=17 implemented=10 planned=7 steps=13" in capsys.readouterr().out
 
 
 def test_lab_cli_writes_openapi_inventory(
@@ -453,9 +464,9 @@ def test_lab_cli_writes_openapi_inventory(
 
     assert main() == 0
     assert json.loads(output_path.read_text(encoding="utf-8"))["summary"] == {
-        "operation_count": 9,
-        "path_count": 8,
-        "selected_operation_count": 8,
+        "operation_count": 10,
+        "path_count": 9,
+        "selected_operation_count": 9,
         "selected_tags": [
             "analysis",
             "bom",
@@ -475,7 +486,7 @@ def test_lab_cli_writes_openapi_inventory(
         ],
         "tag_count": 7,
     }
-    assert "OpenAPI inventory: paths=8 operations=9 selected=8 tags=7" in (
+    assert "OpenAPI inventory: paths=9 operations=10 selected=9 tags=7" in (
         capsys.readouterr().out
     )
 
@@ -624,6 +635,9 @@ class FakeLabClient:
         self.project_versions: list[str] = []
         self.analysis_state = "NOT_SET"
         self.analysis_suppressed = False
+        self.analysis_justification = "NOT_SET"
+        self.analysis_response = "NOT_SET"
+        self.analysis_detail = ""
         self.analysis_comments: list[dict[str, object]] = []
 
     def upload_bom_by_project_coordinates(
@@ -632,6 +646,47 @@ class FakeLabClient:
         self.last_bom = Path(bom_path).name
         self.project_versions.append(project_version)
         return BomUpload(token=f"token-{self.last_bom}")
+
+    def upload_vex_for_project(
+        self, project_uuid: str, vex_path: str | Path
+    ) -> VexUpload:
+        payload = json.loads(Path(vex_path).read_text(encoding="utf-8"))
+        vulnerability = next(
+            item
+            for item in payload["vulnerabilities"]
+            if item["id"] == "CVE-2021-44228"
+        )
+        analysis = vulnerability["analysis"]
+        imported_state = str(analysis["state"]).upper()
+        imported_justification = str(analysis.get("justification", "not_set")).upper()
+        responses = analysis.get("response", [])
+        imported_response = str(responses[0]).upper() if responses else "NOT_SET"
+        imported_detail = str(analysis.get("detail", ""))
+        changes = (
+            self.analysis_state != imported_state,
+            self.analysis_justification != imported_justification,
+            self.analysis_detail != imported_detail,
+        )
+        self.analysis_state = imported_state
+        self.analysis_justification = imported_justification
+        self.analysis_response = imported_response
+        self.analysis_detail = imported_detail
+        self.analysis_suppressed = self.analysis_state == "NOT_AFFECTED"
+        comments = (
+            f"Analysis imported as {self.analysis_state}",
+            f"Justification imported as {self.analysis_justification}",
+            f"Details imported as {self.analysis_detail}",
+        )
+        for changed, comment in zip(changes, comments, strict=True):
+            if changed:
+                self.analysis_comments.append(
+                    {
+                        "timestamp": len(self.analysis_comments) + 1,
+                        "comment": comment,
+                        "commenter": "CycloneDX VEX",
+                    }
+                )
+        return VexUpload(token="vex-token-1")
 
     def wait_for_bom_processing(
         self,
@@ -764,7 +819,11 @@ class FakeLabClient:
                 }
             ]
         elif (
-            self.last_bom == "triage-analysis-states.cdx.json"
+            self.last_bom
+            in {
+                "triage-analysis-states.cdx.json",
+                "triage-vex-round-trip.cdx.json",
+            }
             and suppressed == self.analysis_suppressed
         ):
             findings = [
@@ -802,6 +861,9 @@ class FakeLabClient:
     ) -> DependencyTrackObservation:
         self.analysis_state = action.state.value
         self.analysis_suppressed = action.suppressed
+        self.analysis_justification = action.justification.value
+        self.analysis_response = action.response.value
+        self.analysis_detail = action.detail
         self.analysis_comments.append(
             {
                 "timestamp": len(self.analysis_comments) + 1,
@@ -867,9 +929,27 @@ class FakeLabClient:
     def observe_project_vex_export(
         self, project_uuid: str
     ) -> DependencyTrackObservation:
+        analysis: dict[str, object] = {"detail": self.analysis_detail}
+        if self.analysis_state != "NOT_SET":
+            analysis["state"] = self.analysis_state.lower()
+        if self.analysis_justification != "NOT_SET":
+            analysis["justification"] = self.analysis_justification.lower()
+        if self.analysis_response != "NOT_SET":
+            analysis["response"] = [self.analysis_response.lower()]
         return self._observation(
             f"/api/v1/vex/cyclonedx/project/{project_uuid}",
-            {"bomFormat": "CycloneDX", "specVersion": "1.5"},
+            {
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.5",
+                "vulnerabilities": [
+                    {
+                        "id": "CVE-2021-44228",
+                        "source": {"name": "NVD"},
+                        "affects": [{"ref": project_uuid}],
+                        "analysis": analysis,
+                    }
+                ],
+            },
         )
 
 
@@ -889,6 +969,7 @@ def test_default_lab_run_excludes_analysis_mutations(tmp_path: Path) -> None:
         (Path(result.output_directory) / "run.json").read_text(encoding="utf-8")
     )
     assert "triage-analysis-states" not in run_metadata["scenarios"]
+    assert "triage-vex-round-trip" not in run_metadata["scenarios"]
     assert run_metadata["analysis_mutation_enabled"] is False
     assert client.analysis_comments == []
 
@@ -1159,6 +1240,100 @@ def test_lab_runner_records_analysis_decisions_and_verification(
     )
     assert run_metadata["analysis_mutation_enabled"] is True
     assert (Path(result.output_directory) / "analysis-key-team.json").is_file()
+
+
+def test_lab_runner_records_vex_round_trip_and_restores_analysis(
+    tmp_path: Path,
+) -> None:
+    client = FakeLabClient()
+
+    result = run_lab_scenarios(
+        load_lab_manifest(MANIFEST_PATH),
+        manifest_path=MANIFEST_PATH,
+        upload_client=client,
+        read_client=client,
+        analysis_client=client,
+        output_directory=tmp_path,
+        scenario_ids=("triage-vex-round-trip",),
+        poll_interval=0,
+        allow_analysis_mutation=True,
+    )
+
+    assert len(result.steps) == 1
+    assert result.steps[0].observation_count == 22
+    directory = (
+        Path(result.steps[0].snapshot_directory)
+        / "vex-round-trip"
+        / "not-affected-round-trip"
+    )
+    verification = json.loads(
+        (directory / "verification.json").read_text(encoding="utf-8")
+    )
+    assert verification["seed"]["finding_state"] == "NOT_AFFECTED"
+    assert verification["reset"]["finding_state"] == "NOT_SET"
+    assert verification["imported"]["finding_state"] == "NOT_AFFECTED"
+    assert verification["replayed"]["finding_state"] == "NOT_AFFECTED"
+    assert verification["comparison"] == {
+        "finding_state_preserved": True,
+        "replay_audit_comment_delta": 0,
+        "replay_state_idempotent": True,
+        "replay_vex_analysis_idempotent": True,
+        "source_affects_component_purl": False,
+        "suppression_projection_matches_seed": True,
+        "vex_affects_preserved": True,
+        "vex_analysis_preserved": True,
+    }
+    assert (directory / "source-vex.cdx.json").is_file()
+    final_verification = json.loads(
+        (directory / "final-verification.json").read_text(encoding="utf-8")
+    )
+    assert final_verification == {
+        "expected": {"state": "NOT_SET", "suppressed": False},
+        "observed": {"state": "NOT_SET", "suppressed": False},
+    }
+    assert client.analysis_state == "NOT_SET"
+    assert client.analysis_suppressed is False
+
+
+def test_lab_runner_emergency_restores_analysis_when_vex_upload_fails(
+    tmp_path: Path,
+) -> None:
+    client = FakeLabClient()
+
+    def fail_vex_upload(project_uuid: str, vex_path: str | Path) -> VexUpload:
+        raise RuntimeError("VEX upload failed")
+
+    client.upload_vex_for_project = fail_vex_upload  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="VEX upload failed"):
+        run_lab_scenarios(
+            load_lab_manifest(MANIFEST_PATH),
+            manifest_path=MANIFEST_PATH,
+            upload_client=client,
+            read_client=client,
+            analysis_client=client,
+            output_directory=tmp_path,
+            scenario_ids=("triage-vex-round-trip",),
+            poll_interval=0,
+            allow_analysis_mutation=True,
+        )
+
+    assert client.analysis_state == "NOT_SET"
+    assert client.analysis_suppressed is False
+    run_directory = next(tmp_path.iterdir())
+    verification_path = (
+        run_directory
+        / "triage-vex-round-trip"
+        / "01-not-affected-round-trip"
+        / "vex-round-trip"
+        / "not-affected-round-trip"
+        / "emergency-restore"
+        / "verification.json"
+    )
+    assert json.loads(verification_path.read_text(encoding="utf-8"))["observed"] == {
+        "state": "NOT_SET",
+        "suppressed": False,
+    }
 
 
 def test_lab_runner_records_failed_run_metadata(tmp_path: Path) -> None:

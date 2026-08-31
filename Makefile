@@ -11,7 +11,7 @@ DT_LAB_EXECUTE_FLAG = $(if $(filter 1 true yes,$(EXECUTE)),--execute,)
 DT_LAB_PROCESSING_TIMEOUT ?= 600
 PYTHON ?= python3.12
 
-.PHONY: dt-up dt-down dt-logs dt-ps dt-openapi-check dt-lab-validate dt-lab-openapi dt-lab-run dt-lab-triage-analysis dt-lab-corpus-validate dt-lab-corpus-run dt-lab-cleanup dt-lab-test dt-bom-upload dt-demo-upload dt-demo-update-upload infra-gcp-poc-fmt-check infra-gcp-poc-validate test lint
+.PHONY: dt-up dt-down dt-logs dt-ps dt-openapi-check dt-lab-validate dt-lab-openapi dt-lab-run dt-lab-triage-analysis dt-lab-triage-vex dt-lab-corpus-validate dt-lab-corpus-run dt-lab-cleanup dt-lab-test dt-bom-upload dt-demo-upload dt-demo-update-upload infra-gcp-poc-fmt-check infra-gcp-poc-validate test lint
 
 dt-up:
 	docker compose -f $(COMPOSE_FILE) up -d
@@ -41,6 +41,9 @@ dt-lab-run:
 
 dt-lab-triage-analysis:
 	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m dt_lab.cli run-scenarios --manifest "$(DT_LAB_MANIFEST)" --output-dir "$(DT_LAB_DIR)/runs" --openapi-inventory "$(DT_LAB_DIR)/openapi-inventory.json" --scenario triage-analysis-states --allow-analysis-mutation
+
+dt-lab-triage-vex:
+	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m dt_lab.cli run-scenarios --manifest "$(DT_LAB_MANIFEST)" --output-dir "$(DT_LAB_DIR)/runs" --openapi-inventory "$(DT_LAB_DIR)/openapi-inventory.json" --scenario triage-vex-round-trip --allow-analysis-mutation
 
 dt-lab-corpus-validate:
 	PYTHONPATH=$(DT_LAB_PYTHONPATH) $(PYTHON) -m dt_lab.cli validate-corpus --catalog "$(DT_LAB_CORPUS_CATALOG)" --artifact-dir "$(DT_LAB_CORPUS_DIR)" --require-local

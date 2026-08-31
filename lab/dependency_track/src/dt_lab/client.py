@@ -7,7 +7,12 @@ from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request
 
-from dt_lab.domain import AnalysisAction, BomUpload, DependencyTrackObservation
+from dt_lab.domain import (
+    AnalysisAction,
+    BomUpload,
+    DependencyTrackObservation,
+    VexUpload,
+)
 from sbom_ops.clients.http import HttpApiError, HttpJsonResponse, request_json
 
 
@@ -351,6 +356,60 @@ class DependencyTrackLabClient:
                 "Dependency-Track lab BOM response has no token"
             )
         return BomUpload(token=str(token))
+
+    def upload_vex_for_project(
+        self, project_uuid: str, vex_path: str | Path
+    ) -> VexUpload:
+        """Upload one CycloneDX VEX to an existing disposable lab Project."""
+        vex = Path(vex_path).read_bytes()
+        boundary = "----sbom-ops-dt-lab-vex-boundary"
+        body = b"".join(
+            [
+                f"--{boundary}\r\n".encode(),
+                b'Content-Disposition: form-data; name="project"\r\n\r\n',
+                project_uuid.encode(),
+                b"\r\n",
+                f"--{boundary}\r\n".encode(),
+                (
+                    'Content-Disposition: form-data; name="vex"; '
+                    f'filename="{Path(vex_path).name}"\r\n'
+                    "Content-Type: application/vnd.cyclonedx+json\r\n\r\n"
+                ).encode(),
+                vex,
+                b"\r\n",
+                f"--{boundary}--\r\n".encode(),
+            ]
+        )
+        request = Request(
+            f"{self._base_url}/api/v1/vex",
+            data=body,
+            method="POST",
+            headers={
+                "Accept": "application/json",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "X-Api-Key": self._api_key,
+            },
+        )
+        try:
+            payload = request_json(
+                request,
+                timeout=self._timeout,
+                max_retries=self._max_retries,
+                backoff_seconds=self._retry_backoff_seconds,
+                error_message="Dependency-Track lab VEX upload failed",
+            )
+        except HttpApiError as exc:
+            detail = f" (HTTP {exc.status})" if exc.status else ""
+            raise DependencyTrackLabApiError(
+                f"Dependency-Track lab VEX upload failed{detail}",
+                status=exc.status,
+            ) from exc
+        token = payload.get("token") if isinstance(payload, dict) else None
+        if not token:
+            raise DependencyTrackLabApiError(
+                "Dependency-Track lab VEX response has no token"
+            )
+        return VexUpload(token=str(token))
 
     def wait_for_bom_processing(
         self,

@@ -43,6 +43,35 @@ def test_bom_upload_by_project_coordinates_uses_auto_create(
     assert b"1.0.0" in body
 
 
+def test_vex_upload_uses_existing_project_and_multipart_document(
+    monkeypatch, tmp_path
+) -> None:
+    vex_path = tmp_path / "decision.cdx.json"
+    vex_path.write_text('{"bomFormat":"CycloneDX","vulnerabilities":[]}')
+    captured = {}
+
+    def fake_request_json(request, **kwargs):
+        captured["request"] = request
+        return {"token": "vex-token-1"}
+
+    monkeypatch.setattr(client_module, "request_json", fake_request_json)
+
+    result = DependencyTrackLabClient(
+        "https://dtrack.example", "analysis-key"
+    ).upload_vex_for_project("project-1", vex_path)
+
+    request = captured["request"]
+    assert result.token == "vex-token-1"
+    assert request.method == "POST"
+    assert request.full_url.endswith("/api/v1/vex")
+    assert request.get_header("Content-type").startswith("multipart/form-data;")
+    assert b'name="project"' in request.data
+    assert b"project-1" in request.data
+    assert b'name="vex"; filename="decision.cdx.json"' in request.data
+    assert b"application/vnd.cyclonedx+json" in request.data
+    assert vex_path.read_bytes() in request.data
+
+
 def test_observation_records_safe_metadata(monkeypatch) -> None:
     def fake_request_json(request, **kwargs):
         assert kwargs["return_response"] is True

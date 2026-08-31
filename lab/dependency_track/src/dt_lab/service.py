@@ -37,6 +37,8 @@ from dt_lab.domain import (
     ScenarioCategory,
     ScenarioStatus,
     ScenarioStep,
+    VexRoundTrip,
+    VexUpload,
 )
 
 RELEVANT_OPENAPI_TAGS = (
@@ -161,11 +163,31 @@ def _load_analysis_action(
     )
 
 
+def _load_vex_round_trip(payload: Any, scenario_id: str, step_id: str) -> VexRoundTrip:
+    field_name = f"scenario {scenario_id} step {step_id}.vex_round_trip"
+    round_trip = _mapping(payload, field_name)
+    _reject_unknown(round_trip, {"id", "seed_analysis", "replay_import"}, field_name)
+    return VexRoundTrip(
+        id=_required_string(round_trip, "id", field_name),
+        seed_analysis=_load_analysis_action(
+            round_trip.get("seed_analysis"), scenario_id, step_id
+        ),
+        replay_import=_required_bool(round_trip, "replay_import", field_name),
+    )
+
+
 def _load_step(payload: Any, scenario_id: str) -> ScenarioStep:
     step = _mapping(payload, f"scenario {scenario_id} step")
     _reject_unknown(
         step,
-        {"id", "bom", "observe", "project_version", "analysis_actions"},
+        {
+            "id",
+            "bom",
+            "observe",
+            "project_version",
+            "analysis_actions",
+            "vex_round_trip",
+        },
         f"scenario {scenario_id} step",
     )
     step_id = _required_string(step, "id", f"scenario {scenario_id} step")
@@ -188,6 +210,11 @@ def _load_step(payload: Any, scenario_id: str) -> ScenarioStep:
                 step.get("analysis_actions", []),
                 f"scenario {scenario_id} step {step_id}.analysis_actions",
             )
+        ),
+        vex_round_trip=(
+            _load_vex_round_trip(step["vex_round_trip"], scenario_id, step_id)
+            if step.get("vex_round_trip") is not None
+            else None
         ),
     )
 
@@ -805,6 +832,10 @@ class DependencyTrackLabApi(Protocol):
         poll_interval: float = 5.0,
     ) -> None: ...
 
+    def upload_vex_for_project(
+        self, project_uuid: str, vex_path: str | Path
+    ) -> VexUpload: ...
+
     def observe_project_lookup(
         self, project_name: str, project_version: str
     ) -> DependencyTrackObservation: ...
@@ -1193,7 +1224,10 @@ def _capture_observation(
 
 
 def _scenario_mutates_analysis(scenario: LabScenario) -> bool:
-    return any(step.analysis_actions for step in scenario.steps)
+    return any(
+        step.analysis_actions or step.vex_round_trip is not None
+        for step in scenario.steps
+    )
 
 
 def _validate_analysis_team(
@@ -1446,6 +1480,428 @@ def _run_analysis_actions(
     return observation_count
 
 
+def _not_set_action(
+    source: AnalysisAction, *, action_id: str, detail: str, comment: str
+) -> AnalysisAction:
+    return AnalysisAction(
+        id=action_id,
+        component_purl=source.component_purl,
+        vulnerability_id=source.vulnerability_id,
+        vulnerability_source=source.vulnerability_source,
+        state=AnalysisState.NOT_SET,
+        justification=AnalysisJustification.NOT_SET,
+        response=AnalysisResponse.NOT_SET,
+        detail=detail,
+        comment=comment,
+        suppressed=False,
+    )
+
+
+def _wait_for_analysis_projection(
+    *,
+    client: DependencyTrackLabApi,
+    project_uuid: str,
+    action: AnalysisAction,
+    timeout: float,
+    poll_interval: float,
+    expected_suppressed: bool | None,
+) -> tuple[DependencyTrackObservation, dict[str, Any]]:
+    deadline = time.monotonic() + timeout
+    while True:
+        observations = [client.observe_project_findings(project_uuid)]
+        observations.append(
+            client.observe_project_findings(project_uuid, suppressed=True)
+        )
+        for observation in observations:
+            target = _analysis_target(observation, action)
+            if target is None:
+                continue
+            finding = target[2]
+            finding_analysis = finding.get("analysis")
+            if not isinstance(finding_analysis, dict):
+                finding_analysis = {}
+            state_matches = _analysis_state(finding_analysis) == action.state.value
+            suppression_matches = (
+                expected_suppressed is None
+                or _analysis_suppressed(finding_analysis) == expected_suppressed
+            )
+            if state_matches and suppression_matches:
+                return observation, finding
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise LabManifestError(
+                f"analysis state {action.state.value!r} was not observed for "
+                f"VEX round-trip {action.id!r}"
+            )
+        time.sleep(min(max(0.0, poll_interval), remaining))
+
+
+def _matching_vex_entry(payload: Any, action: AnalysisAction) -> dict[str, Any]:
+    if not isinstance(payload, dict) or not isinstance(
+        payload.get("vulnerabilities"), list
+    ):
+        raise LabManifestError("VEX export does not contain a vulnerabilities list")
+    matches = [
+        entry
+        for entry in payload["vulnerabilities"]
+        if isinstance(entry, dict)
+        and entry.get("id") == action.vulnerability_id
+        and isinstance(entry.get("source"), dict)
+        and str(entry["source"].get("name") or "").upper()
+        == action.vulnerability_source.upper()
+    ]
+    if len(matches) != 1:
+        raise LabManifestError(
+            f"VEX export matched {len(matches)} entries for "
+            f"{action.vulnerability_source}:{action.vulnerability_id}"
+        )
+    return matches[0]
+
+
+def _vex_affects_refs(entry: dict[str, Any]) -> list[str]:
+    affects = entry.get("affects")
+    if not isinstance(affects, list):
+        return []
+    return [
+        str(affected["ref"])
+        for affected in affects
+        if isinstance(affected, dict) and affected.get("ref")
+    ]
+
+
+def _analysis_comment_count(observation: DependencyTrackObservation) -> int | None:
+    if not isinstance(observation.payload, dict):
+        return None
+    comments = observation.payload.get("analysisComments")
+    return len(comments) if isinstance(comments, list) else None
+
+
+def _run_vex_round_trip(
+    *,
+    round_trip: VexRoundTrip,
+    step_directory: Path,
+    project_uuid: str,
+    read_client: DependencyTrackLabApi,
+    analysis_client: DependencyTrackLabApi,
+    timeout: float,
+    poll_interval: float,
+) -> int:
+    directory = step_directory / "vex-round-trip" / round_trip.id
+    directory.mkdir(parents=True, exist_ok=False)
+    seed = round_trip.seed_analysis
+    before, component_uuid, vulnerability_uuid, _ = _wait_for_analysis_target(
+        client=read_client,
+        project_uuid=project_uuid,
+        action=seed,
+        timeout=timeout,
+        poll_interval=poll_interval,
+    )
+    _write_json(directory / "findings-before.json", _observation_dict(before))
+    reset = _not_set_action(
+        seed,
+        action_id="reset-before-import",
+        detail="DT lab clears the seeded Analysis state before VEX import.",
+        comment="DT lab resets the disposable Finding before VEX re-import.",
+    )
+    final_reset = _not_set_action(
+        seed,
+        action_id="final-restore-not-set",
+        detail="DT lab VEX round-trip completed and restored to NOT_SET.",
+        comment="DT lab restores the disposable Finding after VEX verification.",
+    )
+    restored = False
+    observation_count = 1
+    try:
+        seed_update = analysis_client.record_analysis_decision(
+            project_uuid=project_uuid,
+            component_uuid=component_uuid,
+            vulnerability_uuid=vulnerability_uuid,
+            action=seed,
+        )
+        _write_json(directory / "seed-update.json", _observation_dict(seed_update))
+        seed_findings, seed_finding = _wait_for_analysis_projection(
+            client=read_client,
+            project_uuid=project_uuid,
+            action=seed,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            expected_suppressed=seed.suppressed,
+        )
+        _write_json(directory / "seed-findings.json", _observation_dict(seed_findings))
+        seed_trail = read_client.observe_analysis_trail(
+            project_uuid, component_uuid, vulnerability_uuid
+        )
+        _write_json(directory / "seed-trail.json", _observation_dict(seed_trail))
+        source_vex = analysis_client.observe_project_vex_export(project_uuid)
+        _write_json(directory / "source-vex.json", _observation_dict(source_vex))
+        source_entry = _matching_vex_entry(source_vex.payload, seed)
+        source_vex_path = directory / "source-vex.cdx.json"
+        _write_json(source_vex_path, source_vex.payload)
+        observation_count += 4
+
+        reset_update = analysis_client.record_analysis_decision(
+            project_uuid=project_uuid,
+            component_uuid=component_uuid,
+            vulnerability_uuid=vulnerability_uuid,
+            action=reset,
+        )
+        _write_json(directory / "reset-update.json", _observation_dict(reset_update))
+        reset_findings, reset_finding = _wait_for_analysis_projection(
+            client=read_client,
+            project_uuid=project_uuid,
+            action=reset,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            expected_suppressed=False,
+        )
+        _write_json(
+            directory / "reset-findings.json", _observation_dict(reset_findings)
+        )
+        observation_count += 2
+
+        upload = analysis_client.upload_vex_for_project(project_uuid, source_vex_path)
+        _write_json(directory / "vex-upload.json", {"token": upload.token})
+        analysis_client.wait_for_bom_processing(
+            upload.token, timeout=timeout, poll_interval=poll_interval
+        )
+        imported_findings, imported_finding = _wait_for_analysis_projection(
+            client=read_client,
+            project_uuid=project_uuid,
+            action=seed,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            expected_suppressed=None,
+        )
+        _write_json(
+            directory / "imported-findings.json",
+            _observation_dict(imported_findings),
+        )
+        imported_trail = read_client.observe_analysis_trail(
+            project_uuid, component_uuid, vulnerability_uuid
+        )
+        _write_json(
+            directory / "imported-trail.json", _observation_dict(imported_trail)
+        )
+        imported_vex = analysis_client.observe_project_vex_export(project_uuid)
+        _write_json(directory / "imported-vex.json", _observation_dict(imported_vex))
+        imported_entry = _matching_vex_entry(imported_vex.payload, seed)
+        observation_count += 4
+
+        replayed_finding: dict[str, Any] | None = None
+        replayed_trail: DependencyTrackObservation | None = None
+        replayed_entry: dict[str, Any] | None = None
+        if round_trip.replay_import:
+            replay_upload = analysis_client.upload_vex_for_project(
+                project_uuid, source_vex_path
+            )
+            _write_json(
+                directory / "vex-replay-upload.json", {"token": replay_upload.token}
+            )
+            analysis_client.wait_for_bom_processing(
+                replay_upload.token, timeout=timeout, poll_interval=poll_interval
+            )
+            replayed_findings, replayed_finding = _wait_for_analysis_projection(
+                client=read_client,
+                project_uuid=project_uuid,
+                action=seed,
+                timeout=timeout,
+                poll_interval=poll_interval,
+                expected_suppressed=None,
+            )
+            _write_json(
+                directory / "replayed-findings.json",
+                _observation_dict(replayed_findings),
+            )
+            replayed_trail = read_client.observe_analysis_trail(
+                project_uuid, component_uuid, vulnerability_uuid
+            )
+            _write_json(
+                directory / "replayed-trail.json",
+                _observation_dict(replayed_trail),
+            )
+            replayed_vex = analysis_client.observe_project_vex_export(project_uuid)
+            _write_json(
+                directory / "replayed-vex.json", _observation_dict(replayed_vex)
+            )
+            replayed_entry = _matching_vex_entry(replayed_vex.payload, seed)
+            observation_count += 4
+
+        source_analysis = source_entry.get("analysis")
+        imported_analysis = imported_entry.get("analysis")
+        source_affects = _vex_affects_refs(source_entry)
+        imported_affects = _vex_affects_refs(imported_entry)
+        imported_suppressed = _analysis_suppressed(imported_finding.get("analysis"))
+        replayed_analysis = (
+            replayed_entry.get("analysis") if replayed_entry is not None else None
+        )
+        replayed_affects = (
+            _vex_affects_refs(replayed_entry) if replayed_entry is not None else None
+        )
+        imported_comment_count = _analysis_comment_count(imported_trail)
+        replayed_comment_count = (
+            _analysis_comment_count(replayed_trail)
+            if replayed_trail is not None
+            else None
+        )
+
+        _write_json(
+            directory / "verification.json",
+            {
+                "expected": {
+                    "state": seed.state.value,
+                    "seed_suppressed": seed.suppressed,
+                },
+                "seed": {
+                    "finding_state": _analysis_state(seed_finding.get("analysis")),
+                    "finding_suppressed": _analysis_suppressed(
+                        seed_finding.get("analysis")
+                    ),
+                    "vex_analysis": source_analysis,
+                    "vex_affects": source_affects,
+                },
+                "reset": {
+                    "finding_state": _analysis_state(reset_finding.get("analysis")),
+                    "finding_suppressed": _analysis_suppressed(
+                        reset_finding.get("analysis")
+                    ),
+                },
+                "imported": {
+                    "finding_state": _analysis_state(imported_finding.get("analysis")),
+                    "finding_suppressed": imported_suppressed,
+                    "vex_analysis": imported_analysis,
+                    "vex_affects": imported_affects,
+                    "trail_comment_count": imported_comment_count,
+                },
+                "replayed": {
+                    "enabled": round_trip.replay_import,
+                    "finding_state": (
+                        _analysis_state(replayed_finding.get("analysis"))
+                        if replayed_finding is not None
+                        else None
+                    ),
+                    "finding_suppressed": (
+                        _analysis_suppressed(replayed_finding.get("analysis"))
+                        if replayed_finding is not None
+                        else None
+                    ),
+                    "vex_analysis": replayed_analysis,
+                    "vex_affects": replayed_affects,
+                    "trail_comment_count": replayed_comment_count,
+                },
+                "comparison": {
+                    "finding_state_preserved": (
+                        _analysis_state(imported_finding.get("analysis"))
+                        == seed.state.value
+                    ),
+                    "vex_analysis_preserved": source_analysis == imported_analysis,
+                    "vex_affects_preserved": source_affects == imported_affects,
+                    "source_affects_component_purl": (
+                        seed.component_purl in source_affects
+                    ),
+                    "suppression_projection_matches_seed": (
+                        imported_suppressed == seed.suppressed
+                    ),
+                    "replay_state_idempotent": (
+                        not round_trip.replay_import
+                        or (
+                            replayed_finding is not None
+                            and _analysis_state(replayed_finding.get("analysis"))
+                            == _analysis_state(imported_finding.get("analysis"))
+                        )
+                    ),
+                    "replay_vex_analysis_idempotent": (
+                        not round_trip.replay_import
+                        or replayed_analysis == imported_analysis
+                    ),
+                    "replay_audit_comment_delta": (
+                        replayed_comment_count - imported_comment_count
+                        if replayed_comment_count is not None
+                        and imported_comment_count is not None
+                        else None
+                    ),
+                },
+            },
+        )
+
+        final_update = analysis_client.record_analysis_decision(
+            project_uuid=project_uuid,
+            component_uuid=component_uuid,
+            vulnerability_uuid=vulnerability_uuid,
+            action=final_reset,
+        )
+        _write_json(
+            directory / "final-reset-update.json", _observation_dict(final_update)
+        )
+        final_findings, final_finding = _wait_for_analysis_projection(
+            client=read_client,
+            project_uuid=project_uuid,
+            action=final_reset,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            expected_suppressed=False,
+        )
+        _write_json(
+            directory / "final-findings.json", _observation_dict(final_findings)
+        )
+        _write_json(
+            directory / "final-verification.json",
+            {
+                "expected": {"state": "NOT_SET", "suppressed": False},
+                "observed": {
+                    "state": _analysis_state(final_finding.get("analysis")),
+                    "suppressed": _analysis_suppressed(final_finding.get("analysis")),
+                },
+            },
+        )
+        observation_count += 2
+        restored = True
+    except Exception:
+        if not restored:
+            emergency_directory = directory / "emergency-restore"
+            emergency_directory.mkdir(parents=True, exist_ok=True)
+            try:
+                emergency_update = analysis_client.record_analysis_decision(
+                    project_uuid=project_uuid,
+                    component_uuid=component_uuid,
+                    vulnerability_uuid=vulnerability_uuid,
+                    action=final_reset,
+                )
+                _write_json(
+                    emergency_directory / "update.json",
+                    _observation_dict(emergency_update),
+                )
+                emergency_findings, emergency_finding = _wait_for_analysis_projection(
+                    client=read_client,
+                    project_uuid=project_uuid,
+                    action=final_reset,
+                    timeout=timeout,
+                    poll_interval=poll_interval,
+                    expected_suppressed=False,
+                )
+                _write_json(
+                    emergency_directory / "findings.json",
+                    _observation_dict(emergency_findings),
+                )
+                _write_json(
+                    emergency_directory / "verification.json",
+                    {
+                        "expected": {"state": "NOT_SET", "suppressed": False},
+                        "observed": {
+                            "state": _analysis_state(emergency_finding.get("analysis")),
+                            "suppressed": _analysis_suppressed(
+                                emergency_finding.get("analysis")
+                            ),
+                        },
+                    },
+                )
+            except Exception as restore_error:
+                raise LabManifestError(
+                    "VEX round-trip failed and emergency Analysis restore also failed"
+                ) from restore_error
+        raise
+    return observation_count
+
+
 def _run_scenario_steps(
     *,
     selected: tuple[LabScenario, ...],
@@ -1525,14 +1981,28 @@ def _run_scenario_steps(
             if delta is not None:
                 _write_json(step_directory / "delta.json", delta)
             previous_summary = summary
-            analysis_observation_count = 0
+            mutation_observation_count = 0
             if step.analysis_actions:
                 if analysis_client is None:
                     raise LabManifestError(
                         f"scenario {scenario.id!r} requires an analysis client"
                     )
-                analysis_observation_count = _run_analysis_actions(
+                mutation_observation_count = _run_analysis_actions(
                     step=step,
+                    step_directory=step_directory,
+                    project_uuid=project_uuid,
+                    read_client=read_client,
+                    analysis_client=analysis_client,
+                    timeout=processing_timeout,
+                    poll_interval=poll_interval,
+                )
+            if step.vex_round_trip is not None:
+                if analysis_client is None:
+                    raise LabManifestError(
+                        f"scenario {scenario.id!r} requires an analysis client"
+                    )
+                mutation_observation_count = _run_vex_round_trip(
+                    round_trip=step.vex_round_trip,
                     step_directory=step_directory,
                     project_uuid=project_uuid,
                     read_client=read_client,
@@ -1546,7 +2016,7 @@ def _run_scenario_steps(
                     step_id=step.id,
                     project_uuid=project_uuid,
                     snapshot_directory=str(step_directory),
-                    observation_count=len(captured) + 1 + analysis_observation_count,
+                    observation_count=len(captured) + 1 + mutation_observation_count,
                 )
             )
 
