@@ -199,8 +199,12 @@ make infra-gcp-poc-validate
 The Dependency-Track behavior lab is repository-only and is not installed by
 `pip install sbom-ops`. Its adapter, scenarios, and tests live under
 [`lab/dependency_track/`](lab/dependency_track/README.md). Product tests and lab
-tests are intentionally separate. New experiments use short-lived branches and
-their observations are reviewed as decision evidence. The outcome is an
+tests are intentionally separate. Committed
+`lab/dependency_track/scenarios/sboms/` files are small synthetic fixtures;
+`lab/dependency_track/corpus/corpus.yaml` catalogs real-world SBOMs whose
+payloads remain ignored under `var/dt-lab/corpus/`. The catalog never generates
+or overwrites the synthetic fixtures. New experiments use short-lived branches
+and their observations are reviewed as decision evidence. The outcome is an
 explicit choice to use a DT capability, encode a verified DT constraint,
 implement only the missing orchestration gap, or reject/defer the hypothesis;
 lab modules are never copied into `src/sbom_ops/` as a shortcut.

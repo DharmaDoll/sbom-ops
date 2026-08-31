@@ -64,6 +64,8 @@ answers its decision questions.
 lab/dependency_track/
 ├── README.md
 ├── EXPERIMENTS.md
+├── corpus/
+│   └── corpus.yaml
 ├── fixtures/
 ├── scenarios/
 │   ├── scenarios.yaml
@@ -77,12 +79,27 @@ lab/dependency_track/
 └── tests/
 ```
 
+There are two deliberately separate SBOM input paths:
+
+| Path | Contents | Source of truth | Use |
+| --- | --- | --- | --- |
+| `scenarios/sboms/` | Small committed synthetic CycloneDX fixtures | `scenarios/scenarios.yaml` | Deterministic behavior and regression checks |
+| `var/dt-lab/corpus/` | Downloaded or explicitly derived upstream SBOMs, ignored by Git | `corpus/corpus.yaml` | Integration, compatibility, and scale experiments |
+
+`corpus/corpus.yaml` does not populate, generate, or synchronize
+`scenarios/sboms/`. A corpus run verifies the selected local artifact and builds
+an in-memory lab manifest so both paths can reuse the observation runner without
+mixing their inputs or evidence. A real-world observation may later justify a
+small reviewed synthetic fixture, but that is an explicit product decision, not
+an automatic copy.
+
 The normal `sbom-ops` installation intentionally exposes no lab console script.
 Use the repository Make targets so execution is visibly lab-scoped.
 
 ## Commands
 
-Validate the corpus without contacting Dependency-Track:
+Validate the synthetic scenario manifest and run the lab tests without
+contacting Dependency-Track:
 
 ```bash
 make dt-lab-validate

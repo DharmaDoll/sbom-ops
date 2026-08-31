@@ -209,9 +209,9 @@ Examples
 ### lab/dependency_track/
 
 Repository-only Dependency-Track behavior exploration. It owns its own adapter,
-domain models, orchestration, CLI, scenario corpus, and tests. It is excluded
-from the product wheel and may depend on generic product infrastructure, but
-`src/sbom_ops/` must never depend on it.
+domain models, orchestration, CLI, synthetic scenario fixtures, real-world
+corpus catalog, and tests. It is excluded from the product wheel and may depend
+on generic product infrastructure, but `src/sbom_ops/` must never depend on it.
 
 Lab observations feed an explicit product decision: use an existing DT
 capability, encode a verified DT constraint in fixtures and contracts,
