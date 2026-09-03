@@ -85,6 +85,12 @@ class BomUpload:
 
 
 @dataclass(frozen=True)
+class BomUploadAttempt:
+    upload: BomUpload | None
+    observation: DependencyTrackObservation
+
+
+@dataclass(frozen=True)
 class VexUpload:
     token: str
 
@@ -294,20 +300,50 @@ class VexTargetingProbe:
 
 
 @dataclass(frozen=True)
+class ExpectedBomRejection:
+    status: int
+    media_type: str
+    project_created: bool
+
+    def __post_init__(self) -> None:
+        if self.status < 400 or self.status > 499:
+            raise LabManifestError(
+                "expected BOM rejection status must be a client error"
+            )
+        if "/" not in self.media_type or ";" in self.media_type:
+            raise LabManifestError(
+                "expected BOM rejection media_type must be a base media type"
+            )
+        if not isinstance(self.project_created, bool):
+            raise LabManifestError(
+                "expected BOM rejection project_created must be a boolean"
+            )
+
+
+@dataclass(frozen=True)
 class ScenarioStep:
     id: str
     bom: str
     observations: tuple[Observation, ...]
+    project_name: str | None = None
     project_version: str | None = None
+    parent_step: str | None = None
+    project_tags: tuple[str, ...] = ()
+    probe_project_properties: bool = False
     analysis_actions: tuple[AnalysisAction, ...] = ()
     vex_round_trip: VexRoundTrip | None = None
     vex_targeting_probe: VexTargetingProbe | None = None
+    expected_bom_rejection: ExpectedBomRejection | None = None
+    equivalent_to_step: str | None = None
 
     def __post_init__(self) -> None:
         _require_slug(self.id, "scenario step id")
         if not self.bom.strip():
             raise LabManifestError(f"scenario step {self.id!r} requires a BOM path")
-        if not self.observations:
+        if not self.observations and (
+            self.expected_bom_rejection is None
+            or self.expected_bom_rejection.project_created
+        ):
             raise LabManifestError(
                 f"scenario step {self.id!r} requires at least one observation"
             )
@@ -315,21 +351,102 @@ class ScenarioStep:
             raise LabManifestError(
                 f"scenario step {self.id!r} project_version must not be empty"
             )
+        if self.project_name is not None:
+            if not self.project_name.strip():
+                raise LabManifestError(
+                    f"scenario step {self.id!r} project_name must not be empty"
+                )
+            if not self.project_name.startswith("dt-lab-"):
+                raise LabManifestError(
+                    f"scenario step {self.id!r} Project name must start with 'dt-lab-'"
+                )
+        if self.parent_step is not None:
+            _require_slug(self.parent_step, "parent step id")
+            if self.parent_step == self.id:
+                raise LabManifestError(
+                    f"scenario step {self.id!r} cannot parent itself"
+                )
+            required_observations = {Observation.PROJECT, Observation.METRICS}
+            if not required_observations.issubset(self.observations):
+                raise LabManifestError(
+                    f"scenario step {self.id!r} parent verification requires "
+                    "project and metrics observations"
+                )
+        if len(self.project_tags) != len(set(self.project_tags)):
+            raise LabManifestError(
+                f"scenario step {self.id!r} project_tags must be unique"
+            )
+        for tag in self.project_tags:
+            if not tag.strip() or tag != tag.strip():
+                raise LabManifestError(
+                    f"scenario step {self.id!r} project_tags must not be empty "
+                    "or padded"
+                )
+            if not tag.startswith("dt-lab-"):
+                raise LabManifestError(
+                    f"scenario step {self.id!r} Project tags must start with 'dt-lab-'"
+                )
+            if "," in tag:
+                raise LabManifestError(
+                    f"scenario step {self.id!r} Project tags must not contain commas"
+                )
+        if not isinstance(self.probe_project_properties, bool):
+            raise LabManifestError(
+                f"scenario step {self.id!r} probe_project_properties must be a boolean"
+            )
+        if (
+            self.probe_project_properties
+            and Observation.PROJECT not in self.observations
+        ):
+            raise LabManifestError(
+                f"scenario step {self.id!r} property probe requires a project "
+                "observation"
+            )
+        if self.equivalent_to_step is not None:
+            _require_slug(self.equivalent_to_step, "equivalent reference step id")
+            if self.equivalent_to_step == self.id:
+                raise LabManifestError(
+                    f"scenario step {self.id!r} cannot compare itself"
+                )
         action_ids = [action.id for action in self.analysis_actions]
         if len(action_ids) != len(set(action_ids)):
             raise LabManifestError(
                 f"scenario step {self.id!r} has duplicate analysis action ids"
+            )
+        final_actions_by_target: dict[tuple[str, str, str], AnalysisAction] = {}
+        for action in self.analysis_actions:
+            final_actions_by_target[
+                (
+                    action.component_purl,
+                    action.vulnerability_source,
+                    action.vulnerability_id,
+                )
+            ] = action
+        unsafe_final_actions = [
+            action.id
+            for action in final_actions_by_target.values()
+            if action.state is not AnalysisState.NOT_SET
+            or action.justification is not AnalysisJustification.NOT_SET
+            or action.response is not AnalysisResponse.NOT_SET
+            or action.suppressed
+        ]
+        if unsafe_final_actions:
+            raise LabManifestError(
+                f"scenario step {self.id!r} must finish every Analysis target "
+                "with unsuppressed NOT_SET; unsafe final actions: "
+                + ", ".join(sorted(unsafe_final_actions))
             )
         mutation_modes = sum(
             (
                 bool(self.analysis_actions),
                 self.vex_round_trip is not None,
                 self.vex_targeting_probe is not None,
+                self.expected_bom_rejection is not None,
             )
         )
         if mutation_modes > 1:
             raise LabManifestError(
-                f"scenario step {self.id!r} cannot combine triage mutation modes"
+                f"scenario step {self.id!r} cannot combine special execution modes"
             )
 
 
@@ -380,6 +497,36 @@ class LabScenario:
         step_ids = [step.id for step in self.steps]
         if len(step_ids) != len(set(step_ids)):
             raise LabManifestError(f"scenario {self.id!r} has duplicate step ids")
+        preceding_steps: dict[str, ScenarioStep] = {}
+        for step in self.steps:
+            if step.parent_step is not None and step.parent_step not in preceding_steps:
+                raise LabManifestError(
+                    f"scenario {self.id!r} step {step.id!r} parent reference "
+                    "must name an earlier step"
+                )
+            if (
+                step.equivalent_to_step is not None
+                and step.equivalent_to_step not in preceding_steps
+            ):
+                raise LabManifestError(
+                    f"scenario {self.id!r} step {step.id!r} equivalence reference "
+                    "must name an earlier step"
+                )
+            if step.equivalent_to_step is not None:
+                reference = preceding_steps[step.equivalent_to_step]
+                if step.observations != reference.observations:
+                    raise LabManifestError(
+                        f"scenario {self.id!r} step {step.id!r} equivalence "
+                        "observations must match its reference step"
+                    )
+                step_version = step.project_version or self.project_version
+                reference_version = reference.project_version or self.project_version
+                if step_version != reference_version:
+                    raise LabManifestError(
+                        f"scenario {self.id!r} step {step.id!r} equivalence "
+                        "comparison requires the same Project version"
+                    )
+            preceding_steps[step.id] = step
         if self.category is not ScenarioCategory.TRIAGE and any(
             step.analysis_actions
             or step.vex_round_trip is not None
@@ -388,6 +535,13 @@ class LabScenario:
         ):
             raise LabManifestError(
                 f"scenario {self.id!r} triage mutations require triage category"
+            )
+        if self.category is not ScenarioCategory.ROBUSTNESS and any(
+            step.expected_bom_rejection is not None for step in self.steps
+        ):
+            raise LabManifestError(
+                f"scenario {self.id!r} expected BOM rejection requires "
+                "robustness category"
             )
 
 
@@ -441,7 +595,7 @@ class OpenApiInventory:
 class LabStepResult:
     scenario_id: str
     step_id: str
-    project_uuid: str
+    project_uuid: str | None
     snapshot_directory: str
     observation_count: int
 

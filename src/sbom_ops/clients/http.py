@@ -10,9 +10,20 @@ from urllib.request import Request, urlopen
 
 
 class HttpApiError(RuntimeError):
-    def __init__(self, message: str, *, status: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        payload: Any = None,
+        headers: Mapping[str, str] | None = None,
+        duration_seconds: float | None = None,
+    ) -> None:
         super().__init__(message)
         self.status = status
+        self.payload = payload
+        self.headers = dict(headers or {})
+        self.duration_seconds = duration_seconds
 
 
 @dataclass(frozen=True)
@@ -68,9 +79,29 @@ def request_json(
                 return payload
         except HTTPError as exc:
             if allow_not_modified and exc.code == 304:
-                raise HttpApiError(error_message, status=304) from exc
+                raise HttpApiError(
+                    error_message,
+                    status=304,
+                    headers=dict(exc.headers.items()) if exc.headers else {},
+                    duration_seconds=time.monotonic() - started,
+                ) from exc
             if exc.code not in retryable_statuses or attempt == attempts - 1:
-                raise HttpApiError(error_message, status=exc.code) from exc
+                response_body = exc.read()
+                try:
+                    payload: Any = (
+                        json.loads(response_body.decode("utf-8"))
+                        if response_body
+                        else None
+                    )
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    payload = response_body.decode("utf-8", errors="replace")
+                raise HttpApiError(
+                    error_message,
+                    status=exc.code,
+                    payload=payload,
+                    headers=dict(exc.headers.items()) if exc.headers else {},
+                    duration_seconds=time.monotonic() - started,
+                ) from exc
             retry_after = exc.headers.get("Retry-After")
             try:
                 delay = (

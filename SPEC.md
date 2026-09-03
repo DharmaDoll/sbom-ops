@@ -423,7 +423,19 @@ issue open. An unverified or failed read is `UNKNOWN`, not `RESOLVED`.
 
 MVP must not mutate Dependency-Track analysis state automatically.
 The orchestrator reads analysis data and suppression state for workflow
-decisions, but Dependency-Track remains authoritative.
+decisions, but Dependency-Track remains authoritative. Project Finding reads
+must request `suppressed=true`; omission from DT's default unsuppressed view is
+not Finding absence. Reconciliation compares a normalized semantic projection
+of stable Finding identity, state, justification, response, detail, and
+suppression. It must not depend on Project metrics, `ETag`, `Last-Modified`, or
+an Analysis update cursor that DT 4.14.3 does not expose.
+
+The minimum orchestrator state is the stable Finding key, last observed
+semantic digest, observation outcome and time, and external work-item
+correlation. DT remains authoritative for Analysis comments and audit history.
+A future Analysis writer must not blindly retry a request containing a comment,
+because an identical PUT can append a duplicate comment while leaving semantic
+state unchanged.
 
 ## Client Contracts
 
@@ -620,8 +632,10 @@ The normal all-implemented-scenarios run excludes mutation actions. Analysis
 targets must be resolved from the newly created run-scoped Project by stable
 Component and vulnerability identifiers; global Analysis mutation is forbidden.
 Every action must retain its request and response, Analysis trail, applicable
-suppressed or unsuppressed Finding view, metrics, and expected-versus-observed
-projection under ignored `var/dt-lab/` evidence.
+default and include-suppressed Finding views, metrics, semantic and audit
+digests, and expected-versus-observed projection under ignored `var/dt-lab/`
+evidence. Every action sequence must end each target at unsuppressed `NOT_SET`
+and attempt a verified emergency reset on failure.
 
 The VEX round-trip lab experiment uses the same three gates. It must export a
 decision from the run-scoped Project, reset that exact Finding before import,
@@ -639,6 +653,54 @@ Project-level `affects.ref`. It records both target and control projections
 after each import and restores both Findings between probes and on every exit
 path. Product code must not infer Component isolation from a bare reference or
 a Project-scoped export.
+
+An invalid-BOM experiment must be explicitly selected and declare its expected
+HTTP client-error status, base response media type, and Project-creation side
+effect. It must retain safe RFC 9457 problem details and input integrity
+metadata without credentials or the multipart body. A synchronous rejection is
+a completed negative experiment only when all declared expectations match.
+HTTP 400 is non-retryable. Coordinate upload with `autoCreate` must write the
+Project ledger before the request because DT 4.14.3 can create an empty Project
+before schema rejection. Production upload continues to resolve and use an
+existing Project UUID rather than relying on this side effect.
+
+A format-equivalence experiment must ingest equivalent JSON and XML into the
+same run-scoped Project version and compare more than acceptance status or item
+counts. It must retain normalized inventory and Finding semantics, stable API
+identity mappings, dependency-graph projections, and normalized DT re-export.
+The comparison is evidence only for the exercised CycloneDX version and fields.
+The reviewed 1.5 result permits the production upload boundary to remain
+format-neutral; it does not permit either schema validation or identifier
+quality checks to be skipped.
+
+A portfolio-hierarchy experiment may give a step a distinct Project name and
+link it to an earlier step as its parent. It must retain the upload response,
+verify the child's nested parent identity, retrieve the parent's complete
+paginated children collection, and capture Project and metrics risk projections
+for both sides. Component deltas apply only to consecutive uploads to the same
+Project coordinates; comparing a parent inventory with a child inventory is not
+a lifecycle delta. The reviewed DT 4.14.3 result permits sbom-ops to delegate
+hierarchy storage and enumeration to DT, but the default
+`collectionLogic=NONE` does not permit inferred parent-level risk aggregation.
+Changing collection logic is a separate `PORTFOLIO_MANAGEMENT` mutation and is
+not authorized by the read-only experiment or by the product MVP.
+
+A routing-metadata experiment must upload the same SBOM and Project coordinates
+with an initial and then changed `projectTags` set, retain the upload team's
+permissions, compare requested and observed tags after each completed token,
+and verify membership through paginated tag-filter queries. It may probe the
+Project properties read endpoint, but it must not grant or use management
+permission to make the probe succeed. On reviewed DT 4.14.3 behavior, an upload
+key with `BOM_UPLOAD` and `PROJECT_CREATION_UPLOAD` set initial tags but a later
+changed request returned success without replacing them; the read key received
+HTTP 403 for Project properties.
+
+Therefore the configured Dependency-Track Project-to-work-repository mapping is
+the MVP routing source of truth. DT tags are optional selectors and consistency
+signals, not silently mutable routing authority. Project properties are excluded
+from the least-privilege read path. A future DT-authoritative routing design
+would require explicit `PORTFOLIO_MANAGEMENT`, exact replacement semantics,
+post-write reconciliation, and a reviewed migration from YAML.
 
 Every lab run must persist a run-scoped Project ledger before upload and update
 it with the observed Project UUID. Lab cleanup must be a local dry-run by

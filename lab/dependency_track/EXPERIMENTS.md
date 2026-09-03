@@ -852,6 +852,103 @@ cross-Project reuse, and concurrent analyst edits remain unverified.
 - `var/dt-lab/runs/<run-id>/triage-vex-targeting/` (ignored; local only)
 - [DT 4.14.3 `CycloneDXVexImporter`](https://github.com/DependencyTrack/dependency-track/blob/4.14.3/src/main/java/org/dependencytrack/parser/cyclonedx/CycloneDXVexImporter.java)
 
+## 2026-09-01 — Triage Delegation Reconciliation Boundary
+
+- Status: completed
+- Target: Dependency-Track 4.14.3; CycloneDX 1.5
+- Scenarios: `triage-delegation-boundary`
+
+### Purpose
+
+Determine which Analysis state can remain authoritative in DT, whether DT
+exposes a reliable incremental change cursor, how identical writes affect the
+audit trail, and what minimum reconciliation state sbom-ops must retain without
+building a duplicate triage database.
+
+### Performed
+
+Created a run-scoped disposable Log4Shell Project and performed six guarded
+Analysis actions against one exact Finding: seed `IN_TRIAGE`, append a comment
+without changing the decision, replay that exact request, toggle suppression
+on, toggle it off, and restore unsuppressed `NOT_SET`. For every action, captured
+the PUT response, Analysis trail, default Finding view, Project metrics, and
+semantic and audit digests. The first completed run retained 35 observations.
+
+After confirming from the live OpenAPI that `suppressed=true` means "includes
+suppressed findings", refined the harness to capture both default and
+include-suppressed views after every action and repeated the full experiment.
+The refined run retained 41 observations. Both Projects remain available for
+reviewed cleanup.
+
+### Observed Facts
+
+- Seeding `IN_TRIAGE` added three audit comments: state change, detail change,
+  and the caller comment. The trail and Finding projected the requested state,
+  detail, and suppression value immediately.
+- A comment-only PUT left the requested, trail, and Finding decision digests
+  unchanged but added one caller comment and changed the audit digest.
+- Replaying the exact same PUT added the identical caller comment a second time
+  with a later timestamp. Decision digests again remained unchanged. Analysis
+  PUT is therefore state-idempotent but not audit-idempotent when `comment` is
+  non-empty.
+- Suppression-only and unsuppression-only PUTs each added two comments: DT's
+  automatic suppression transition and the caller comment. State remained
+  `IN_TRIAGE`.
+- While suppressed, the default Project Finding response fell from ten to nine
+  and omitted the exact target. The same request with `suppressed=true` returned
+  all ten and projected the target as suppressed. After unsuppression, the
+  target returned to the default view.
+- Neither Finding nor Analysis GET responses exposed `ETag` or `Last-Modified`.
+  Their OpenAPI schemas expose no Analysis revision or update timestamp. Audit
+  comments have timestamps, but only inside the per-Finding Analysis trail.
+- Immediate Project metrics remained unchanged throughout, including
+  `findingsAudited=0` and `suppressed=0`; they are not a write-verification or
+  change-detection signal.
+- The final action projected `NOT_SET` and `isSuppressed=false`. The harness now
+  also rejects any Analysis sequence whose final action leaves a target in
+  another state and performs a verified emergency reset after a failed sequence.
+
+### Interpretation and Product Decision
+
+DT can remain authoritative for human Analysis decisions, detail, suppression,
+caller comments, and their audit history. sbom-ops must not copy that trail into
+a second triage state machine. GitHub or Jira remains authoritative for the
+remediation task lifecycle.
+
+DT 4.14.3 does not provide an API-visible incremental cursor for Analysis
+changes. Reconciliation must read a complete Project Finding snapshot with
+`suppressed=true` and compare a normalized semantic digest over stable Finding
+identity, state, justification, response, detail, and suppression. Absence from
+the default view is not Finding resolution and must never drive Issue closure.
+
+The minimum sbom-ops reconciliation state is the stable Finding key, last
+observed semantic digest, observation outcome/time, and the external work-item
+correlation already required for idempotency. A separate audit digest or last
+comment timestamp is needed only if comment changes trigger work-item updates;
+the comments themselves remain authoritative in DT. A comment timestamp cannot
+serve as a global cursor because it requires an Analysis GET for a Finding that
+is already known.
+
+Future Analysis writes must not blindly retry a request containing a comment.
+They require read-before-write reconciliation and explicit workflow intent,
+because DT accepts a duplicate caller comment. This does not change the MVP:
+sbom-ops remains read-only for Analysis, and humans retain the final security
+decision.
+
+### Unverified
+
+Concurrent analyst and orchestrator writes, notification/webhook delivery as an
+optimization over full scans, bulk Analysis operations, metrics convergence
+time, task update policy for comment-only changes, and ambiguity after partial
+transport failure remain unverified. None of these block DT from owning triage
+state, but they constrain any future product Analysis writer.
+
+### Local Evidence
+
+- `var/dt-lab/runs/<run-id>/triage-delegation-boundary/` (ignored; local only)
+- [DT 4.14.3 `AnalysisResource`](https://github.com/DependencyTrack/dependency-track/blob/4.14.3/src/main/java/org/dependencytrack/resources/v1/AnalysisResource.java)
+- [DT 4.14.3 `AnalysisCommentUtil`](https://github.com/DependencyTrack/dependency-track/blob/4.14.3/src/main/java/org/dependencytrack/util/AnalysisCommentUtil.java)
+
 ## 2026-09-01 — Self-contained Component-scoped VEX
 
 - Status: completed
@@ -917,3 +1014,277 @@ changes remain unverified.
 
 - `var/dt-lab/runs/<run-id>/triage-vex-targeting/` (ignored; local only)
 - [DT 4.14.3 `CycloneDXVexImporter`](https://github.com/DependencyTrack/dependency-track/blob/4.14.3/src/main/java/org/dependencytrack/parser/cyclonedx/CycloneDXVexImporter.java)
+
+## 2026-09-02 — Invalid CycloneDX Rejection and Project Side Effect
+
+- Status: completed
+- Target: Dependency-Track 4.14.3; CycloneDX 1.5
+- Scenarios: `robustness-invalid-cyclonedx`
+
+### Purpose
+
+Determine whether a schema-invalid BOM is rejected synchronously with enough
+structured detail for deterministic classification, whether it receives a
+processing token, and whether coordinate upload with `autoCreate=true` leaves
+state that must be reconciled or cleaned.
+
+### Performed
+
+Created a small CycloneDX 1.5 fixture whose single Component uses a value
+outside the schema's `type` enumeration. Explicitly selected the negative
+scenario and uploaded it by a fresh run-suffixed Project name and version.
+Required HTTP 400, `application/problem+json`, and Project creation before
+capturing the Project, Component, and Finding views. The run ledger was written
+before upload and the resulting Project was retained for reviewed cleanup.
+
+### Observed Facts
+
+- `POST /api/v1/bom` returned HTTP 400 with
+  `Content-Type: application/problem+json`; it did not return a processing
+  token.
+- The RFC 9457 response had status 400, title `The uploaded BOM is invalid`,
+  detail `Schema validation failed`, and an `errors` entry identifying the
+  invalid `$.components[0].type` enumeration value.
+- The input evidence recorded the filename, 835-byte size, and SHA-256 without
+  storing the API key or multipart body.
+- DT created the run-suffixed Project despite rejecting the BOM. The Project
+  lookup succeeded, while its captured Component and Finding collections were
+  both empty.
+- The completed scenario retained five observations: upload rejection, Project
+  lookup, Project, Components, and Findings.
+
+### Interpretation and Product Decision
+
+Schema rejection is a deterministic client-input failure. sbom-ops must not
+retry HTTP 400, wait for a nonexistent token, or reduce the problem response to
+an opaque transport failure. Safe RFC 9457 fields are useful diagnostics, while
+local schema validation remains an early feedback mechanism rather than a
+replacement for DT validation.
+
+The product upload path already targets an existing Project UUID and should
+retain that boundary. Lab and corpus coordinate uploads need a pre-request
+ledger and compensating, explicitly reviewed cleanup because `autoCreate` is
+not atomic with BOM validation. A rejected upload is not evidence that DT made
+no state change.
+
+### Unverified
+
+Malformed JSON and XML responses, unsupported CycloneDX-version rejection,
+other schema violations, Project behavior when `autoCreate=false`, permission
+failures, and response stability in later DT versions remain unverified.
+Asynchronous failures after token acceptance remain a separate experiment.
+
+### Local Evidence
+
+- `var/dt-lab/runs/<run-id>/robustness-invalid-cyclonedx/` (ignored; local only)
+
+## 2026-09-02 — CycloneDX JSON and XML Equivalence
+
+- Status: completed
+- Target: Dependency-Track 4.14.3; CycloneDX 1.5
+- Scenarios: `robustness-json-xml-equivalence`
+
+### Purpose
+
+Determine whether sbom-ops can pass validated CycloneDX JSON and XML through
+the same upload boundary, or whether serialization changes DT inventory,
+identity, dependency, Finding, or re-export semantics enough to require product
+normalization.
+
+### Performed
+
+Created equivalent JSON and XML fixtures with two Components and a direct plus
+transitive dependency chain. Uploaded JSON and then XML into the same fresh
+run-suffixed Project version. Compared normalized summaries, all observed
+Component/Finding/Vulnerability UUID mappings, the direct dependency graph, and
+DT's normalized CycloneDX JSON re-export.
+
+The first run used PURLs without CPEs. Both formats produced the same inventory
+but no Findings, including on a later read, so that attempt could not test
+Finding equivalence. Added the same CPEs to both fixtures and repeated the full
+run in a new Project. Both Projects remain available for reviewed cleanup.
+
+### Observed Facts
+
+- Both JSON and XML uploads were accepted by the same multipart BOM endpoint,
+  returned processing tokens, and resolved to the same Project UUID within
+  each run.
+- In the refined run, both steps projected two Components, one direct
+  Component, and the same direct and transitive dependency relationships.
+- The refined JSON and XML steps each returned the same 15 NVD Findings and 15
+  Project vulnerabilities. Their Finding, Component, and vulnerability UUID
+  mappings were identical. The count reflects this target's data on the run
+  date and is not a deterministic product contract.
+- The normalized DT CycloneDX re-export was identical after both inputs,
+  including the Project-to-direct and direct-to-transitive dependency edges.
+- All four comparison checks passed: summary semantics, identity UUIDs,
+  dependency graph, and BOM re-export.
+- The Project `lastBomImportFormat` value was `CycloneDX 1.5` after both steps;
+  it did not distinguish JSON from XML.
+- The PURL-only attempt yielded zero Findings in both formats. Adding identical
+  CPEs made the repeated experiment non-empty without changing its
+  serialization comparison.
+
+### Interpretation and Product Decision
+
+For the exercised CycloneDX 1.5 inventory, dependency, and vulnerability
+fields, DT normalizes JSON and XML to the same observable model. The product
+upload adapter should remain format-neutral and pass either validated
+serialization to the existing-Project endpoint. A JSON/XML conversion layer
+would add complexity without improving this verified path.
+
+Identifier quality is a separate input concern. The PURL-only result does not
+prove that DT generally requires CPE or cannot analyze PURLs; it shows only
+that this target and datasource state produced no Findings for that exact
+input. Format tests must use the same sufficiently discriminating identifiers
+on both sides and must not interpret two empty Finding sets as strong
+equivalence evidence.
+
+### Unverified
+
+CycloneDX versions other than 1.5, XML-specific advanced fields, namespaces and
+extensions, hashes, Services, compositions, signatures, large documents,
+schema-invalid XML, and format equivalence across a DT upgrade remain
+unverified. Findings from other vulnerability sources and concurrent datasource
+updates may require a settled snapshot before comparison.
+
+### Local Evidence
+
+- `var/dt-lab/runs/<run-id>/robustness-json-xml-equivalence/` (ignored; local
+  only)
+
+## 2026-09-02 — Parent/Child Portfolio and Default Risk Collection
+
+- Status: completed
+- Target: Dependency-Track 4.14.3; CycloneDX 1.5
+- Scenarios: `portfolio-parent-child`
+
+### Purpose
+
+Determine whether DT can remain authoritative for Project hierarchy and child
+enumeration, and whether creating that hierarchy is sufficient for a parent to
+represent child risk without separate collection-logic management.
+
+### Performed
+
+Uploaded an empty root application by fresh run-suffixed coordinates, then
+uploaded a child application containing one vulnerable Component while passing
+the observed root UUID in the multipart `parentUUID` field. Waited for both BOM
+tokens, captured Project, Component, Finding, metrics, and CycloneDX export
+views, retrieved the parent's complete paginated children collection, and
+compared the Project and risk projections on both sides.
+
+The first invocation was blocked before any HTTP exchange by the execution
+sandbox's localhost socket policy and was retained as a failed run. Repeating
+with authorized local access completed. A second successful run verified the
+improved evidence contract: each normal upload response was retained, and no
+lifecycle delta was generated between the distinct parent and child Projects.
+
+### Observed Facts
+
+- Both coordinate uploads returned successful JSON responses with asynchronous
+  processing tokens, and both tokens completed.
+- The child Project's nested `parent` UUID matched the created root. The root's
+  `GET /api/v1/project/{uuid}/children` response returned HTTP 200,
+  `X-Total-Count: 1`, and exactly that child.
+- Both Project projections reported `collectionLogic=NONE`.
+- The child projected one Component, ten NVD Findings, and
+  `inheritedRiskScore=44.0` on this instance at the time of the run. The empty
+  parent projected zero Components, zero Findings, and
+  `inheritedRiskScore=0.0`. These live counts and scores are observations, not
+  deterministic product assertions.
+- The successful two-step run completed in about eleven seconds. The initial
+  sandbox failure did not reach DT and therefore says nothing about DT's API
+  behavior.
+
+### Interpretation and Product Decision
+
+Use DT as the hierarchy inventory: sbom-ops does not need to duplicate
+parent/child storage or derive child membership from SBOM content. It should
+consume the child projection or paginated children endpoint when hierarchy is
+needed.
+
+Do not treat Project parenthood as a risk or remediation aggregation boundary.
+The verified default keeps child risk separate. Any future use of aggregate
+collection logic requires a separately gated experiment and explicit
+`PORTFOLIO_MANAGEMENT` workflow; the production MVP and read-only lab key must
+not change it implicitly.
+
+### Unverified
+
+The `AGGREGATE_DIRECT_CHILDREN`, `AGGREGATE_DIRECT_CHILDREN_AND_SELF`,
+`AGGREGATE_LATEST_VERSION_CHILDREN`, and
+`AGGREGATE_LATEST_VERSION_CHILDREN_AND_SELF` modes; deeper hierarchies; risk
+propagation timing; moving or orphaning a child; deletion behavior; permission
+failures; and behavior after a Dependency-Track upgrade remain unverified.
+
+### Local Evidence
+
+- `var/dt-lab/runs/<run-id>/portfolio-parent-child/` (ignored; local only)
+
+## 2026-09-03 — Least-Privilege Routing Tags and Project Properties
+
+- Status: completed
+- Target: Dependency-Track 4.14.3; CycloneDX 1.5
+- Scenarios: `portfolio-tags-properties`
+
+### Purpose
+
+Determine whether DT tags or Project properties can be the authoritative owner
+and work-repository routing metadata without granting the CI upload or
+orchestrator read credentials broad portfolio-management permission.
+
+### Performed
+
+Uploaded the same one-Component SBOM twice to one fresh run-suffixed Project.
+The initial request supplied an alpha owner/repository tag pair; after its token
+completed, the second request supplied a different beta pair. Captured both
+upload responses, the upload team's permission projection, Project tags after
+each step, and paginated Project queries for the initial and requested tags.
+Finally called the dedicated Project properties read endpoint with the
+orchestrator read key. No tag-management or portfolio-management mutation was
+performed.
+
+### Observed Facts
+
+- The upload key had exactly `BOM_UPLOAD` and `PROJECT_CREATION_UPLOAD`.
+- The initial upload returned HTTP 200, completed its processing token, and the
+  Project contained exactly the requested alpha tags. Both tag-filter queries
+  returned the Project with `X-Total-Count: 1`.
+- The changed upload also returned HTTP 200 and completed its token, but the
+  Project retained both alpha tags and contained neither requested beta tag.
+- Queries for both retained alpha tags still returned the Project. Queries for
+  both missing beta tags returned empty collections with `X-Total-Count: 0`.
+  The Project projection and tag-filter endpoints agreed in every case.
+- `GET /api/v1/project/{uuid}/property` with the orchestrator read key returned
+  HTTP 403. No property values were observable through that endpoint.
+- The successful two-step run used one Project and completed in about eleven
+  seconds. The execution tool displayed a much longer wait, but retained run
+  timestamps show that delay was not Dependency-Track processing time.
+
+### Interpretation and Product Decision
+
+Keep the existing YAML Project-to-work-repository mapping as the authoritative
+MVP routing configuration. DT tags are useful for portfolio selection and as a
+consistency signal, but a successful BOM upload cannot be treated as proof that
+changed tags were applied. A CI key should not receive
+`PORTFOLIO_MANAGEMENT` merely to reconcile routing metadata.
+
+Reject Project properties as the least-privilege routing source for this DT
+version because even the dedicated read endpoint requires a write-level
+portfolio permission. A future DT-authoritative routing workflow would need a
+separate management identity, exact post-write reconciliation, conflict and
+removal semantics, and an explicit migration away from YAML.
+
+### Unverified
+
+Tag replacement and removal with a dedicated `PORTFOLIO_MANAGEMENT` identity;
+concurrent changes; tag normalization and case behavior; commas or unusual
+Unicode in tag names; portfolio ACL filtering; inactive and child Project query
+options; tag deletion after Project cleanup; property type serialization and
+redaction; and behavior after a Dependency-Track upgrade remain unverified.
+
+### Local Evidence
+
+- `var/dt-lab/runs/<run-id>/portfolio-tags-properties/` (ignored; local only)
+- [DT 4.14.3 `BomResource`](https://github.com/DependencyTrack/dependency-track/blob/4.14.3/src/main/java/org/dependencytrack/resources/v1/BomResource.java)

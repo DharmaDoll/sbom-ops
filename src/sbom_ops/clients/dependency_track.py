@@ -246,17 +246,18 @@ class DependencyTrackClient:
         keys: tuple[str, ...],
         *,
         paginated: bool = False,
+        params: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         offset = 0
         seen: set[str] = set()
         while True:
-            params = (
-                {"offset": str(offset), "limit": str(self._page_size)}
-                if paginated
-                else None
-            )
-            payload = self._request_json(path, params)
+            request_params = dict(params or {})
+            if paginated:
+                request_params.update(
+                    {"offset": str(offset), "limit": str(self._page_size)}
+                )
+            payload = self._request_json(path, request_params or None)
             page = [dict(item) for item in collection_items(payload, keys)]
             if not page:
                 break
@@ -288,7 +289,9 @@ class DependencyTrackClient:
             name=str(project_payload.get("name") or project_uuid),
         )
         payload = self._get_collection(
-            f"/api/v1/finding/project/{project_uuid}", ("findings", "items")
+            f"/api/v1/finding/project/{project_uuid}",
+            ("findings", "items"),
+            params={"suppressed": "true"},
         )
         findings = [_finding_from_payload(item, project) for item in payload]
 

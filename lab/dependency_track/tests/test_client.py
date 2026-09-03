@@ -10,6 +10,7 @@ from dt_lab.domain import (
     AnalysisJustification,
     AnalysisResponse,
     AnalysisState,
+    BomUploadAttempt,
     DependencyTrackObservation,
 )
 
@@ -25,13 +26,25 @@ def test_bom_upload_by_project_coordinates_uses_auto_create(
 
     def fake_request_json(request, **kwargs):
         captured["request"] = request
-        return {"token": "token-2"}
+        assert kwargs["return_response"] is True
+        return HttpJsonResponse(
+            payload={"token": "token-2"},
+            status=200,
+            headers={"Content-Type": "application/json"},
+            duration_seconds=0.1,
+        )
 
     monkeypatch.setattr(client_module, "request_json", fake_request_json)
 
     result = DependencyTrackLabClient(
         "https://dtrack.example", "api-key"
-    ).upload_bom_by_project_coordinates("dt-lab", "1.0.0", bom_path)
+    ).upload_bom_by_project_coordinates(
+        "dt-lab",
+        "1.0.0",
+        bom_path,
+        parent_project_uuid="parent-project-1",
+        project_tags=("dt-lab-owner-alpha", "dt-lab-repository-alpha"),
+    )
 
     assert result.token == "token-2"
     body = captured["request"].data
@@ -41,6 +54,48 @@ def test_bom_upload_by_project_coordinates_uses_auto_create(
     assert b"dt-lab" in body
     assert b'name="projectVersion"' in body
     assert b"1.0.0" in body
+    assert b'name="parentUUID"' in body
+    assert b"parent-project-1" in body
+    assert b'name="projectTags"' in body
+    assert b"dt-lab-owner-alpha,dt-lab-repository-alpha" in body
+
+
+def test_bom_upload_attempt_preserves_expected_problem_response(
+    monkeypatch, tmp_path
+) -> None:
+    bom_path = tmp_path / "invalid.cdx.json"
+    bom_path.write_text('{"bomFormat":"CycloneDX"}')
+
+    def reject(request, **kwargs):
+        raise HttpApiError(
+            "invalid BOM",
+            status=400,
+            payload={"status": 400, "title": "The uploaded BOM is invalid"},
+            headers={
+                "Content-Type": "application/problem+json; charset=utf-8",
+                "Set-Cookie": "must-not-be-recorded",
+            },
+            duration_seconds=0.2,
+        )
+
+    monkeypatch.setattr(client_module, "request_json", reject)
+
+    attempt = DependencyTrackLabClient(
+        "https://dtrack.example", "api-key"
+    ).attempt_bom_upload_by_project_coordinates("dt-lab", "1.0.0", bom_path)
+
+    assert isinstance(attempt, BomUploadAttempt)
+    assert attempt.upload is None
+    assert attempt.observation.status == 400
+    assert attempt.observation.payload == {
+        "status": 400,
+        "title": "The uploaded BOM is invalid",
+    }
+    assert dict(attempt.observation.headers) == {
+        "Content-Type": "application/problem+json; charset=utf-8"
+    }
+    assert attempt.observation.request_payload["autoCreate"] is True
+    assert "api-key" not in json.dumps(attempt.observation.request_payload)
 
 
 def test_vex_upload_uses_existing_project_and_multipart_document(
@@ -102,6 +157,27 @@ def test_observation_records_safe_metadata(monkeypatch) -> None:
     assert observation.duration_seconds == 0.25
 
 
+def test_project_property_probe_retains_forbidden_response(monkeypatch) -> None:
+    def forbidden(request, **kwargs):
+        raise HttpApiError(
+            "forbidden",
+            status=403,
+            payload={"status": 403},
+            headers={"Content-Type": "application/json"},
+            duration_seconds=0.03,
+        )
+
+    monkeypatch.setattr(client_module, "request_json", forbidden)
+
+    observation = DependencyTrackLabClient(
+        "https://dtrack.example", "read-key"
+    ).attempt_observe_project_properties("project-1")
+
+    assert observation.path == "/api/v1/project/project-1/property"
+    assert observation.status == 403
+    assert observation.payload == {"status": 403}
+
+
 def test_observes_direct_components_and_services() -> None:
     client = DependencyTrackLabClient("https://dtrack.example", "api-key")
     requests: list[tuple[str, str, dict[str, str] | None]] = []
@@ -135,6 +211,8 @@ def test_observes_direct_components_and_services() -> None:
 
     client.observe_project_direct_components("project-1")
     client.observe_project_services("project-1")
+    client.observe_project_children("project-1")
+    client.observe_projects_by_tag("dt-lab-owner-alpha")
 
     assert requests == [
         (
@@ -143,6 +221,8 @@ def test_observes_direct_components_and_services() -> None:
             {"onlyDirect": "true"},
         ),
         ("single", "/api/v1/service/project/project-1", None),
+        ("paginated", "/api/v1/project/project-1/children", None),
+        ("paginated", "/api/v1/project/tag/dt-lab-owner-alpha", None),
     ]
 
 

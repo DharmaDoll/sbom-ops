@@ -9,10 +9,16 @@ import pytest
 from dt_lab.cli import main
 from dt_lab.domain import (
     AnalysisAction,
+    AnalysisJustification,
+    AnalysisResponse,
+    AnalysisState,
     BomUpload,
+    BomUploadAttempt,
     DependencyTrackObservation,
     LabManifestError,
+    Observation,
     ScenarioStatus,
+    ScenarioStep,
     VexUpload,
 )
 from dt_lab.service import (
@@ -103,18 +109,43 @@ def test_repository_lab_manifest_is_valid() -> None:
         "identity-duplicate-dependency-paths",
         "lifecycle-add-remove-components",
         "lifecycle-project-versions",
+        "portfolio-parent-child",
+        "portfolio-tags-properties",
         "portfolio-direct-transitive-graph",
         "triage-multiple-sources-aliases",
         "triage-analysis-states",
+        "triage-delegation-boundary",
         "triage-vex-round-trip",
         "triage-vex-targeting",
+        "robustness-invalid-cyclonedx",
+        "robustness-json-xml-equivalence",
     ]
-    assert sum(len(scenario.steps) for scenario in implemented) == 14
-    assert any(
-        scenario.id == "triage-delegation-boundary"
-        and scenario.status is ScenarioStatus.PLANNED
-        for scenario in manifest.scenarios
+    assert sum(len(scenario.steps) for scenario in implemented) == 22
+    format_scenario = implemented[-1]
+    assert format_scenario.steps[1].equivalent_to_step == "json"
+
+
+def test_analysis_action_sequence_requires_a_safe_final_state() -> None:
+    unsafe_action = AnalysisAction(
+        id="leave-in-triage",
+        component_purl="pkg:maven/example/component@1.0.0",
+        vulnerability_id="CVE-2099-0001",
+        vulnerability_source="NVD",
+        state=AnalysisState.IN_TRIAGE,
+        justification=AnalysisJustification.NOT_SET,
+        response=AnalysisResponse.NOT_SET,
+        detail="Synthetic unsafe final state.",
+        comment="Synthetic unsafe final action.",
+        suppressed=False,
     )
+
+    with pytest.raises(LabManifestError, match="unsuppressed NOT_SET"):
+        ScenarioStep(
+            id="unsafe-sequence",
+            bom="sboms/example.cdx.json",
+            observations=(Observation.FINDINGS,),
+            analysis_actions=(unsafe_action,),
+        )
 
 
 def test_repository_real_world_corpus_catalog_is_valid() -> None:
@@ -267,16 +298,62 @@ scenarios:
         load_lab_manifest(manifest_path)
 
 
+def test_lab_manifest_validates_xml_dependency_references(tmp_path: Path) -> None:
+    (tmp_path / "invalid.cdx.xml").write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<bom xmlns="http://cyclonedx.org/schema/bom/1.5"
+     serialNumber="urn:uuid:8791a04b-d3b2-4bc4-9215-72570cce0686"
+     version="1">
+  <metadata>
+    <component type="application" bom-ref="root">
+      <name>root</name>
+      <version>1</version>
+    </component>
+  </metadata>
+  <dependencies>
+    <dependency ref="root"><dependency ref="missing"/></dependency>
+  </dependencies>
+</bom>
+""",
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "scenarios.yaml"
+    manifest_path.write_text(
+        """
+schema_version: 3
+target:
+  dependency_track_version: 4.14.3
+  cyclonedx_versions: ["1.5"]
+scenarios:
+  - id: invalid-xml-graph
+    category: robustness
+    status: implemented
+    purpose: Reject an invalid XML dependency graph.
+    hypotheses: [Unknown XML dependency references are invalid.]
+    decision_questions: ["Does validation reject the invalid XML graph?"]
+    project: {name: dt-lab-invalid-xml, version: 1.0.0}
+    steps:
+      - id: upload
+        bom: invalid.cdx.xml
+        observe: [project]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(LabManifestError, match="unknown dependency references"):
+        load_lab_manifest(manifest_path)
+
+
 def test_openapi_inventory_extracts_contract_details() -> None:
     payload = json.loads(OPENAPI_FIXTURE.read_text(encoding="utf-8"))
 
     inventory = build_openapi_inventory(payload)
     rendered = openapi_inventory_dict(inventory)
 
-    assert inventory.path_count == 9
-    assert inventory.operation_count == 10
-    assert inventory.tag_count == 7
-    assert len(inventory.operations) == 9
+    assert inventory.path_count == 13
+    assert inventory.operation_count == 14
+    assert inventory.tag_count == 9
+    assert len(inventory.operations) == 13
     finding = next(
         operation
         for operation in inventory.operations
@@ -326,6 +403,57 @@ def test_openapi_inventory_extracts_contract_details() -> None:
     )
     assert lookup.permissions == ("VIEW_PORTFOLIO",)
     assert lookup.query_parameters == ("name", "version")
+    children = next(
+        operation
+        for operation in inventory.operations
+        if operation.operation_id == "getChildrenProjects"
+    )
+    assert children.permissions == ("VIEW_PORTFOLIO",)
+    assert children.query_parameters == (
+        "excludeInactive",
+        "limit",
+        "offset",
+        "pageNumber",
+        "pageSize",
+        "sortName",
+        "sortOrder",
+    )
+    assert children.response_headers == ("X-Total-Count",)
+    assert children.response_statuses == ("200", "401", "403", "404")
+    tagged_projects = next(
+        operation
+        for operation in inventory.operations
+        if operation.operation_id == "getProjectsByTag"
+    )
+    assert tagged_projects.permissions == ("VIEW_PORTFOLIO",)
+    assert tagged_projects.query_parameters == (
+        "excludeInactive",
+        "limit",
+        "offset",
+        "onlyRoot",
+        "pageNumber",
+        "pageSize",
+        "sortName",
+        "sortOrder",
+    )
+    assert tagged_projects.response_headers == ("X-Total-Count",)
+    project_properties = next(
+        operation
+        for operation in inventory.operations
+        if operation.operation_id == "getProperties_1"
+    )
+    assert project_properties.permissions == ("PORTFOLIO_MANAGEMENT",)
+    assert project_properties.response_statuses == ("200", "401", "403", "404")
+    bom_upload = next(
+        operation
+        for operation in inventory.operations
+        if operation.operation_id == "UploadBom"
+    )
+    assert bom_upload.permissions == ("BOM_UPLOAD",)
+    assert bom_upload.response_media_types == (
+        "application/json",
+        "application/problem+json",
+    )
     retrieve_analysis = next(
         operation
         for operation in inventory.operations
@@ -360,7 +488,7 @@ def test_openapi_inventory_extracts_contract_details() -> None:
     assert vex_upload.path == "/v1/vex"
     assert vex_upload.permissions == ("VULNERABILITY_ANALYSIS",)
     assert vex_upload.response_statuses == ("200", "400", "401", "403", "404")
-    assert rendered["summary"]["selected_operation_count"] == 9
+    assert rendered["summary"]["selected_operation_count"] == 13
     assert len(rendered["source"]["contract_sha256"]) == 64
 
 
@@ -417,12 +545,14 @@ def test_openapi_inventory_can_include_all_tags() -> None:
 
     inventory = build_openapi_inventory(payload, selected_tags=None)
 
-    assert len(inventory.operations) == 10
+    assert len(inventory.operations) == 14
     assert inventory.selected_tags == (
         "analysis",
+        "bom",
         "component",
         "finding",
         "project",
+        "projectProperty",
         "team",
         "user",
         "vex",
@@ -443,7 +573,7 @@ def test_lab_cli_validates_repository_manifest(
     )
 
     assert main() == 0
-    assert "scenarios=18 implemented=11 planned=7 steps=14" in capsys.readouterr().out
+    assert "scenarios=18 implemented=16 planned=2 steps=22" in capsys.readouterr().out
 
 
 def test_lab_cli_writes_openapi_inventory(
@@ -465,9 +595,9 @@ def test_lab_cli_writes_openapi_inventory(
 
     assert main() == 0
     assert json.loads(output_path.read_text(encoding="utf-8"))["summary"] == {
-        "operation_count": 10,
-        "path_count": 9,
-        "selected_operation_count": 9,
+        "operation_count": 14,
+        "path_count": 13,
+        "selected_operation_count": 13,
         "selected_tags": [
             "analysis",
             "bom",
@@ -477,6 +607,7 @@ def test_lab_cli_writes_openapi_inventory(
             "finding",
             "metrics",
             "project",
+            "projectProperty",
             "search",
             "service",
             "team",
@@ -485,9 +616,9 @@ def test_lab_cli_writes_openapi_inventory(
             "violationanalysis",
             "vulnerability",
         ],
-        "tag_count": 7,
+        "tag_count": 9,
     }
-    assert "OpenAPI inventory: paths=9 operations=10 selected=9 tags=7" in (
+    assert "OpenAPI inventory: paths=13 operations=14 selected=13 tags=9" in (
         capsys.readouterr().out
     )
 
@@ -640,13 +771,68 @@ class FakeLabClient:
         self.analysis_response = "NOT_SET"
         self.analysis_detail = ""
         self.analysis_comments: list[dict[str, object]] = []
+        self.project_uuids: dict[tuple[str, str], str] = {}
+        self.project_parents: dict[str, str] = {}
+        self.project_tags: dict[str, tuple[str, ...]] = {}
+        self.last_project_name = ""
+        self.last_project_version = ""
 
     def upload_bom_by_project_coordinates(
-        self, project_name: str, project_version: str, bom_path: str | Path
+        self,
+        project_name: str,
+        project_version: str,
+        bom_path: str | Path,
+        *,
+        parent_project_uuid: str | None = None,
+        project_tags: tuple[str, ...] = (),
     ) -> BomUpload:
         self.last_bom = Path(bom_path).name
         self.project_versions.append(project_version)
+        self.last_project_name = project_name
+        self.last_project_version = project_version
+        project_key = (project_name, project_version)
+        project_created = project_key not in self.project_uuids
+        if project_created:
+            self.project_uuids[project_key] = f"project-{len(self.project_uuids) + 1}"
+            self.project_tags[self.project_uuids[project_key]] = project_tags
+        if parent_project_uuid is not None:
+            self.project_parents[self.project_uuids[project_key]] = parent_project_uuid
         return BomUpload(token=f"token-{self.last_bom}")
+
+    def attempt_bom_upload_by_project_coordinates(
+        self,
+        project_name: str,
+        project_version: str,
+        bom_path: str | Path,
+        *,
+        parent_project_uuid: str | None = None,
+        project_tags: tuple[str, ...] = (),
+    ) -> BomUploadAttempt:
+        upload = self.upload_bom_by_project_coordinates(
+            project_name,
+            project_version,
+            bom_path,
+            parent_project_uuid=parent_project_uuid,
+            project_tags=project_tags,
+        )
+        return BomUploadAttempt(
+            upload=upload,
+            observation=DependencyTrackObservation(
+                method="POST",
+                path="/api/v1/bom",
+                query=(),
+                status=200,
+                headers=(("Content-Type", "application/json"),),
+                duration_seconds=0.01,
+                payload={"token": upload.token},
+                request_payload={
+                    "autoCreate": True,
+                    "projectName": project_name,
+                    "projectVersion": project_version,
+                    "projectTags": list(project_tags),
+                },
+            ),
+        )
 
     def upload_vex_for_project(
         self, project_uuid: str, vex_path: str | Path
@@ -712,10 +898,26 @@ class FakeLabClient:
     def observe_project_lookup(
         self, project_name: str, project_version: str
     ) -> DependencyTrackObservation:
+        project_key = (project_name, project_version)
+        if project_key not in self.project_uuids:
+            self.project_uuids[project_key] = f"project-{len(self.project_uuids) + 1}"
+        project_uuid = self.project_uuids[project_key]
+        payload: dict[str, object] = {
+            "uuid": project_uuid,
+            "name": project_name,
+            "version": project_version,
+        }
+        if project_uuid in self.project_parents:
+            payload["parent"] = {"uuid": self.project_parents[project_uuid]}
         return self._observation(
             "/api/v1/project/lookup",
-            {"uuid": "project-1", "name": project_name, "version": project_version},
+            payload,
         )
+
+    def observe_project_lookup_if_present(
+        self, project_name: str, project_version: str
+    ) -> DependencyTrackObservation:
+        return self.observe_project_lookup(project_name, project_version)
 
     def observe_current_team(self) -> DependencyTrackObservation:
         return self._observation(
@@ -734,8 +936,55 @@ class FakeLabClient:
         )
 
     def observe_project(self, project_uuid: str) -> DependencyTrackObservation:
-        return self._observation(
-            f"/api/v1/project/{project_uuid}", {"uuid": project_uuid}
+        coordinates = next(
+            (
+                key
+                for key, observed_uuid in self.project_uuids.items()
+                if observed_uuid == project_uuid
+            ),
+            None,
+        )
+        payload: dict[str, object] = {
+            "uuid": project_uuid,
+            "collectionLogic": "NONE",
+            "lastInheritedRiskScore": 0.0,
+        }
+        if coordinates is not None:
+            payload["name"], payload["version"] = coordinates
+        if project_uuid in self.project_parents:
+            payload["parent"] = {"uuid": self.project_parents[project_uuid]}
+        payload["tags"] = [
+            {"name": tag} for tag in self.project_tags.get(project_uuid, ())
+        ]
+        return self._observation(f"/api/v1/project/{project_uuid}", payload)
+
+    def observe_project_children(self, project_uuid: str) -> DependencyTrackObservation:
+        children = [
+            self.observe_project(child_uuid).payload
+            for child_uuid, parent_uuid in self.project_parents.items()
+            if parent_uuid == project_uuid
+        ]
+        return self._observation(f"/api/v1/project/{project_uuid}/children", children)
+
+    def observe_projects_by_tag(self, tag: str) -> DependencyTrackObservation:
+        projects = [
+            self.observe_project(project_uuid).payload
+            for project_uuid, tags in self.project_tags.items()
+            if tag in tags
+        ]
+        return self._observation(f"/api/v1/project/tag/{tag}", projects)
+
+    def attempt_observe_project_properties(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation:
+        return DependencyTrackObservation(
+            method="GET",
+            path=f"/api/v1/project/{project_uuid}/property",
+            query=(),
+            status=403,
+            headers=(("Content-Type", "application/json"),),
+            duration_seconds=0.01,
+            payload={"status": 403},
         )
 
     def observe_project_components(
@@ -819,14 +1068,11 @@ class FakeLabClient:
                     "analysis": {"state": "NOT_SET", "isSuppressed": False},
                 }
             ]
-        elif (
-            self.last_bom
-            in {
-                "triage-analysis-states.cdx.json",
-                "triage-vex-round-trip.cdx.json",
-            }
-            and suppressed == self.analysis_suppressed
-        ):
+        elif self.last_bom in {
+            "triage-analysis-states.cdx.json",
+            "triage-delegation-boundary.cdx.json",
+            "triage-vex-round-trip.cdx.json",
+        } and (suppressed or not self.analysis_suppressed):
             findings = [
                 {
                     "uuid": "finding-analysis-1",
@@ -964,6 +1210,42 @@ class FakeLabClient:
         )
 
 
+class FakeRejectedBomClient(FakeLabClient):
+    def attempt_bom_upload_by_project_coordinates(
+        self,
+        project_name: str,
+        project_version: str,
+        bom_path: str | Path,
+        *,
+        parent_project_uuid: str | None = None,
+        project_tags: tuple[str, ...] = (),
+    ) -> BomUploadAttempt:
+        self.last_bom = Path(bom_path).name
+        self.project_versions.append(project_version)
+        return BomUploadAttempt(
+            upload=None,
+            observation=DependencyTrackObservation(
+                method="POST",
+                path="/api/v1/bom",
+                query=(),
+                status=400,
+                headers=(("Content-Type", "application/problem+json; charset=utf-8"),),
+                duration_seconds=0.02,
+                payload={
+                    "status": 400,
+                    "title": "The uploaded BOM is invalid",
+                    "detail": "component type is invalid",
+                },
+                request_payload={
+                    "autoCreate": True,
+                    "projectName": project_name,
+                    "projectVersion": project_version,
+                    "bom": {"filename": self.last_bom},
+                },
+            ),
+        )
+
+
 class FakeVexTargetingClient(FakeLabClient):
     PRIMARY_PURL = "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1"
     CONTROL_PURL = "pkg:maven/org.apache.logging.log4j/log4j-core@2.13.3"
@@ -1021,7 +1303,7 @@ class FakeVexTargetingClient(FakeLabClient):
         findings = [
             self._scope_finding(purl)
             for purl, state in self.scope_analysis.items()
-            if state["suppressed"] is suppressed
+            if suppressed or state["suppressed"] is False
         ]
         return self._observation(f"/api/v1/finding/project/{project_uuid}", findings)
 
@@ -1199,10 +1481,262 @@ def test_default_lab_run_excludes_analysis_mutations(tmp_path: Path) -> None:
         (Path(result.output_directory) / "run.json").read_text(encoding="utf-8")
     )
     assert "triage-analysis-states" not in run_metadata["scenarios"]
+    assert "triage-delegation-boundary" not in run_metadata["scenarios"]
     assert "triage-vex-round-trip" not in run_metadata["scenarios"]
     assert "triage-vex-targeting" not in run_metadata["scenarios"]
+    assert "robustness-invalid-cyclonedx" not in run_metadata["scenarios"]
     assert run_metadata["analysis_mutation_enabled"] is False
     assert client.analysis_comments == []
+
+
+def test_lab_runner_verifies_parent_child_relationship_and_risk_projection(
+    tmp_path: Path,
+) -> None:
+    client = FakeLabClient()
+
+    result = run_lab_scenarios(
+        load_lab_manifest(MANIFEST_PATH),
+        manifest_path=MANIFEST_PATH,
+        upload_client=client,
+        read_client=client,
+        output_directory=tmp_path,
+        scenario_ids=("portfolio-parent-child",),
+        poll_interval=0,
+    )
+
+    assert len(result.steps) == 2
+    assert result.steps[0].project_uuid == "project-1"
+    assert result.steps[1].project_uuid == "project-2"
+    assert result.steps[1].observation_count == 9
+    assert (Path(result.steps[0].snapshot_directory) / "bom-upload.json").is_file()
+    assert (Path(result.steps[1].snapshot_directory) / "bom-upload.json").is_file()
+    assert not (Path(result.steps[1].snapshot_directory) / "delta.json").exists()
+    hierarchy = json.loads(
+        (Path(result.steps[1].snapshot_directory) / "hierarchy.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert hierarchy["relationship_verified"] is True
+    assert hierarchy["parent_step"] == "parent"
+    assert hierarchy["children_count"] == 1
+    assert hierarchy["matching_child_count"] == 1
+    assert hierarchy["parent"]["project"]["collection_logic"] == "NONE"
+    project_ledger = json.loads(
+        (Path(result.output_directory) / "projects.json").read_text(encoding="utf-8")
+    )
+    assert [project["project_name"] for project in project_ledger["projects"]] == [
+        "dt-lab-portfolio-parent",
+        "dt-lab-portfolio-child",
+    ]
+
+
+def test_lab_runner_records_least_privilege_routing_metadata(tmp_path: Path) -> None:
+    client = FakeLabClient()
+
+    result = run_lab_scenarios(
+        load_lab_manifest(MANIFEST_PATH),
+        manifest_path=MANIFEST_PATH,
+        upload_client=client,
+        read_client=client,
+        output_directory=tmp_path,
+        scenario_ids=("portfolio-tags-properties",),
+        poll_interval=0,
+    )
+
+    assert len(result.steps) == 2
+    assert result.steps[0].observation_count == 5
+    assert result.steps[1].observation_count == 8
+    assert (Path(result.output_directory) / "upload-key-team.json").is_file()
+    initial = json.loads(
+        (Path(result.steps[0].snapshot_directory) / "routing-metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    changed = json.loads(
+        (Path(result.steps[1].snapshot_directory) / "routing-metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert initial["request_exactly_reconciled"] is True
+    assert initial["observed_tags"] == [
+        "dt-lab-owner-alpha",
+        "dt-lab-repository-alpha",
+    ]
+    assert changed["request_exactly_reconciled"] is False
+    assert changed["missing_requested_tags"] == [
+        "dt-lab-owner-beta",
+        "dt-lab-repository-beta",
+    ]
+    assert changed["stale_previous_tags"] == [
+        "dt-lab-owner-alpha",
+        "dt-lab-repository-alpha",
+    ]
+    assert changed["project_properties"] == {
+        "property_count": None,
+        "readable_with_orchestrator_key": False,
+        "status": 403,
+    }
+    assert "PORTFOLIO_MANAGEMENT" not in changed["upload_key_permissions"]
+
+
+def test_lab_runner_records_expected_bom_rejection_and_project_side_effect(
+    tmp_path: Path,
+) -> None:
+    client = FakeRejectedBomClient()
+
+    result = run_lab_scenarios(
+        load_lab_manifest(MANIFEST_PATH),
+        manifest_path=MANIFEST_PATH,
+        upload_client=client,
+        read_client=client,
+        output_directory=tmp_path,
+        scenario_ids=("robustness-invalid-cyclonedx",),
+        poll_interval=0,
+    )
+
+    assert len(result.steps) == 1
+    assert result.steps[0].project_uuid == "project-1"
+    assert result.steps[0].observation_count == 5
+    step_directory = Path(result.steps[0].snapshot_directory)
+    rejection = json.loads(
+        (step_directory / "upload-rejection.json").read_text(encoding="utf-8")
+    )
+    assert rejection["request"]["payload"]["autoCreate"] is True
+    assert rejection["response"]["status"] == 400
+    assert rejection["response"]["headers"]["Content-Type"].startswith(
+        "application/problem+json"
+    )
+    assert rejection["response"]["payload"]["title"] == ("The uploaded BOM is invalid")
+    project_ledger = json.loads(
+        (Path(result.output_directory) / "projects.json").read_text(encoding="utf-8")
+    )
+    assert project_ledger["projects"][0]["project_uuid"] == "project-1"
+
+
+def test_lab_runner_fails_when_bom_rejection_contract_changes(tmp_path: Path) -> None:
+    client = FakeRejectedBomClient()
+    original_attempt = client.attempt_bom_upload_by_project_coordinates
+
+    def wrong_media_type(
+        project_name: str,
+        project_version: str,
+        bom_path: str | Path,
+        *,
+        parent_project_uuid: str | None = None,
+        project_tags: tuple[str, ...] = (),
+    ) -> BomUploadAttempt:
+        attempt = original_attempt(
+            project_name,
+            project_version,
+            bom_path,
+            parent_project_uuid=parent_project_uuid,
+            project_tags=project_tags,
+        )
+        return BomUploadAttempt(
+            upload=None,
+            observation=DependencyTrackObservation(
+                method=attempt.observation.method,
+                path=attempt.observation.path,
+                query=attempt.observation.query,
+                status=attempt.observation.status,
+                headers=(("Content-Type", "application/json"),),
+                duration_seconds=attempt.observation.duration_seconds,
+                payload=attempt.observation.payload,
+                request_payload=attempt.observation.request_payload,
+            ),
+        )
+
+    client.attempt_bom_upload_by_project_coordinates = wrong_media_type  # type: ignore[method-assign]
+
+    with pytest.raises(LabManifestError, match="rejection contract mismatch"):
+        run_lab_scenarios(
+            load_lab_manifest(MANIFEST_PATH),
+            manifest_path=MANIFEST_PATH,
+            upload_client=client,
+            read_client=client,
+            output_directory=tmp_path,
+            scenario_ids=("robustness-invalid-cyclonedx",),
+            poll_interval=0,
+        )
+
+    run_directory = next(tmp_path.iterdir())
+    rejection_path = next(run_directory.glob("*/**/upload-rejection.json"))
+    assert rejection_path.is_file()
+
+
+def test_lab_runner_verifies_json_xml_semantic_and_uuid_equivalence(
+    tmp_path: Path,
+) -> None:
+    client = FakeLabClient()
+
+    result = run_lab_scenarios(
+        load_lab_manifest(MANIFEST_PATH),
+        manifest_path=MANIFEST_PATH,
+        upload_client=client,
+        read_client=client,
+        output_directory=tmp_path,
+        scenario_ids=("robustness-json-xml-equivalence",),
+        poll_interval=0,
+    )
+
+    assert len(result.steps) == 2
+    comparison = json.loads(
+        (Path(result.steps[1].snapshot_directory) / "equivalence.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert comparison["reference_step"] == "json"
+    assert comparison["equivalent"] is True
+    assert comparison["checks"] == {
+        "bom_export": True,
+        "dependency_graph": True,
+        "identity_uuids": True,
+        "summary_semantics": True,
+    }
+
+
+def test_lab_runner_retains_json_xml_equivalence_failure_evidence(
+    tmp_path: Path,
+) -> None:
+    client = FakeLabClient()
+    original_components = client.observe_project_components
+
+    def format_sensitive_components(
+        project_uuid: str,
+    ) -> DependencyTrackObservation:
+        observation = original_components(project_uuid)
+        if client.last_bom.endswith(".xml"):
+            return client._observation(
+                observation.path,
+                [
+                    {
+                        "uuid": "format-only-component",
+                        "name": "format-only",
+                        "version": "1.0.0",
+                        "purl": "pkg:generic/format-only@1.0.0",
+                    }
+                ],
+            )
+        return observation
+
+    client.observe_project_components = format_sensitive_components  # type: ignore[method-assign]
+
+    with pytest.raises(LabManifestError, match="is not equivalent"):
+        run_lab_scenarios(
+            load_lab_manifest(MANIFEST_PATH),
+            manifest_path=MANIFEST_PATH,
+            upload_client=client,
+            read_client=client,
+            output_directory=tmp_path,
+            scenario_ids=("robustness-json-xml-equivalence",),
+            poll_interval=0,
+        )
+
+    run_directory = next(tmp_path.iterdir())
+    comparison_path = next(run_directory.glob("*/02-xml/equivalence.json"))
+    comparison = json.loads(comparison_path.read_text(encoding="utf-8"))
+    assert comparison["equivalent"] is False
+    assert comparison["checks"]["summary_semantics"] is False
 
 
 def test_lab_runner_captures_step_delta(tmp_path: Path) -> None:
@@ -1238,6 +1772,7 @@ def test_lab_runner_captures_step_delta(tmp_path: Path) -> None:
         for project in project_ledger["projects"]
     )
     updated_directory = Path(result.steps[1].snapshot_directory)
+    assert (updated_directory / "bom-upload.json").is_file()
     delta = json.loads((updated_directory / "delta.json").read_text(encoding="utf-8"))
     assert delta["components_added"] == ["pkg:pypi/requests@2.31.0"]
     assert delta["components_removed"] == ["pkg:npm/lodash@4.17.20"]
@@ -1446,9 +1981,13 @@ def test_lab_runner_records_analysis_decisions_and_verification(
     )
 
     assert len(result.steps) == 1
-    assert result.steps[0].observation_count == 35
+    assert result.steps[0].observation_count == 41
     step_directory = Path(result.steps[0].snapshot_directory)
-    action_directories = sorted((step_directory / "analysis-actions").iterdir())
+    action_directories = sorted(
+        path
+        for path in (step_directory / "analysis-actions").iterdir()
+        if path.is_dir()
+    )
     assert [path.name for path in action_directories] == [
         "01-begin-triage",
         "02-mark-exploitable",
@@ -1471,6 +2010,113 @@ def test_lab_runner_records_analysis_decisions_and_verification(
     )
     assert run_metadata["analysis_mutation_enabled"] is True
     assert (Path(result.output_directory) / "analysis-key-team.json").is_file()
+
+
+def test_lab_runner_captures_analysis_reconciliation_boundaries(
+    tmp_path: Path,
+) -> None:
+    client = FakeLabClient()
+
+    result = run_lab_scenarios(
+        load_lab_manifest(MANIFEST_PATH),
+        manifest_path=MANIFEST_PATH,
+        upload_client=client,
+        read_client=client,
+        analysis_client=client,
+        output_directory=tmp_path,
+        scenario_ids=("triage-delegation-boundary",),
+        poll_interval=0,
+        allow_analysis_mutation=True,
+    )
+
+    assert len(result.steps) == 1
+    assert result.steps[0].observation_count == 41
+    reconciliation = json.loads(
+        (
+            Path(result.steps[0].snapshot_directory)
+            / "analysis-actions"
+            / "reconciliation.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert {
+        key: reconciliation[key]
+        for key in (
+            "finding_etag_observed",
+            "finding_last_modified_observed",
+            "trail_etag_observed",
+            "trail_last_modified_observed",
+        )
+    } == {
+        "finding_etag_observed": False,
+        "finding_last_modified_observed": False,
+        "trail_etag_observed": False,
+        "trail_last_modified_observed": False,
+    }
+    actions = {action["action_id"]: action for action in reconciliation["actions"]}
+    comment_only_delta = actions["append-comment-only"]["delta_from_previous"]
+    assert comment_only_delta == {
+        "audit_changed": True,
+        "audit_comment_count_delta": 1,
+        "finding_decision_changed": False,
+        "last_comment_timestamp_advanced": True,
+        "request_decision_changed": False,
+        "trail_decision_changed": False,
+    }
+    replay_delta = actions["replay-identical-request"]["delta_from_previous"]
+    assert replay_delta == comment_only_delta
+    assert actions["suppress-only"]["default_finding_present"] is False
+    assert actions["suppress-only"]["including_suppressed_finding_present"] is True
+    assert actions["unsuppress-only"]["default_finding_present"] is True
+    suppress_delta = actions["suppress-only"]["delta_from_previous"]
+    assert suppress_delta["request_decision_changed"] is True
+    assert suppress_delta["trail_decision_changed"] is True
+    assert suppress_delta["finding_decision_changed"] is True
+    assert actions["restore-not-set"]["trail_decision"]["state"] == "NOT_SET"
+    assert actions["restore-not-set"]["trail_decision"]["suppressed"] is False
+
+
+def test_lab_runner_emergency_restores_failed_analysis_action_sequence(
+    tmp_path: Path,
+) -> None:
+    client = FakeLabClient()
+    original_record = client.record_analysis_decision
+    call_count = 0
+
+    def fail_second_update(**kwargs) -> DependencyTrackObservation:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise RuntimeError("synthetic analysis update failure")
+        return original_record(**kwargs)
+
+    client.record_analysis_decision = fail_second_update  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="synthetic analysis update failure"):
+        run_lab_scenarios(
+            load_lab_manifest(MANIFEST_PATH),
+            manifest_path=MANIFEST_PATH,
+            upload_client=client,
+            read_client=client,
+            analysis_client=client,
+            output_directory=tmp_path,
+            scenario_ids=("triage-delegation-boundary",),
+            poll_interval=0,
+            allow_analysis_mutation=True,
+        )
+
+    assert client.analysis_state == "NOT_SET"
+    assert client.analysis_suppressed is False
+    emergency_verifications = list(
+        tmp_path.glob(
+            "*/triage-delegation-boundary/*/analysis-actions/"
+            "emergency-restore/*-verification.json"
+        )
+    )
+    assert len(emergency_verifications) == 1
+    assert json.loads(emergency_verifications[0].read_text(encoding="utf-8")) == {
+        "state": "NOT_SET",
+        "suppressed": False,
+    }
 
 
 def test_lab_runner_records_vex_round_trip_and_restores_analysis(

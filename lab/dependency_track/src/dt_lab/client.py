@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request
 
 from dt_lab.domain import (
     AnalysisAction,
     BomUpload,
+    BomUploadAttempt,
     DependencyTrackObservation,
     VexUpload,
 )
@@ -19,9 +21,35 @@ from sbom_ops.clients.http import HttpApiError, HttpJsonResponse, request_json
 class DependencyTrackLabApiError(RuntimeError):
     """Raised when Dependency-Track cannot serve a lab request."""
 
-    def __init__(self, message: str, *, status: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        payload: Any = None,
+        headers: dict[str, str] | None = None,
+        duration_seconds: float | None = None,
+    ) -> None:
         super().__init__(message)
         self.status = status
+        self.payload = payload
+        self.headers = dict(headers or {})
+        self.duration_seconds = duration_seconds
+
+
+def _safe_response_headers(headers: dict[str, str]) -> tuple[tuple[str, str], ...]:
+    allowed = {
+        "content-length",
+        "content-type",
+        "date",
+        "etag",
+        "last-modified",
+        "retry-after",
+        "x-total-count",
+    }
+    return tuple(
+        sorted((key, value) for key, value in headers.items() if key.lower() in allowed)
+    )
 
 
 class DependencyTrackLabClient:
@@ -69,6 +97,25 @@ class DependencyTrackLabClient:
         *,
         accept: str = "application/json",
     ) -> DependencyTrackObservation:
+        observation = self._attempt_observe_json(path, params, accept=accept)
+        if observation.status >= 400:
+            raise DependencyTrackLabApiError(
+                f"Dependency-Track lab observation failed "
+                f"(HTTP {observation.status}): {path}",
+                status=observation.status,
+                payload=observation.payload,
+                headers=dict(observation.headers),
+                duration_seconds=observation.duration_seconds,
+            )
+        return observation
+
+    def _attempt_observe_json(
+        self,
+        path: str,
+        params: dict[str, str] | None = None,
+        *,
+        accept: str = "application/json",
+    ) -> DependencyTrackObservation:
         query = f"?{urlencode(params)}" if params else ""
         request = Request(
             f"{self._base_url}{path}{query}",
@@ -84,36 +131,33 @@ class DependencyTrackLabClient:
                 return_response=True,
             )
         except HttpApiError as exc:
-            detail = f" (HTTP {exc.status})" if exc.status else ""
-            raise DependencyTrackLabApiError(
-                f"Dependency-Track lab observation failed{detail}: {path}",
+            if exc.status is None:
+                raise DependencyTrackLabApiError(
+                    f"Dependency-Track lab observation failed: {path}",
+                    payload=exc.payload,
+                    headers=exc.headers,
+                    duration_seconds=exc.duration_seconds,
+                ) from exc
+            return DependencyTrackObservation(
+                method="GET",
+                path=path,
+                query=tuple(sorted((params or {}).items())),
                 status=exc.status,
-            ) from exc
+                headers=_safe_response_headers(exc.headers),
+                duration_seconds=exc.duration_seconds or 0.0,
+                payload=exc.payload,
+            )
         if not isinstance(response, HttpJsonResponse):
             raise DependencyTrackLabApiError(
                 "Dependency-Track lab observation returned no response metadata: "
                 f"{path}"
             )
-        safe_headers = {
-            key: value
-            for key, value in response.headers.items()
-            if key.lower()
-            in {
-                "content-length",
-                "content-type",
-                "date",
-                "etag",
-                "last-modified",
-                "retry-after",
-                "x-total-count",
-            }
-        }
         return DependencyTrackObservation(
             method="GET",
             path=path,
             query=tuple(sorted((params or {}).items())),
             status=response.status,
-            headers=tuple(sorted(safe_headers.items())),
+            headers=_safe_response_headers(response.headers),
             duration_seconds=response.duration_seconds,
             payload=response.payload,
         )
@@ -295,15 +339,52 @@ class DependencyTrackLabClient:
         )
 
     def upload_bom_by_project_coordinates(
-        self, project_name: str, project_version: str, bom_path: str | Path
+        self,
+        project_name: str,
+        project_version: str,
+        bom_path: str | Path,
+        *,
+        parent_project_uuid: str | None = None,
+        project_tags: tuple[str, ...] = (),
     ) -> BomUpload:
+        attempt = self.attempt_bom_upload_by_project_coordinates(
+            project_name,
+            project_version,
+            bom_path,
+            parent_project_uuid=parent_project_uuid,
+            project_tags=project_tags,
+        )
+        if attempt.upload is None:
+            response = attempt.observation
+            raise DependencyTrackLabApiError(
+                f"Dependency-Track lab BOM upload failed (HTTP {response.status})",
+                status=response.status,
+                payload=response.payload,
+                headers=dict(response.headers),
+                duration_seconds=response.duration_seconds,
+            )
+        return attempt.upload
+
+    def attempt_bom_upload_by_project_coordinates(
+        self,
+        project_name: str,
+        project_version: str,
+        bom_path: str | Path,
+        *,
+        parent_project_uuid: str | None = None,
+        project_tags: tuple[str, ...] = (),
+    ) -> BomUploadAttempt:
         bom = Path(bom_path).read_bytes()
         boundary = "----sbom-ops-dt-lab-boundary"
-        fields = (
+        fields = [
             ("autoCreate", "true"),
             ("projectName", project_name),
             ("projectVersion", project_version),
-        )
+        ]
+        if parent_project_uuid is not None:
+            fields.append(("parentUUID", parent_project_uuid))
+        if project_tags:
+            fields.append(("projectTags", ",".join(project_tags)))
         parts: list[bytes] = []
         for name, value in fields:
             parts.extend(
@@ -336,26 +417,76 @@ class DependencyTrackLabClient:
                 "X-Api-Key": self._api_key,
             },
         )
+        request_metadata = {
+            "autoCreate": True,
+            "projectName": project_name,
+            "projectVersion": project_version,
+            "bom": {
+                "filename": Path(bom_path).name,
+                "byte_count": len(bom),
+                "sha256": hashlib.sha256(bom).hexdigest(),
+            },
+        }
+        if parent_project_uuid is not None:
+            request_metadata["parentUUID"] = parent_project_uuid
+        if project_tags:
+            request_metadata["projectTags"] = list(project_tags)
         try:
-            payload = request_json(
+            response = request_json(
                 request,
                 timeout=self._timeout,
                 max_retries=self._max_retries,
                 backoff_seconds=self._retry_backoff_seconds,
                 error_message="Dependency-Track lab BOM upload failed",
+                return_response=True,
             )
         except HttpApiError as exc:
-            detail = f" (HTTP {exc.status})" if exc.status else ""
+            if exc.status is None:
+                raise DependencyTrackLabApiError(
+                    "Dependency-Track lab BOM upload failed",
+                    payload=exc.payload,
+                    headers=exc.headers,
+                    duration_seconds=exc.duration_seconds,
+                ) from exc
+            return BomUploadAttempt(
+                upload=None,
+                observation=DependencyTrackObservation(
+                    method="POST",
+                    path="/api/v1/bom",
+                    query=(),
+                    status=exc.status,
+                    headers=_safe_response_headers(exc.headers),
+                    duration_seconds=exc.duration_seconds or 0.0,
+                    payload=exc.payload,
+                    request_payload=request_metadata,
+                ),
+            )
+        if not isinstance(response, HttpJsonResponse):
             raise DependencyTrackLabApiError(
-                f"Dependency-Track lab BOM upload failed{detail}",
-                status=exc.status,
-            ) from exc
-        token = payload.get("token") if isinstance(payload, dict) else None
+                "Dependency-Track lab BOM upload returned no response metadata"
+            )
+        token = (
+            response.payload.get("token")
+            if isinstance(response.payload, dict)
+            else None
+        )
         if not token:
             raise DependencyTrackLabApiError(
                 "Dependency-Track lab BOM response has no token"
             )
-        return BomUpload(token=str(token))
+        return BomUploadAttempt(
+            upload=BomUpload(token=str(token)),
+            observation=DependencyTrackObservation(
+                method="POST",
+                path="/api/v1/bom",
+                query=(),
+                status=response.status,
+                headers=_safe_response_headers(response.headers),
+                duration_seconds=response.duration_seconds,
+                payload=response.payload,
+                request_payload=request_metadata,
+            ),
+        )
 
     def upload_vex_for_project(
         self, project_uuid: str, vex_path: str | Path
@@ -443,6 +574,38 @@ class DependencyTrackLabClient:
             "/api/v1/project/lookup",
             {"name": project_name, "version": project_version},
         )
+
+    def observe_project_lookup_if_present(
+        self, project_name: str, project_version: str
+    ) -> DependencyTrackObservation:
+        query = {"name": project_name, "version": project_version}
+        try:
+            return self._observe_json("/api/v1/project/lookup", query)
+        except DependencyTrackLabApiError as exc:
+            if exc.status != 404:
+                raise
+            return DependencyTrackObservation(
+                method="GET",
+                path="/api/v1/project/lookup",
+                query=tuple(sorted(query.items())),
+                status=404,
+                headers=_safe_response_headers(exc.headers),
+                duration_seconds=exc.duration_seconds or 0.0,
+                payload=exc.payload,
+            )
+
+    def observe_project_children(self, project_uuid: str) -> DependencyTrackObservation:
+        return self._observe_paginated_json(f"/api/v1/project/{project_uuid}/children")
+
+    def observe_projects_by_tag(self, tag: str) -> DependencyTrackObservation:
+        return self._observe_paginated_json(
+            f"/api/v1/project/tag/{quote(tag, safe='')}"
+        )
+
+    def attempt_observe_project_properties(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation:
+        return self._attempt_observe_json(f"/api/v1/project/{project_uuid}/property")
 
     def observe_current_team(self) -> DependencyTrackObservation:
         return self._observe_json("/api/v1/team/self")

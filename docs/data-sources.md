@@ -290,12 +290,13 @@ Analysis stateによる除外は、優先度計算後かつIssue作成前に行�
 - 情報源・取得失敗・欠損値はログとIssue本文で追跡可能にする。
 - 情報源の値を根拠なく上書きしない。
 
-DTへ委譲するトリアージ範囲は、これらの責務分担を前提に固定せず、ラボの
-`triage-delegation-boundary`シナリオで検証する。Analysis判断と履歴、コメント、
-Suppression、VEX、変更検知、権限、再同期を観察し、DTを正本にできる範囲、
-sbom-opsが冪等性のためだけに保持する最小状態、GitHub／Jiraに残す対応状態を
-分けて決定する。検証が完了するまでは、MVPのAnalysis／VEX経路は読み取り専用
-とし、sbom-opsに独自のトリアージ正本を追加しない。
+ラボの`triage-delegation-boundary`とVEXシナリオにより、Analysis判断、詳細、
+Suppression、コメントと監査履歴はDTを正本にできる。GitHub／Jiraは対応タスク
+状態の正本とする。sbom-opsが保持するのはstable Finding key、最後に観測した
+semantic digest、観測結果／時刻、work-item相関であり、監査コメント本文を複製
+しない。DT 4.14.3にはAnalysis変更cursorやETagがないため、再同期は必ず
+`suppressed=true`を指定した完全Finding snapshotで行う。MVPのAnalysis／VEX
+書き込み経路は引き続き読み取り専用とし、独自のトリアージ正本を追加しない。
 
 ## キャッシュ、永続化、LLM利用
 

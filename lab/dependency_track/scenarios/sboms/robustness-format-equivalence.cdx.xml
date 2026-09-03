@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bom xmlns="http://cyclonedx.org/schema/bom/1.5"
+     serialNumber="urn:uuid:670197ac-c25a-4787-98bd-e8c643bb2ce2"
+     version="1">
+  <metadata>
+    <timestamp>2026-09-02T00:00:00Z</timestamp>
+    <component type="application" bom-ref="pkg:generic/dt-lab-format-equivalence@1.0.0">
+      <name>dt-lab-format-equivalence</name>
+      <version>1.0.0</version>
+      <purl>pkg:generic/dt-lab-format-equivalence@1.0.0</purl>
+    </component>
+  </metadata>
+  <components>
+    <component type="library" bom-ref="pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1">
+      <group>org.apache.logging.log4j</group>
+      <name>log4j-core</name>
+      <version>2.14.1</version>
+      <cpe>cpe:2.3:a:apache:log4j:2.14.1:*:*:*:*:*:*:*</cpe>
+      <purl>pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1</purl>
+    </component>
+    <component type="library" bom-ref="pkg:npm/lodash@4.17.20">
+      <name>lodash</name>
+      <version>4.17.20</version>
+      <cpe>cpe:2.3:a:lodash:lodash:4.17.20:*:*:*:*:*:*:*</cpe>
+      <purl>pkg:npm/lodash@4.17.20</purl>
+    </component>
+  </components>
+  <dependencies>
+    <dependency ref="pkg:generic/dt-lab-format-equivalence@1.0.0">
+      <dependency ref="pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1"/>
+    </dependency>
+    <dependency ref="pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1">
+      <dependency ref="pkg:npm/lodash@4.17.20"/>
+    </dependency>
+    <dependency ref="pkg:npm/lodash@4.17.20"/>
+  </dependencies>
+</bom>

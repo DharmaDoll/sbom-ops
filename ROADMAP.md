@@ -37,12 +37,27 @@ The repository has a working MVP with:
 - an opt-in, least-privilege Analysis-state experiment that records decisions,
   comments, suppression, audit trails, Finding projections, and metrics without
   entering the default lab run
+- a reconciliation-boundary experiment proving comment replay behavior,
+  suppression visibility, the lack of API validators, safe final-state
+  enforcement, and the minimum state retained outside DT
 - an opt-in VEX round-trip experiment that exports a reviewed Analysis decision,
   resets it, re-imports the exported CycloneDX VEX, compares semantic and
   suppression behavior, measures replay idempotency, and safely restores the
   disposable Finding
 - an isolated VEX targeting probe that compares unresolved, explicitly declared
   Component, and Project references across two Findings for the same vulnerability
+- an explicit invalid-CycloneDX probe that records RFC 9457 rejection details,
+  verifies non-retryable HTTP 400 behavior, and tracks the auto-created empty
+  Project for cleanup
+- a JSON/XML equivalence probe showing stable inventory, dependency graph,
+  non-empty Findings, API identities, and normalized re-export for equivalent
+  CycloneDX 1.5 inputs
+- a parent/child portfolio probe verifying DT-owned hierarchy and paginated
+  child enumeration while showing that default `collectionLogic=NONE` does not
+  aggregate child risk into the parent
+- a routing-metadata probe showing that creation-only upload credentials can set
+  initial tags but cannot reconcile changes, and that Project properties are
+  unavailable to the least-privilege read key; YAML remains routing authority
 - a provenance- and hash-pinned real-world Go, TypeScript, Rails, and Python
   SBOM corpus, with explicit selection and schema-rejection comparison cases
 - complete paginated Component observations checked against `X-Total-Count`,
@@ -59,9 +74,9 @@ The repository has a working MVP with:
   Robustness scenarios in `lab/dependency_track/scenarios/scenarios.yaml` until
   each product decision has sufficient evidence. The planned list is an
   uncertainty backlog, not a coverage target.
-- Determine the maximum safe triage boundary delegated to Dependency-Track:
-  Analysis decisions and history, comments, suppression, VEX, change detection,
-  permissions, and the minimum reconciliation state retained by sbom-ops.
+- Apply the verified triage boundary: DT owns Analysis decisions, comments,
+  suppression, and VEX; sbom-ops uses complete include-suppressed snapshots and
+  retains only semantic reconciliation and work-item correlation state.
 - For each reviewed lab result, explicitly choose DT capability adoption,
   verified constraint encoding, minimal gap implementation, or evidence-backed
   rejection/deferment.

@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import time
+import xml.etree.ElementTree as ET
 from collections import Counter
 from collections.abc import Callable
 from copy import deepcopy
@@ -20,11 +21,13 @@ from dt_lab.domain import (
     AnalysisResponse,
     AnalysisState,
     BomUpload,
+    BomUploadAttempt,
     CorpusArtifact,
     CorpusArtifactInspection,
     CorpusCatalog,
     CorpusSourceKind,
     DependencyTrackObservation,
+    ExpectedBomRejection,
     LabManifest,
     LabManifestError,
     LabProjectRecord,
@@ -52,6 +55,7 @@ RELEVANT_OPENAPI_TAGS = (
     "finding",
     "metrics",
     "project",
+    "projectProperty",
     "search",
     "service",
     "team",
@@ -200,6 +204,22 @@ def _load_vex_targeting_probe(
     )
 
 
+def _load_expected_bom_rejection(
+    payload: Any, scenario_id: str, step_id: str
+) -> ExpectedBomRejection:
+    field_name = f"scenario {scenario_id} step {step_id}.expected_bom_rejection"
+    rejection = _mapping(payload, field_name)
+    _reject_unknown(rejection, {"status", "media_type", "project_created"}, field_name)
+    status = rejection.get("status")
+    if not isinstance(status, int) or isinstance(status, bool):
+        raise LabManifestError(f"{field_name}.status must be an integer")
+    return ExpectedBomRejection(
+        status=status,
+        media_type=_required_string(rejection, "media_type", field_name),
+        project_created=_required_bool(rejection, "project_created", field_name),
+    )
+
+
 def _load_step(payload: Any, scenario_id: str) -> ScenarioStep:
     step = _mapping(payload, f"scenario {scenario_id} step")
     _reject_unknown(
@@ -208,10 +228,16 @@ def _load_step(payload: Any, scenario_id: str) -> ScenarioStep:
             "id",
             "bom",
             "observe",
+            "project_name",
             "project_version",
+            "parent_step",
+            "project_tags",
+            "probe_project_properties",
             "analysis_actions",
             "vex_round_trip",
             "vex_targeting_probe",
+            "expected_bom_rejection",
+            "equivalent_to_step",
         },
         f"scenario {scenario_id} step",
     )
@@ -224,10 +250,36 @@ def _load_step(payload: Any, scenario_id: str) -> ScenarioStep:
         id=step_id,
         bom=_required_string(step, "bom", f"scenario {scenario_id} step"),
         observations=observations,
+        project_name=(
+            _required_string(step, "project_name", f"scenario {scenario_id} step")
+            if step.get("project_name") is not None
+            else None
+        ),
         project_version=(
             _required_string(step, "project_version", f"scenario {scenario_id} step")
             if step.get("project_version") is not None
             else None
+        ),
+        parent_step=(
+            _required_string(step, "parent_step", f"scenario {scenario_id} step")
+            if step.get("parent_step") is not None
+            else None
+        ),
+        project_tags=tuple(
+            str(item)
+            for item in _list(
+                step.get("project_tags", []),
+                f"scenario {scenario_id} step {step_id}.project_tags",
+            )
+        ),
+        probe_project_properties=(
+            _required_bool(
+                step,
+                "probe_project_properties",
+                f"scenario {scenario_id} step {step_id}",
+            )
+            if step.get("probe_project_properties") is not None
+            else False
         ),
         analysis_actions=tuple(
             _load_analysis_action(item, scenario_id, step_id)
@@ -244,6 +296,18 @@ def _load_step(payload: Any, scenario_id: str) -> ScenarioStep:
         vex_targeting_probe=(
             _load_vex_targeting_probe(step["vex_targeting_probe"], scenario_id, step_id)
             if step.get("vex_targeting_probe") is not None
+            else None
+        ),
+        expected_bom_rejection=(
+            _load_expected_bom_rejection(
+                step["expected_bom_rejection"], scenario_id, step_id
+            )
+            if step.get("expected_bom_rejection") is not None
+            else None
+        ),
+        equivalent_to_step=(
+            _required_string(step, "equivalent_to_step", f"scenario {scenario_id} step")
+            if step.get("equivalent_to_step") is not None
             else None
         ),
     )
@@ -402,6 +466,74 @@ def _validate_json_bom(
     return serial_number
 
 
+def _validate_xml_bom(
+    bom_path: Path,
+    *,
+    cyclonedx_versions: tuple[str, ...],
+    scenario_id: str,
+    step_id: str,
+) -> str:
+    try:
+        root = ET.parse(bom_path).getroot()
+    except ET.ParseError as exc:
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} BOM is not valid XML"
+        ) from exc
+    namespace_match = re.fullmatch(
+        r"\{http://cyclonedx\.org/schema/bom/([0-9]+\.[0-9]+)\}bom", root.tag
+    )
+    if namespace_match is None:
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} is not a CycloneDX BOM"
+        )
+    spec_version = namespace_match.group(1)
+    if spec_version not in cyclonedx_versions:
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} uses undeclared "
+            f"CycloneDX version {spec_version!r}"
+        )
+    serial_number = root.get("serialNumber")
+    if not isinstance(serial_number, str) or not serial_number.startswith("urn:uuid:"):
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} requires a UUID serialNumber"
+        )
+    namespace = {"cdx": f"http://cyclonedx.org/schema/bom/{spec_version}"}
+    root_component = root.find("cdx:metadata/cdx:component", namespace)
+    component_elements = root.findall("cdx:components/cdx:component", namespace)
+    service_elements = root.findall("cdx:services/cdx:service", namespace)
+    inventory_elements = component_elements + service_elements
+    inventory_refs = [element.get("bom-ref") for element in inventory_elements]
+    if any(not reference for reference in inventory_refs):
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} requires bom-ref on every "
+            "component and service"
+        )
+    known_refs = {str(reference) for reference in inventory_refs}
+    if root_component is not None and root_component.get("bom-ref"):
+        known_refs.add(str(root_component.get("bom-ref")))
+    if len(inventory_refs) != len(set(inventory_refs)):
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} has duplicate bom-ref values"
+        )
+    referenced = {
+        str(element.get("ref"))
+        for element in root.findall(".//cdx:dependencies//cdx:dependency", namespace)
+        if element.get("ref")
+    }
+    dependency_elements = root.findall(".//cdx:dependencies//cdx:dependency", namespace)
+    if any(not element.get("ref") for element in dependency_elements):
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} has an invalid dependency entry"
+        )
+    unknown_refs = sorted(referenced - known_refs)
+    if unknown_refs:
+        raise LabManifestError(
+            f"scenario {scenario_id!r} step {step_id!r} has unknown dependency "
+            f"references: {', '.join(unknown_refs)}"
+        )
+    return serial_number
+
+
 def load_lab_manifest(path: str | Path) -> LabManifest:
     manifest_path = Path(path)
     payload = _mapping(
@@ -438,7 +570,7 @@ def load_lab_manifest(path: str | Path) -> LabManifest:
         ),
     )
     manifest_root = manifest_path.resolve().parent
-    serial_numbers: set[str] = set()
+    serial_number_sources: dict[str, Path] = {}
     for scenario in manifest.scenarios:
         for step in scenario.steps:
             bom_path = (manifest_root / step.bom).resolve()
@@ -458,12 +590,23 @@ def load_lab_manifest(path: str | Path) -> LabManifest:
                     scenario_id=scenario.id,
                     step_id=step.id,
                 )
-                if serial_number in serial_numbers:
-                    raise LabManifestError(
-                        f"duplicate CycloneDX serialNumber in lab corpus: "
-                        f"{serial_number}"
-                    )
-                serial_numbers.add(serial_number)
+            elif bom_path.suffix == ".xml":
+                serial_number = _validate_xml_bom(
+                    bom_path,
+                    cyclonedx_versions=manifest.target.cyclonedx_versions,
+                    scenario_id=scenario.id,
+                    step_id=step.id,
+                )
+            else:
+                continue
+                if bom_path.suffix in {".json", ".xml"}:
+                    existing_source = serial_number_sources.get(serial_number)
+                    if existing_source is not None and existing_source != bom_path:
+                        raise LabManifestError(
+                            f"duplicate CycloneDX serialNumber in lab corpus: "
+                            f"{serial_number}"
+                        )
+                    serial_number_sources[serial_number] = bom_path
     return manifest
 
 
@@ -851,8 +994,24 @@ def openapi_inventory_dict(inventory: OpenApiInventory) -> dict[str, Any]:
 
 class DependencyTrackLabApi(Protocol):
     def upload_bom_by_project_coordinates(
-        self, project_name: str, project_version: str, bom_path: str | Path
+        self,
+        project_name: str,
+        project_version: str,
+        bom_path: str | Path,
+        *,
+        parent_project_uuid: str | None = None,
+        project_tags: tuple[str, ...] = (),
     ) -> BomUpload: ...
+
+    def attempt_bom_upload_by_project_coordinates(
+        self,
+        project_name: str,
+        project_version: str,
+        bom_path: str | Path,
+        *,
+        parent_project_uuid: str | None = None,
+        project_tags: tuple[str, ...] = (),
+    ) -> BomUploadAttempt: ...
 
     def wait_for_bom_processing(
         self,
@@ -868,6 +1027,20 @@ class DependencyTrackLabApi(Protocol):
 
     def observe_project_lookup(
         self, project_name: str, project_version: str
+    ) -> DependencyTrackObservation: ...
+
+    def observe_project_lookup_if_present(
+        self, project_name: str, project_version: str
+    ) -> DependencyTrackObservation: ...
+
+    def observe_project_children(
+        self, project_uuid: str
+    ) -> DependencyTrackObservation: ...
+
+    def observe_projects_by_tag(self, tag: str) -> DependencyTrackObservation: ...
+
+    def attempt_observe_project_properties(
+        self, project_uuid: str
     ) -> DependencyTrackObservation: ...
 
     def observe_current_team(self) -> DependencyTrackObservation: ...
@@ -1235,6 +1408,199 @@ def _step_delta(
     }
 
 
+def _without_uuid_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _without_uuid_fields(item)
+            for key, item in value.items()
+            if str(key).lower() != "uuid" and not str(key).lower().endswith("_uuid")
+        }
+    if isinstance(value, list):
+        return [_without_uuid_fields(item) for item in value]
+    return value
+
+
+def _identity_uuid_projection(summary: dict[str, Any]) -> dict[str, Any]:
+    components = {
+        str(component.get("identity")): component.get("uuid")
+        for component in summary.get("components", [])
+        if isinstance(component, dict)
+    }
+    findings = {
+        "|".join(
+            (
+                str(finding.get("component_identity")),
+                str(finding.get("vulnerability_source")),
+                str(finding.get("vulnerability_id")),
+            )
+        ): {
+            "finding_uuid": finding.get("finding_uuid"),
+            "component_uuid": finding.get("component_uuid"),
+            "vulnerability_uuid": finding.get("vulnerability_uuid"),
+        }
+        for finding in summary.get("findings", [])
+        if isinstance(finding, dict)
+    }
+    vulnerabilities = {
+        f"{vulnerability.get('source')}|{vulnerability.get('id')}": (
+            vulnerability.get("uuid")
+        )
+        for vulnerability in summary.get("vulnerabilities", [])
+        if isinstance(vulnerability, dict)
+    }
+    return {
+        "components": dict(sorted(components.items())),
+        "findings": dict(sorted(findings.items())),
+        "vulnerabilities": dict(sorted(vulnerabilities.items())),
+    }
+
+
+def _dependency_graph_projection(
+    observation: DependencyTrackObservation | None,
+) -> dict[str, Any]:
+    semantic: list[dict[str, Any]] = []
+    uuids: dict[str, Any] = {}
+    for component in _payload_list(observation):
+        if not isinstance(component, dict):
+            continue
+        identity = _component_identity(component)
+        semantic.append(
+            {
+                "identity": identity,
+                "group": component.get("group"),
+                "name": component.get("name"),
+                "version": component.get("version"),
+                "purl": component.get("purl") or component.get("purlCoordinates"),
+                "cpe": component.get("cpe"),
+            }
+        )
+        uuids[identity] = component.get("uuid")
+    semantic.sort(key=lambda component: str(component["identity"]))
+    return {"semantic": semantic, "uuids": dict(sorted(uuids.items()))}
+
+
+def _cyclonedx_component_projection(component: Any) -> dict[str, Any]:
+    if not isinstance(component, dict):
+        return {}
+    return {
+        "bom-ref": component.get("bom-ref"),
+        "type": component.get("type"),
+        "group": component.get("group"),
+        "name": component.get("name"),
+        "version": component.get("version"),
+        "purl": component.get("purl"),
+        "cpe": component.get("cpe"),
+        "scope": component.get("scope"),
+    }
+
+
+def _bom_export_projection(
+    observation: DependencyTrackObservation | None,
+) -> dict[str, Any] | None:
+    if observation is None or not isinstance(observation.payload, dict):
+        return None
+    payload = observation.payload
+    metadata = payload.get("metadata")
+    metadata_component = (
+        metadata.get("component") if isinstance(metadata, dict) else None
+    )
+    components = [
+        _cyclonedx_component_projection(component)
+        for component in payload.get("components", [])
+        if isinstance(component, dict)
+    ]
+    components.sort(
+        key=lambda component: (
+            str(component.get("purl")),
+            str(component.get("group")),
+            str(component.get("name")),
+            str(component.get("version")),
+        )
+    )
+    services = [
+        {
+            "bom-ref": service.get("bom-ref"),
+            "group": service.get("group"),
+            "name": service.get("name"),
+            "version": service.get("version"),
+            "endpoints": sorted(str(item) for item in service.get("endpoints", [])),
+            "authenticated": service.get("authenticated"),
+            "x-trust-boundary": service.get("x-trust-boundary"),
+        }
+        for service in payload.get("services", [])
+        if isinstance(service, dict)
+    ]
+    services.sort(
+        key=lambda service: (
+            str(service.get("group")),
+            str(service.get("name")),
+            str(service.get("version")),
+        )
+    )
+    dependencies = [
+        {
+            "ref": dependency.get("ref"),
+            "dependsOn": sorted(str(item) for item in dependency.get("dependsOn", [])),
+        }
+        for dependency in payload.get("dependencies", [])
+        if isinstance(dependency, dict)
+    ]
+    dependencies.sort(key=lambda dependency: str(dependency.get("ref")))
+    return {
+        "specVersion": payload.get("specVersion"),
+        "metadata_component": _cyclonedx_component_projection(metadata_component),
+        "components": components,
+        "services": services,
+        "dependencies": dependencies,
+    }
+
+
+def _format_equivalence_projection(
+    summary: dict[str, Any],
+    observations: dict[Observation, DependencyTrackObservation],
+) -> dict[str, Any]:
+    return {
+        "summary_semantics": _without_uuid_fields(summary),
+        "identity_uuids": _identity_uuid_projection(summary),
+        "dependency_graph": _dependency_graph_projection(
+            observations.get(Observation.DEPENDENCY_GRAPH)
+        ),
+        "bom_export": _bom_export_projection(observations.get(Observation.BOM_EXPORT)),
+    }
+
+
+def _step_equivalence(
+    *,
+    reference_step_id: str,
+    reference_summary: dict[str, Any],
+    reference_observations: dict[Observation, DependencyTrackObservation],
+    candidate_summary: dict[str, Any],
+    candidate_observations: dict[Observation, DependencyTrackObservation],
+) -> dict[str, Any]:
+    reference = _format_equivalence_projection(
+        reference_summary, reference_observations
+    )
+    candidate = _format_equivalence_projection(
+        candidate_summary, candidate_observations
+    )
+    checks = {
+        key: reference[key] == candidate[key]
+        for key in (
+            "summary_semantics",
+            "identity_uuids",
+            "dependency_graph",
+            "bom_export",
+        )
+    }
+    return {
+        "reference_step": reference_step_id,
+        "equivalent": all(checks.values()),
+        "checks": checks,
+        "reference": reference,
+        "candidate": candidate,
+    }
+
+
 def _capture_observation(
     client: DependencyTrackLabApi,
     observation: Observation,
@@ -1269,21 +1635,16 @@ def _scenario_mutates_analysis(scenario: LabScenario) -> bool:
     )
 
 
+def _scenario_requires_explicit_selection(scenario: LabScenario) -> bool:
+    return _scenario_mutates_analysis(scenario) or any(
+        step.expected_bom_rejection is not None for step in scenario.steps
+    )
+
+
 def _validate_analysis_team(
     observation: DependencyTrackObservation,
 ) -> None:
-    payload = observation.payload
-    if not isinstance(payload, dict) or not isinstance(
-        payload.get("permissions"), list
-    ):
-        raise LabManifestError(
-            "analysis key team response does not contain a permissions list"
-        )
-    permission_names = {
-        str(permission.get("name"))
-        for permission in payload["permissions"]
-        if isinstance(permission, dict) and permission.get("name")
-    }
+    permission_names = _team_permission_names(observation)
     required = "VULNERABILITY_ANALYSIS"
     allowed = {
         required,
@@ -1293,18 +1654,35 @@ def _validate_analysis_team(
         "VIEW_VULNERABILITY",
     }
     if required not in permission_names:
-        rendered = ", ".join(sorted(permission_names)) or "none"
+        rendered = ", ".join(permission_names) or "none"
         raise LabManifestError(
             "analysis key team must include VULNERABILITY_ANALYSIS; observed: "
             f"{rendered}"
         )
-    disallowed = permission_names - allowed
+    disallowed = set(permission_names) - allowed
     if disallowed:
         rendered = ", ".join(sorted(disallowed))
         raise LabManifestError(
             "analysis key team has permissions outside the lab analysis allowlist: "
             f"{rendered}"
         )
+
+
+def _team_permission_names(
+    observation: DependencyTrackObservation,
+) -> tuple[str, ...]:
+    payload = observation.payload
+    if not isinstance(payload, dict) or not isinstance(
+        payload.get("permissions"), list
+    ):
+        raise LabManifestError("team response does not contain a permissions list")
+    return tuple(
+        sorted(
+            str(permission.get("name"))
+            for permission in payload["permissions"]
+            if isinstance(permission, dict) and permission.get("name")
+        )
+    )
 
 
 def _selected_scenarios(
@@ -1319,7 +1697,7 @@ def _selected_scenarios(
         return tuple(
             scenario
             for scenario in implemented
-            if not _scenario_mutates_analysis(scenario)
+            if not _scenario_requires_explicit_selection(scenario)
         )
     available = {scenario.id: scenario for scenario in implemented}
     unknown = sorted(set(scenario_ids) - set(available))
@@ -1458,6 +1836,144 @@ def _analysis_verification(
     }
 
 
+def _json_digest(payload: Any) -> str:
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _analysis_field(payload: Any, *names: str) -> Any:
+    if not isinstance(payload, dict):
+        return None
+    for name in names:
+        if name in payload:
+            return payload[name]
+    return None
+
+
+def _analysis_decision_projection(payload: Any) -> dict[str, Any]:
+    return {
+        "state": _analysis_state(payload),
+        "justification": _analysis_field(
+            payload, "analysisJustification", "justification"
+        ),
+        "response": _analysis_field(payload, "analysisResponse", "response"),
+        "detail": _analysis_field(payload, "analysisDetails", "detail"),
+        "suppressed": _analysis_suppressed(payload),
+    }
+
+
+def _requested_analysis_projection(action: AnalysisAction) -> dict[str, Any]:
+    return {
+        "state": action.state.value,
+        "justification": action.justification.value,
+        "response": action.response.value,
+        "detail": action.detail,
+        "suppressed": action.suppressed,
+    }
+
+
+def _analysis_comments(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict) or not isinstance(
+        payload.get("analysisComments"), list
+    ):
+        return []
+    return [
+        {
+            "timestamp": comment.get("timestamp"),
+            "comment": comment.get("comment"),
+            "commenter": comment.get("commenter"),
+        }
+        for comment in payload["analysisComments"]
+        if isinstance(comment, dict)
+    ]
+
+
+def _observation_validators(
+    observation: DependencyTrackObservation,
+) -> dict[str, str | None]:
+    headers = {str(key).lower(): str(value) for key, value in observation.headers}
+    return {
+        "etag": headers.get("etag"),
+        "last_modified": headers.get("last-modified"),
+    }
+
+
+def _analysis_reconciliation_entry(
+    *,
+    action: AnalysisAction,
+    trail: DependencyTrackObservation,
+    findings: DependencyTrackObservation,
+    finding: dict[str, Any],
+    default_finding_present: bool,
+    including_suppressed_finding_present: bool,
+) -> dict[str, Any]:
+    finding_analysis = finding.get("analysis")
+    request_decision = _requested_analysis_projection(action)
+    trail_decision = _analysis_decision_projection(trail.payload)
+    finding_decision = _analysis_decision_projection(finding_analysis)
+    comments = _analysis_comments(trail.payload)
+    timestamps = [
+        timestamp
+        for comment in comments
+        if isinstance((timestamp := comment.get("timestamp")), int)
+    ]
+    audit_projection = {"decision": trail_decision, "comments": comments}
+    return {
+        "action_id": action.id,
+        "request_comment": action.comment,
+        "request_decision": request_decision,
+        "request_decision_sha256": _json_digest(request_decision),
+        "trail_decision": trail_decision,
+        "trail_decision_sha256": _json_digest(trail_decision),
+        "finding_decision": finding_decision,
+        "finding_decision_sha256": _json_digest(finding_decision),
+        "audit_sha256": _json_digest(audit_projection),
+        "audit_comment_count": len(comments),
+        "last_comment_timestamp": max(timestamps) if timestamps else None,
+        "trail_validators": _observation_validators(trail),
+        "finding_validators": _observation_validators(findings),
+        "default_finding_present": default_finding_present,
+        "including_suppressed_finding_present": (including_suppressed_finding_present),
+    }
+
+
+def _with_reconciliation_delta(
+    current: dict[str, Any], previous: dict[str, Any] | None
+) -> dict[str, Any]:
+    result = dict(current)
+    if previous is None:
+        result["delta_from_previous"] = None
+        return result
+    current_timestamp = current.get("last_comment_timestamp")
+    previous_timestamp = previous.get("last_comment_timestamp")
+    result["delta_from_previous"] = {
+        "request_decision_changed": (
+            current["request_decision_sha256"] != previous["request_decision_sha256"]
+        ),
+        "trail_decision_changed": (
+            current["trail_decision_sha256"] != previous["trail_decision_sha256"]
+        ),
+        "finding_decision_changed": (
+            current["finding_decision_sha256"] != previous["finding_decision_sha256"]
+        ),
+        "audit_changed": current["audit_sha256"] != previous["audit_sha256"],
+        "audit_comment_count_delta": (
+            current["audit_comment_count"] - previous["audit_comment_count"]
+        ),
+        "last_comment_timestamp_advanced": (
+            isinstance(current_timestamp, int)
+            and isinstance(previous_timestamp, int)
+            and current_timestamp > previous_timestamp
+        ),
+    }
+    return result
+
+
 def _run_analysis_actions(
     *,
     step: ScenarioStep,
@@ -1469,53 +1985,166 @@ def _run_analysis_actions(
     poll_interval: float,
 ) -> int:
     observation_count = 0
-    for index, action in enumerate(step.analysis_actions, start=1):
-        action_directory = (
-            step_directory / "analysis-actions" / f"{index:02d}-{action.id}"
-        )
-        action_directory.mkdir(parents=True, exist_ok=False)
-        before, component_uuid, vulnerability_uuid, _ = _wait_for_analysis_target(
-            client=read_client,
-            project_uuid=project_uuid,
-            action=action,
-            timeout=timeout,
-            poll_interval=poll_interval,
-        )
-        _write_json(
-            action_directory / "findings-before.json", _observation_dict(before)
-        )
-        update = analysis_client.record_analysis_decision(
-            project_uuid=project_uuid,
-            component_uuid=component_uuid,
-            vulnerability_uuid=vulnerability_uuid,
-            action=action,
-        )
-        _write_json(action_directory / "update.json", _observation_dict(update))
-        trail = read_client.observe_analysis_trail(
-            project_uuid, component_uuid, vulnerability_uuid
-        )
-        _write_json(action_directory / "trail.json", _observation_dict(trail))
-        after = read_client.observe_project_findings(
-            project_uuid, suppressed=action.suppressed
-        )
-        _write_json(action_directory / "findings-after.json", _observation_dict(after))
-        target = _analysis_target(after, action)
-        if target is None:
-            raise LabManifestError(
-                f"analysis action {action.id!r} target disappeared after update"
+    reconciliation_entries: list[dict[str, Any]] = []
+    targets: dict[tuple[str, str, str], tuple[AnalysisAction, str, str]] = {}
+    try:
+        for index, action in enumerate(step.analysis_actions, start=1):
+            action_directory = (
+                step_directory / "analysis-actions" / f"{index:02d}-{action.id}"
             )
-        metrics = read_client.observe_project_metrics(project_uuid)
-        _write_json(action_directory / "metrics.json", _observation_dict(metrics))
-        _write_json(
-            action_directory / "verification.json",
-            _analysis_verification(
+            action_directory.mkdir(parents=True, exist_ok=False)
+            before, component_uuid, vulnerability_uuid, _ = _wait_for_analysis_target(
+                client=read_client,
+                project_uuid=project_uuid,
                 action=action,
-                update=update,
+                timeout=timeout,
+                poll_interval=poll_interval,
+            )
+            target_key = (
+                action.component_purl,
+                action.vulnerability_source,
+                action.vulnerability_id,
+            )
+            targets[target_key] = (action, component_uuid, vulnerability_uuid)
+            _write_json(
+                action_directory / "findings-before.json", _observation_dict(before)
+            )
+            update = analysis_client.record_analysis_decision(
+                project_uuid=project_uuid,
+                component_uuid=component_uuid,
+                vulnerability_uuid=vulnerability_uuid,
+                action=action,
+            )
+            _write_json(action_directory / "update.json", _observation_dict(update))
+            trail = read_client.observe_analysis_trail(
+                project_uuid, component_uuid, vulnerability_uuid
+            )
+            _write_json(action_directory / "trail.json", _observation_dict(trail))
+            after_default = read_client.observe_project_findings(project_uuid)
+            _write_json(
+                action_directory / "findings-after-default.json",
+                _observation_dict(after_default),
+            )
+            after_including_suppressed = read_client.observe_project_findings(
+                project_uuid, suppressed=True
+            )
+            _write_json(
+                action_directory / "findings-after-including-suppressed.json",
+                _observation_dict(after_including_suppressed),
+            )
+            default_target = _analysis_target(after_default, action)
+            including_suppressed_target = _analysis_target(
+                after_including_suppressed, action
+            )
+            if including_suppressed_target is None:
+                raise LabManifestError(
+                    f"analysis action {action.id!r} target disappeared after update"
+                )
+            after = after_including_suppressed if action.suppressed else after_default
+            target = including_suppressed_target
+            _write_json(
+                action_directory / "findings-after.json", _observation_dict(after)
+            )
+            metrics = read_client.observe_project_metrics(project_uuid)
+            _write_json(action_directory / "metrics.json", _observation_dict(metrics))
+            _write_json(
+                action_directory / "verification.json",
+                _analysis_verification(
+                    action=action,
+                    update=update,
+                    trail=trail,
+                    finding=target[2],
+                ),
+            )
+            entry = _analysis_reconciliation_entry(
+                action=action,
                 trail=trail,
+                findings=after_including_suppressed,
                 finding=target[2],
-            ),
+                default_finding_present=default_target is not None,
+                including_suppressed_finding_present=(
+                    including_suppressed_target is not None
+                ),
+            )
+            reconciliation_entries.append(
+                _with_reconciliation_delta(
+                    entry,
+                    reconciliation_entries[-1] if reconciliation_entries else None,
+                )
+            )
+            observation_count += 6
+
+        _write_json(
+            step_directory / "analysis-actions" / "reconciliation.json",
+            {
+                "finding_etag_observed": any(
+                    entry["finding_validators"]["etag"] is not None
+                    for entry in reconciliation_entries
+                ),
+                "finding_last_modified_observed": any(
+                    entry["finding_validators"]["last_modified"] is not None
+                    for entry in reconciliation_entries
+                ),
+                "trail_etag_observed": any(
+                    entry["trail_validators"]["etag"] is not None
+                    for entry in reconciliation_entries
+                ),
+                "trail_last_modified_observed": any(
+                    entry["trail_validators"]["last_modified"] is not None
+                    for entry in reconciliation_entries
+                ),
+                "actions": reconciliation_entries,
+            },
         )
-        observation_count += 5
+    except Exception:
+        if targets:
+            emergency_directory = (
+                step_directory / "analysis-actions" / "emergency-restore"
+            )
+            emergency_directory.mkdir(parents=True, exist_ok=True)
+            try:
+                for index, (action, component_uuid, vulnerability_uuid) in enumerate(
+                    targets.values(), start=1
+                ):
+                    reset = _not_set_action(
+                        action,
+                        action_id=f"emergency-restore-{index}",
+                        detail=(
+                            "DT lab restores Analysis after a failed action sequence."
+                        ),
+                        comment="DT lab emergency-restores the disposable Finding.",
+                    )
+                    update = analysis_client.record_analysis_decision(
+                        project_uuid=project_uuid,
+                        component_uuid=component_uuid,
+                        vulnerability_uuid=vulnerability_uuid,
+                        action=reset,
+                    )
+                    _write_json(
+                        emergency_directory / f"{index:02d}-update.json",
+                        _observation_dict(update),
+                    )
+                    findings, finding = _wait_for_analysis_projection(
+                        client=read_client,
+                        project_uuid=project_uuid,
+                        action=reset,
+                        timeout=timeout,
+                        poll_interval=poll_interval,
+                        expected_suppressed=False,
+                    )
+                    _write_json(
+                        emergency_directory / f"{index:02d}-findings.json",
+                        _observation_dict(findings),
+                    )
+                    _write_json(
+                        emergency_directory / f"{index:02d}-verification.json",
+                        _finding_analysis_projection(finding),
+                    )
+            except Exception as restore_error:
+                raise LabManifestError(
+                    "Analysis action sequence failed and emergency restore also failed"
+                ) from restore_error
+        raise
     return observation_count
 
 
@@ -2475,6 +3104,243 @@ def _run_vex_targeting_probe(
     return observation_count
 
 
+def _base_media_type(observation: DependencyTrackObservation) -> str:
+    content_type = next(
+        (value for key, value in observation.headers if key.lower() == "content-type"),
+        "",
+    )
+    return content_type.split(";", 1)[0].strip().lower()
+
+
+def _project_uuid_from_lookup(
+    observation: DependencyTrackObservation,
+    *,
+    scenario_id: str,
+    project_name: str,
+    project_version: str,
+) -> str:
+    if (
+        observation.status != 200
+        or not isinstance(observation.payload, dict)
+        or not observation.payload.get("uuid")
+        or observation.payload.get("name") != project_name
+        or observation.payload.get("version") != project_version
+    ):
+        raise LabManifestError(
+            f"scenario {scenario_id!r} Project lookup identity mismatch"
+        )
+    return str(observation.payload["uuid"])
+
+
+def _project_parent_uuid(observation: DependencyTrackObservation) -> str | None:
+    if not isinstance(observation.payload, dict):
+        return None
+    parent = observation.payload.get("parent")
+    if not isinstance(parent, dict) or not parent.get("uuid"):
+        return None
+    return str(parent["uuid"])
+
+
+def _project_risk_projection(
+    project: DependencyTrackObservation,
+    metrics: DependencyTrackObservation,
+) -> dict[str, Any]:
+    project_payload = project.payload if isinstance(project.payload, dict) else {}
+    metrics_payload = metrics.payload if isinstance(metrics.payload, dict) else {}
+    return {
+        "project": {
+            "uuid": project_payload.get("uuid"),
+            "name": project_payload.get("name"),
+            "version": project_payload.get("version"),
+            "collection_logic": project_payload.get("collectionLogic"),
+            "last_inherited_risk_score": project_payload.get("lastInheritedRiskScore"),
+        },
+        "metrics": {
+            key: metrics_payload.get(key)
+            for key in (
+                "collectionLogic",
+                "components",
+                "vulnerabilities",
+                "findingsTotal",
+                "critical",
+                "high",
+                "medium",
+                "low",
+                "inheritedRiskScore",
+                "firstOccurrence",
+                "lastOccurrence",
+            )
+        },
+    }
+
+
+def _capture_parent_relationship(
+    *,
+    step: ScenarioStep,
+    step_directory: Path,
+    child_uuid: str,
+    parent_uuid: str,
+    child_project: DependencyTrackObservation,
+    child_metrics: DependencyTrackObservation,
+    read_client: DependencyTrackLabApi,
+) -> int:
+    parent_project = read_client.observe_project(parent_uuid)
+    parent_metrics = read_client.observe_project_metrics(parent_uuid)
+    parent_children = read_client.observe_project_children(parent_uuid)
+    _write_json(
+        step_directory / "parent-project.json", _observation_dict(parent_project)
+    )
+    _write_json(
+        step_directory / "parent-metrics.json", _observation_dict(parent_metrics)
+    )
+    _write_json(
+        step_directory / "parent-children.json", _observation_dict(parent_children)
+    )
+    observed_parent_uuid = _project_parent_uuid(child_project)
+    children = _payload_list(parent_children)
+    matching_children = [
+        child
+        for child in children
+        if isinstance(child, dict) and str(child.get("uuid")) == child_uuid
+    ]
+    verification = {
+        "parent_step": step.parent_step,
+        "relationship_verified": (
+            observed_parent_uuid == parent_uuid and len(matching_children) == 1
+        ),
+        "child_parent_uuid": observed_parent_uuid,
+        "parent_uuid": parent_uuid,
+        "children_count": len(children),
+        "matching_child_count": len(matching_children),
+        "parent": _project_risk_projection(parent_project, parent_metrics),
+        "child": _project_risk_projection(child_project, child_metrics),
+    }
+    _write_json(step_directory / "hierarchy.json", verification)
+    if verification["relationship_verified"] is not True:
+        raise LabManifestError(
+            f"scenario step {step.id!r} parent-child relationship did not verify"
+        )
+    return 3
+
+
+def _project_tag_names(project: DependencyTrackObservation) -> tuple[str, ...]:
+    if not isinstance(project.payload, dict):
+        raise LabManifestError("Project tag projection requires an object response")
+    raw_tags = project.payload.get("tags", [])
+    if not isinstance(raw_tags, list):
+        raise LabManifestError("Project tags response must be a list")
+    tags = tuple(
+        sorted(
+            str(tag["name"])
+            for tag in raw_tags
+            if isinstance(tag, dict) and tag.get("name")
+        )
+    )
+    if len(tags) != len(raw_tags) or len(tags) != len(set(tags)):
+        raise LabManifestError("Project tags response contains invalid entries")
+    return tags
+
+
+def _response_total_count(observation: DependencyTrackObservation) -> int | None:
+    raw_value = next(
+        (value for key, value in observation.headers if key.lower() == "x-total-count"),
+        None,
+    )
+    if raw_value is None:
+        return None
+    try:
+        return int(raw_value)
+    except ValueError as exc:
+        raise LabManifestError(
+            f"response has invalid X-Total-Count: {raw_value!r}"
+        ) from exc
+
+
+def _capture_routing_metadata(
+    *,
+    step: ScenarioStep,
+    step_directory: Path,
+    project_uuid: str,
+    project: DependencyTrackObservation,
+    previous_tags: tuple[str, ...],
+    upload_key_permissions: tuple[str, ...],
+    read_client: DependencyTrackLabApi,
+) -> tuple[int, tuple[str, ...]]:
+    observed_tags = _project_tag_names(project)
+    requested = set(step.project_tags)
+    previous = set(previous_tags)
+    observed = set(observed_tags)
+    query_tags = tuple(sorted(requested | previous))
+    queries: dict[str, dict[str, Any]] = {}
+    observation_count = 0
+    for index, tag in enumerate(query_tags, start=1):
+        projects = read_client.observe_projects_by_tag(tag)
+        _write_json(
+            step_directory / f"tag-projects-{index:02d}.json",
+            _observation_dict(projects),
+        )
+        payload = _payload_list(projects)
+        matching_count = sum(
+            1
+            for candidate in payload
+            if isinstance(candidate, dict)
+            and str(candidate.get("uuid")) == project_uuid
+        )
+        membership = matching_count == 1
+        expected_membership = tag in observed
+        queries[tag] = {
+            "current_project_present": membership,
+            "expected_from_project_projection": expected_membership,
+            "matching_project_count": matching_count,
+            "returned_project_count": len(payload),
+            "total_count": _response_total_count(projects),
+        }
+        if matching_count > 1 or membership != expected_membership:
+            raise LabManifestError(
+                f"scenario step {step.id!r} tag query disagrees with Project "
+                f"projection for {tag!r}"
+            )
+        observation_count += 1
+
+    property_projection: dict[str, Any] | None = None
+    if step.probe_project_properties:
+        properties = read_client.attempt_observe_project_properties(project_uuid)
+        _write_json(
+            step_directory / "project-properties.json",
+            _observation_dict(properties),
+        )
+        if properties.status not in {200, 403}:
+            raise LabManifestError(
+                f"scenario step {step.id!r} Project property probe returned "
+                f"unexpected HTTP {properties.status}"
+            )
+        property_count: int | None = None
+        if properties.status == 200:
+            property_count = len(_payload_list(properties))
+        property_projection = {
+            "status": properties.status,
+            "readable_with_orchestrator_key": properties.status == 200,
+            "property_count": property_count,
+        }
+        observation_count += 1
+
+    summary = {
+        "requested_tags": sorted(requested),
+        "observed_tags": list(observed_tags),
+        "previous_observed_tags": sorted(previous),
+        "missing_requested_tags": sorted(requested - observed),
+        "stale_previous_tags": sorted((previous - requested) & observed),
+        "added_observed_tags": sorted(observed - previous),
+        "removed_observed_tags": sorted(previous - observed),
+        "request_exactly_reconciled": requested == observed,
+        "upload_key_permissions": list(upload_key_permissions),
+        "tag_queries": queries,
+        "project_properties": property_projection,
+    }
+    _write_json(step_directory / "routing-metadata.json", summary)
+    return observation_count, observed_tags
+
+
 def _run_scenario_steps(
     *,
     selected: tuple[LabScenario, ...],
@@ -2484,6 +3350,7 @@ def _run_scenario_steps(
     upload_client: DependencyTrackLabApi,
     read_client: DependencyTrackLabApi,
     analysis_client: DependencyTrackLabApi | None,
+    upload_key_permissions: tuple[str, ...],
     processing_timeout: float,
     poll_interval: float,
     results: list[LabStepResult],
@@ -2491,69 +3358,216 @@ def _run_scenario_steps(
 ) -> None:
     for scenario in selected:
         previous_summary: dict[str, Any] | None = None
+        previous_project_key: tuple[str, str] | None = None
+        summaries_by_step: dict[str, dict[str, Any]] = {}
+        observations_by_step: dict[
+            str, dict[Observation, DependencyTrackObservation]
+        ] = {}
+        project_uuids_by_step: dict[str, str] = {}
+        project_tags_by_key: dict[tuple[str, str], tuple[str, ...]] = {}
         for index, step in enumerate(scenario.steps, start=1):
+            project_name = step.project_name or scenario.project_name
             declared_version = step.project_version or scenario.project_version
             project_version = f"{declared_version}-lab-{run_id[:8]}"
+            parent_project_uuid = (
+                project_uuids_by_step[step.parent_step]
+                if step.parent_step is not None
+                else None
+            )
             record_index = len(project_records)
             project_records.append(
                 LabProjectRecord(
                     scenario_id=scenario.id,
                     step_id=step.id,
-                    project_name=scenario.project_name,
+                    project_name=project_name,
                     project_version=project_version,
                 )
             )
             _write_project_ledger(run_directory, run_id, project_records)
-            upload = upload_client.upload_bom_by_project_coordinates(
-                scenario.project_name,
-                project_version,
-                manifest_root / step.bom,
-            )
-            upload_client.wait_for_bom_processing(
-                upload.token,
-                timeout=processing_timeout,
-                poll_interval=poll_interval,
-            )
-            lookup = read_client.observe_project_lookup(
-                scenario.project_name, project_version
-            )
-            if (
-                not isinstance(lookup.payload, dict)
-                or not lookup.payload.get("uuid")
-                or lookup.payload.get("name") != scenario.project_name
-                or lookup.payload.get("version") != project_version
-            ):
-                raise LabManifestError(
-                    f"scenario {scenario.id!r} Project lookup identity mismatch"
-                )
-            project_uuid = str(lookup.payload["uuid"])
-            project_records[record_index] = LabProjectRecord(
-                scenario_id=scenario.id,
-                step_id=step.id,
-                project_name=scenario.project_name,
-                project_version=project_version,
-                project_uuid=project_uuid,
-            )
-            _write_project_ledger(run_directory, run_id, project_records)
             step_directory = run_directory / scenario.id / f"{index:02d}-{step.id}"
             step_directory.mkdir(parents=True, exist_ok=False)
+            project_uuid: str | None = None
+            base_observation_count = 1
+            if step.expected_bom_rejection is not None:
+                expected = step.expected_bom_rejection
+                attempt = upload_client.attempt_bom_upload_by_project_coordinates(
+                    project_name,
+                    project_version,
+                    manifest_root / step.bom,
+                    parent_project_uuid=parent_project_uuid,
+                    project_tags=step.project_tags,
+                )
+                _write_json(
+                    step_directory / "upload-rejection.json",
+                    _observation_dict(attempt.observation),
+                )
+                if attempt.upload is not None:
+                    raise LabManifestError(
+                        f"scenario {scenario.id!r} expected BOM rejection but "
+                        "Dependency-Track accepted the upload"
+                    )
+                actual_media_type = _base_media_type(attempt.observation)
+                if (
+                    attempt.observation.status != expected.status
+                    or actual_media_type != expected.media_type.lower()
+                ):
+                    raise LabManifestError(
+                        f"scenario {scenario.id!r} BOM rejection contract mismatch: "
+                        f"expected HTTP {expected.status} {expected.media_type}, "
+                        f"observed HTTP {attempt.observation.status} "
+                        f"{actual_media_type or 'without Content-Type'}"
+                    )
+                lookup = read_client.observe_project_lookup_if_present(
+                    project_name, project_version
+                )
+                project_created = lookup.status != 404
+                if project_created != expected.project_created:
+                    raise LabManifestError(
+                        f"scenario {scenario.id!r} rejected BOM Project side effect "
+                        "mismatch: expected project_created="
+                        f"{expected.project_created}, "
+                        f"observed project_created={project_created}"
+                    )
+                if project_created:
+                    project_uuid = _project_uuid_from_lookup(
+                        lookup,
+                        scenario_id=scenario.id,
+                        project_name=project_name,
+                        project_version=project_version,
+                    )
+                base_observation_count = 2
+            else:
+                attempt = upload_client.attempt_bom_upload_by_project_coordinates(
+                    project_name,
+                    project_version,
+                    manifest_root / step.bom,
+                    parent_project_uuid=parent_project_uuid,
+                    project_tags=step.project_tags,
+                )
+                _write_json(
+                    step_directory / "bom-upload.json",
+                    _observation_dict(attempt.observation),
+                )
+                if attempt.upload is None:
+                    actual_media_type = _base_media_type(attempt.observation)
+                    raise LabManifestError(
+                        f"scenario {scenario.id!r} BOM upload was rejected: "
+                        f"HTTP {attempt.observation.status} "
+                        f"{actual_media_type or 'without Content-Type'}"
+                    )
+                upload = attempt.upload
+                upload_client.wait_for_bom_processing(
+                    upload.token,
+                    timeout=processing_timeout,
+                    poll_interval=poll_interval,
+                )
+                lookup = read_client.observe_project_lookup(
+                    project_name, project_version
+                )
+                project_uuid = _project_uuid_from_lookup(
+                    lookup,
+                    scenario_id=scenario.id,
+                    project_name=project_name,
+                    project_version=project_version,
+                )
+            if project_uuid is not None:
+                project_records[record_index] = LabProjectRecord(
+                    scenario_id=scenario.id,
+                    step_id=step.id,
+                    project_name=project_name,
+                    project_version=project_version,
+                    project_uuid=project_uuid,
+                )
+                _write_project_ledger(run_directory, run_id, project_records)
+                project_uuids_by_step[step.id] = project_uuid
+            if step.observations and project_uuid is None:
+                raise LabManifestError(
+                    f"scenario {scenario.id!r} cannot capture Project observations "
+                    "because no Project was created"
+                )
             _write_json(
                 step_directory / "project-lookup.json", _observation_dict(lookup)
             )
             captured: dict[Observation, DependencyTrackObservation] = {}
             for observation in step.observations:
+                if project_uuid is None:  # guarded above; narrows for type checkers
+                    raise LabManifestError("Project UUID is required for observations")
                 result = _capture_observation(read_client, observation, project_uuid)
                 captured[observation] = result
                 _write_json(
                     step_directory / f"{observation.value}.json",
                     _observation_dict(result),
                 )
+            hierarchy_observation_count = 0
+            if step.parent_step is not None:
+                if project_uuid is None or parent_project_uuid is None:
+                    raise LabManifestError(
+                        f"scenario step {step.id!r} requires parent and child UUIDs"
+                    )
+                child_project = captured[Observation.PROJECT]
+                child_metrics = captured[Observation.METRICS]
+                hierarchy_observation_count = _capture_parent_relationship(
+                    step=step,
+                    step_directory=step_directory,
+                    child_uuid=project_uuid,
+                    parent_uuid=parent_project_uuid,
+                    child_project=child_project,
+                    child_metrics=child_metrics,
+                    read_client=read_client,
+                )
+            routing_observation_count = 0
+            project_key = (project_name, project_version)
+            if step.project_tags or step.probe_project_properties:
+                if Observation.PROJECT not in captured:
+                    raise LabManifestError(
+                        f"scenario step {step.id!r} routing metadata requires a "
+                        "Project observation"
+                    )
+                routing_observation_count, observed_tags = _capture_routing_metadata(
+                    step=step,
+                    step_directory=step_directory,
+                    project_uuid=project_uuid,
+                    project=captured[Observation.PROJECT],
+                    previous_tags=project_tags_by_key.get(project_key, ()),
+                    upload_key_permissions=upload_key_permissions,
+                    read_client=read_client,
+                )
+                project_tags_by_key[project_key] = observed_tags
             summary = _step_summary(captured)
             _write_json(step_directory / "summary.json", summary)
-            delta = _step_delta(previous_summary, summary)
+            delta = (
+                _step_delta(previous_summary, summary)
+                if previous_project_key == project_key
+                else None
+            )
             if delta is not None:
                 _write_json(step_directory / "delta.json", delta)
+            if step.equivalent_to_step is not None:
+                comparison = _step_equivalence(
+                    reference_step_id=step.equivalent_to_step,
+                    reference_summary=summaries_by_step[step.equivalent_to_step],
+                    reference_observations=observations_by_step[
+                        step.equivalent_to_step
+                    ],
+                    candidate_summary=summary,
+                    candidate_observations=captured,
+                )
+                _write_json(step_directory / "equivalence.json", comparison)
+                if comparison["equivalent"] is not True:
+                    failed_checks = sorted(
+                        key
+                        for key, value in comparison["checks"].items()
+                        if value is not True
+                    )
+                    raise LabManifestError(
+                        f"scenario {scenario.id!r} step {step.id!r} is not "
+                        f"equivalent to {step.equivalent_to_step!r}: "
+                        + ", ".join(failed_checks)
+                    )
+            summaries_by_step[step.id] = summary
+            observations_by_step[step.id] = captured
             previous_summary = summary
+            previous_project_key = project_key
             mutation_observation_count = 0
             if step.analysis_actions:
                 if analysis_client is None:
@@ -2603,7 +3617,13 @@ def _run_scenario_steps(
                     step_id=step.id,
                     project_uuid=project_uuid,
                     snapshot_directory=str(step_directory),
-                    observation_count=len(captured) + 1 + mutation_observation_count,
+                    observation_count=(
+                        len(captured)
+                        + base_observation_count
+                        + hierarchy_observation_count
+                        + routing_observation_count
+                        + mutation_observation_count
+                    ),
                 )
             )
 
@@ -2625,6 +3645,14 @@ def run_lab_scenarios(
     selected = _selected_scenarios(manifest, scenario_ids)
     mutating_scenarios = [
         scenario.id for scenario in selected if _scenario_mutates_analysis(scenario)
+    ]
+    routing_scenarios = [
+        scenario.id
+        for scenario in selected
+        if any(
+            step.project_tags or step.probe_project_properties
+            for step in scenario.steps
+        )
     ]
     if mutating_scenarios and not allow_analysis_mutation:
         raise LabManifestError(
@@ -2666,7 +3694,15 @@ def run_lab_scenarios(
             _observation_dict(analysis_team),
         )
     _write_project_ledger(run_directory, run_id, project_records)
+    upload_key_permissions: tuple[str, ...] = ()
     try:
+        if routing_scenarios:
+            upload_team = upload_client.observe_current_team()
+            upload_key_permissions = _team_permission_names(upload_team)
+            _write_json(
+                run_directory / "upload-key-team.json",
+                _observation_dict(upload_team),
+            )
         _run_scenario_steps(
             selected=selected,
             manifest_root=manifest_root,
@@ -2675,6 +3711,7 @@ def run_lab_scenarios(
             upload_client=upload_client,
             read_client=read_client,
             analysis_client=analysis_client,
+            upload_key_permissions=upload_key_permissions,
             processing_timeout=processing_timeout,
             poll_interval=poll_interval,
             results=results,

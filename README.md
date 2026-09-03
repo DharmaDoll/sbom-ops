@@ -187,9 +187,14 @@ make dt-lab-validate
 make dt-lab-test
 make dt-lab-openapi
 make dt-lab-run
+make dt-lab-parent-child
+make dt-lab-routing-metadata
 make dt-lab-triage-analysis
+make dt-lab-triage-delegation
 make dt-lab-triage-vex
 make dt-lab-triage-vex-targeting
+make dt-lab-invalid-cyclonedx
+make dt-lab-json-xml-equivalence
 make dt-lab-corpus-validate
 make dt-lab-corpus-run CORPUS_ID=go-otel-obi-0-12-2
 make dt-lab-cleanup RUN_ID=<run-uuid>

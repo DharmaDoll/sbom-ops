@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
+from urllib.error import HTTPError
+
+import pytest
 
 from sbom_ops.clients import github as github_module
 from sbom_ops.clients import kev as kev_module
@@ -76,6 +80,42 @@ def test_http_json_response_can_allow_an_empty_success_body() -> None:
     assert isinstance(response, HttpJsonResponse)
     assert response.payload is None
     assert response.status == 204
+
+
+def test_http_error_preserves_problem_details_without_retrying_client_error() -> None:
+    calls = 0
+    problem = {
+        "status": 400,
+        "title": "The uploaded BOM is invalid",
+        "detail": "component type is invalid",
+    }
+
+    def reject(request, timeout):
+        nonlocal calls
+        calls += 1
+        raise HTTPError(
+            request.full_url,
+            400,
+            "Bad Request",
+            {"Content-Type": "application/problem+json"},
+            BytesIO(json.dumps(problem).encode()),
+        )
+
+    with pytest.raises(HttpApiError) as raised:
+        request_json(
+            request=kev_module.Request("https://example.test/bom"),
+            timeout=1,
+            max_retries=3,
+            backoff_seconds=0,
+            error_message="failed",
+            opener=reject,
+        )
+
+    assert calls == 1
+    assert raised.value.status == 400
+    assert raised.value.payload == problem
+    assert raised.value.headers == {"Content-Type": "application/problem+json"}
+    assert raised.value.duration_seconds is not None
 
 
 def test_kev_client_reads_cve_ids(monkeypatch) -> None:

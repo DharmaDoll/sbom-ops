@@ -174,29 +174,69 @@ scenarios:
 
   - id: portfolio-parent-child
     category: portfolio
-    status: planned
-    purpose: Measure inherited risk and API responses across parent and child Projects.
+    status: implemented
+    purpose: Measure hierarchy representation and default inherited-risk behavior across parent and child Projects.
     hypotheses:
-      - DT parent-child Projects provide enough portfolio aggregation to avoid rebuilding it in sbom-ops.
+      - DT preserves a child-to-parent relationship and exposes the child through the parent's paginated children endpoint.
+      - Hierarchy creation alone does not imply risk aggregation when the parent's collection logic remains at its default.
     decision_questions:
       - Which hierarchy and inherited-risk behavior can sbom-ops delegate to DT?
+      - Is explicit collection-logic management required before a parent can be a remediation boundary?
     project:
       name: dt-lab-portfolio-parent
       version: 1.0.0
-    steps: []
+    steps:
+      - id: parent
+        bom: sboms/portfolio-parent.cdx.json
+        observe:
+          - project
+          - components
+          - findings
+          - metrics
+          - bom-export
+      - id: child
+        project_name: dt-lab-portfolio-child
+        parent_step: parent
+        bom: sboms/portfolio-child.cdx.json
+        observe:
+          - project
+          - components
+          - findings
+          - metrics
+          - bom-export
 
   - id: portfolio-tags-properties
     category: portfolio
-    status: planned
-    purpose: Evaluate tags and properties as routing and ownership metadata.
+    status: implemented
+    purpose: Evaluate least-privilege Project tags and properties as routing and ownership metadata.
     hypotheses:
-      - DT tags or properties can hold stable routing metadata for remediation work.
+      - Tags supplied on initial coordinate upload are queryable through the Project projection and paginated tag filter.
+      - A creation-only upload key cannot silently reconcile changed tags on an existing Project.
+      - Project properties require management permission even for their dedicated read endpoint.
     decision_questions:
       - Can ownership and repository routing be derived from DT without a second inventory?
+      - Which DT metadata source can be read and updated with least privilege and deterministic replacement semantics?
     project:
       name: dt-lab-portfolio-metadata
       version: 1.0.0
-    steps: []
+    steps:
+      - id: initial-routing
+        bom: sboms/portfolio-tags-properties.cdx.json
+        project_tags:
+          - dt-lab-owner-alpha
+          - dt-lab-repository-alpha
+        observe:
+          - project
+          - components
+      - id: changed-routing
+        bom: sboms/portfolio-tags-properties.cdx.json
+        project_tags:
+          - dt-lab-owner-beta
+          - dt-lab-repository-beta
+        probe_project_properties: true
+        observe:
+          - project
+          - components
 
   - id: portfolio-direct-transitive-graph
     category: portfolio
@@ -334,7 +374,7 @@ scenarios:
 
   - id: triage-delegation-boundary
     category: triage
-    status: planned
+    status: implemented
     purpose: Determine the maximum safe triage responsibility that can be delegated to Dependency-Track.
     hypotheses:
       - DT can own finding review, Analysis decisions, comments, suppression, VEX state, and their audit trail.
@@ -348,7 +388,75 @@ scenarios:
     project:
       name: dt-lab-triage-delegation
       version: 1.0.0
-    steps: []
+    steps:
+      - id: reconciliation-cycle
+        bom: sboms/triage-delegation-boundary.cdx.json
+        observe:
+          - project
+          - components
+          - findings
+          - metrics
+        analysis_actions:
+          - id: seed-review
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: IN_TRIAGE
+            justification: NOT_SET
+            response: NOT_SET
+            detail: Stable synthetic decision for reconciliation testing.
+            comment: DT lab seeds the reconciliation audit trail.
+            suppressed: false
+          - id: append-comment-only
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: IN_TRIAGE
+            justification: NOT_SET
+            response: NOT_SET
+            detail: Stable synthetic decision for reconciliation testing.
+            comment: DT lab appends a comment without changing the decision.
+            suppressed: false
+          - id: replay-identical-request
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: IN_TRIAGE
+            justification: NOT_SET
+            response: NOT_SET
+            detail: Stable synthetic decision for reconciliation testing.
+            comment: DT lab appends a comment without changing the decision.
+            suppressed: false
+          - id: suppress-only
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: IN_TRIAGE
+            justification: NOT_SET
+            response: NOT_SET
+            detail: Stable synthetic decision for reconciliation testing.
+            comment: DT lab suppresses the Finding without changing its decision.
+            suppressed: true
+          - id: unsuppress-only
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: IN_TRIAGE
+            justification: NOT_SET
+            response: NOT_SET
+            detail: Stable synthetic decision for reconciliation testing.
+            comment: DT lab unsuppresses the Finding without changing its decision.
+            suppressed: false
+          - id: restore-not-set
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: NOT_SET
+            justification: NOT_SET
+            response: NOT_SET
+            detail: DT lab reconciliation experiment completed and restored.
+            comment: DT lab restores the reconciliation target to NOT_SET.
+            suppressed: false
 
   - id: triage-vex-round-trip
     category: triage
@@ -436,20 +544,32 @@ scenarios:
 
   - id: robustness-invalid-cyclonedx
     category: robustness
-    status: planned
-    purpose: Capture synchronous schema validation and asynchronous processing failure contracts.
+    status: implemented
+    purpose: Capture synchronous schema rejection and auto-created Project side effects for an invalid CycloneDX upload.
     hypotheses:
-      - DT exposes enough failure detail to classify invalid uploads without reproducing its validation logic.
+      - DT rejects a schema-invalid CycloneDX BOM synchronously with RFC 9457 problem details.
+      - Coordinate upload with autoCreate may create an empty Project before BOM validation fails.
     decision_questions:
       - Which failures should sbom-ops surface, retry, or reject before upload?
+      - Does coordinate upload require compensating cleanup when validation fails after Project creation?
     project:
       name: dt-lab-invalid-cyclonedx
       version: 1.0.0
-    steps: []
+    steps:
+      - id: invalid-component-type
+        bom: sboms/robustness-invalid-component-type.cdx.json
+        observe:
+          - project
+          - components
+          - findings
+        expected_bom_rejection:
+          status: 400
+          media_type: application/problem+json
+          project_created: true
 
   - id: robustness-json-xml-equivalence
     category: robustness
-    status: planned
+    status: implemented
     purpose: Compare equivalent supported CycloneDX JSON and XML ingestion results.
     hypotheses:
       - Equivalent supported JSON and XML BOMs produce equivalent DT inventory and Findings.
@@ -458,7 +578,28 @@ scenarios:
     project:
       name: dt-lab-format-equivalence
       version: 1.0.0
-    steps: []
+    steps:
+      - id: json
+        bom: sboms/robustness-format-equivalence.cdx.json
+        observe:
+          - project
+          - components
+          - direct-components
+          - dependency-graph
+          - findings
+          - vulnerabilities
+          - bom-export
+      - id: xml
+        bom: sboms/robustness-format-equivalence.cdx.xml
+        observe:
+          - project
+          - components
+          - direct-components
+          - dependency-graph
+          - findings
+          - vulnerabilities
+          - bom-export
+        equivalent_to_step: json
 
   - id: robustness-large-bom
     category: robustness

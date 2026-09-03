@@ -137,6 +137,11 @@ Required permissions:
 - `BOM_UPLOAD`
 - `PROJECT_CREATION_UPLOAD` only if CI is allowed to auto-create projects
 
+This least-privilege pair may assign `projectTags` while creating a Project but
+cannot reconcile a changed tag set later. DT 4.14.3 accepts the later BOM and
+silently retains the old tags unless the key also has `PORTFOLIO_MANAGEMENT`.
+Do not grant that broad permission to CI merely to update routing metadata.
+
 ### 2. Orchestrator read key
 
 Purpose:
@@ -149,6 +154,30 @@ Required permissions:
 
 - `VIEW_PORTFOLIO`
 - `VIEW_VULNERABILITY`
+
+`VIEW_PORTFOLIO` exposes Project tags and tag-filtered Project queries. It does
+not authorize the dedicated Project properties endpoint, whose read operation
+requires `PORTFOLIO_MANAGEMENT` on DT 4.14.3. Keep Project/repository routing in
+the sbom-ops YAML configuration for the MVP.
+
+Verify this boundary locally with:
+
+```bash
+make dt-lab-routing-metadata
+```
+
+The upload and read keys together can run the explicit invalid-input probe. The
+upload key requires `BOM_UPLOAD` and `PROJECT_CREATION_UPLOAD` because the probe
+intentionally uses `autoCreate=true`; the read key verifies the resulting
+Project, Components, and Findings:
+
+```bash
+make dt-lab-invalid-cyclonedx
+```
+
+This command is expected to receive HTTP 400 and may leave a run-scoped empty
+Project. Review its evidence and use the normal run-scoped cleanup process; do
+not treat the non-success API status as a reason to bypass the Project ledger.
 
 ### 3. Optional DT lab cleanup key
 
@@ -169,6 +198,7 @@ orchestrator read key for cleanup.
 Purpose:
 
 - run the explicit, disposable `triage-analysis-states` experiment
+- run the explicit, disposable `triage-delegation-boundary` experiment
 
 Required permission for the selected key:
 
@@ -181,6 +211,7 @@ write capability only through the lab's explicit analysis-mutation flag.
 
 ```bash
 make dt-lab-triage-analysis
+make dt-lab-triage-delegation
 ```
 
 Credential separation is still supported and preferred outside a disposable
@@ -190,6 +221,7 @@ local lab. Set the optional override to a dedicated key whose only permission is
 ```bash
 export SBOM_OPS_DT_ANALYSIS_API_KEY=replace-with-analysis-key
 make dt-lab-triage-analysis
+make dt-lab-triage-delegation
 ```
 
 ## Create Team and API Keys

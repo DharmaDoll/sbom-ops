@@ -121,9 +121,47 @@ export SBOM_OPS_DT_API_KEY=replace-with-read-key
 make dt-lab-run
 ```
 
-The default command skips every scenario with mutation actions. For local
-evaluation, add `VULNERABILITY_ANALYSIS` to the existing orchestrator read team;
-the lab then reuses `SBOM_OPS_DT_API_KEY`:
+The default command skips every scenario with mutation actions and every
+expected-rejection scenario. Both classes require explicit selection.
+
+The read-only parent/child portfolio probe is independently selectable:
+
+```bash
+make dt-lab-parent-child
+```
+
+It uploads a root Project and a second Project with the first Project's UUID in
+the documented multipart `parentUUID` field. The runner then verifies both the
+child's `parent` projection and the parent's complete paginated `children`
+collection, while retaining Project and metrics risk projections on both sides.
+On DT 4.14.3, both Projects retained the default `collectionLogic=NONE`; the
+vulnerable child's risk did not aggregate into the empty parent. This probe does
+not change collection logic and does not grant `PORTFOLIO_MANAGEMENT` to the lab
+read key.
+
+The Project routing-metadata probe is also independently selectable:
+
+```bash
+make dt-lab-routing-metadata
+```
+
+It uploads the same SBOM twice to one run-scoped Project. The first request
+supplies one owner/repository tag pair and the second requests a different pair.
+After each token completes, the runner compares the requested and Project tags
+and checks the Project's membership through every relevant paginated tag query.
+It also records the upload team's permissions and probes the dedicated Project
+properties read endpoint with the orchestrator read key.
+
+On DT 4.14.3, a key with only `BOM_UPLOAD` and
+`PROJECT_CREATION_UPLOAD` set the initial tags. Its second upload returned HTTP
+200 but did not replace them because it lacked `PORTFOLIO_MANAGEMENT`. The read
+key received HTTP 403 from the Project properties endpoint. Consequently,
+Project/repository routing remains authoritative in sbom-ops YAML. DT tags may
+be used as selectors or consistency signals only after exact reconciliation;
+Project properties are not part of the least-privilege MVP read path.
+
+For local evaluation, add `VULNERABILITY_ANALYSIS` to the existing orchestrator
+read team; the lab then reuses `SBOM_OPS_DT_API_KEY`:
 
 ```bash
 make dt-lab-triage-analysis
@@ -141,6 +179,27 @@ Finding by PURL, vulnerability ID, and source, and records the decision cycle
 unsuppressed Finding view, metrics, and a compact verification record under the
 ignored run directory. The final action restores the disposable Finding before
 optional run-scoped cleanup.
+
+The reconciliation-boundary experiment uses the same credential and opt-in:
+
+```bash
+make dt-lab-triage-delegation
+```
+
+It seeds one `IN_TRIAGE` decision, appends a comment-only update, replays that
+exact PUT, toggles suppression without changing the decision, and restores
+unsuppressed `NOT_SET`. Each action records semantic and audit digests, both the
+default and include-suppressed Finding views, response validators, trail comment
+timestamps, and metrics. Every Analysis action sequence must declare a safe
+final reset; a failed sequence also attempts and verifies an emergency reset.
+
+On DT 4.14.3, the exact replay duplicated the caller comment while leaving the
+decision unchanged. Finding and Analysis responses exposed neither `ETag` nor
+`Last-Modified`. A suppressed Finding disappeared from the default view but
+remained available with `suppressed=true`. Product reconciliation must therefore
+read the complete include-suppressed snapshot and compare semantic state; it
+must not treat default-view absence as resolution or blindly retry a commented
+Analysis PUT.
 
 The VEX round-trip experiment uses the same credential and opt-in boundary:
 
@@ -180,6 +239,38 @@ changed both Findings for the shared CVE. A completed upload token therefore
 requires post-import target reconciliation; it does not prove the intended
 reference was applied. Version-bounded observations and evidence are recorded
 in [EXPERIMENTS.md](EXPERIMENTS.md).
+
+The invalid-input probe is also excluded from the default run:
+
+```bash
+make dt-lab-invalid-cyclonedx
+```
+
+It uploads a deliberately schema-invalid CycloneDX 1.5 document by Project
+coordinates with `autoCreate=true`. An expected rejection is a completed lab
+step only when the exact status and base media type match the manifest. The
+step stores the RFC 9457 body, safe response headers, input filename, byte
+count, and SHA-256, then checks whether the run-scoped Project exists and
+captures its declared observations. It never stores the API key or multipart
+body. DT 4.14.3 returned `400 application/problem+json` for the invalid
+Component type but left an empty Project, so the Project remains in the run
+ledger for reviewed cleanup.
+
+The format-equivalence probe uses a separate run-scoped Project:
+
+```bash
+make dt-lab-json-xml-equivalence
+```
+
+It uploads equivalent CycloneDX 1.5 JSON and XML documents in sequence and
+requires the second step to match the first across normalized inventory and
+Finding semantics, Component/Finding/Vulnerability UUIDs, direct dependency
+graph, and normalized DT CycloneDX re-export. The comparison is written to
+`equivalence.json` before a mismatch fails the run. On DT 4.14.3, the refined
+fixture produced the same non-empty Finding set and passed every comparison.
+The initial PURL-only fixture produced no Findings in either format; adding the
+same CPEs to both inputs made the probe discriminating. Do not confuse
+identifier coverage with serialization behavior.
 
 The optional cleanup key is deliberately separate from upload and read access.
 Its team needs `VIEW_PORTFOLIO` to verify each live Project and
@@ -393,18 +484,42 @@ combined with a normal Analysis action sequence. Its `replay_import` flag makes
 the otherwise identical second import explicit in the scenario contract. A VEX
 targeting probe declares distinct primary and control Component PURLs plus the
 source SBOM reference and cannot be combined with another mutation mode.
+An expected BOM rejection declares the exact client-error status, base media
+type, and whether `autoCreate` is expected to leave a Project. It cannot be
+combined with a mutation mode. A rejection scenario is never selected by the
+default all-implemented run, and a status, media-type, or Project-side-effect
+mismatch fails the run while retaining the captured response.
+An equivalence step names an earlier step in the same Project version and must
+declare the same observation set. It compares stable semantics and API identity
+separately so format-dependent UUID churn cannot hide behind equal counts.
+Committed XML fixtures receive the same envelope, serial-number, unique
+`bom-ref`, and dependency-reference checks as JSON fixtures; these repository
+checks do not replace full CycloneDX schema validation.
 
 Project names must use the `dt-lab-` prefix. The manifest validator also checks
-repository-level invariants such as unique CycloneDX serial numbers and valid
-dependency references. New or changed valid samples must also pass the official
-schema for their declared CycloneDX version.
+repository-level invariants such as CycloneDX serial numbers unique across
+distinct fixture files and valid dependency references. New or changed valid
+samples must also pass the official schema for their declared CycloneDX version.
 
 Every run adds a unique suffix to the declared Project version. A step may
 override that version to compare separate releases of one named Project without
-deleting or overwriting an existing Project. Each completed step records raw
-response envelopes, a stable-field summary, and any Component delta. Failed
-runs rewrite `run.json` with `status=failed`, a timestamp, completed-step count,
-and a sanitized error.
+deleting or overwriting an existing Project. A step may also declare a distinct
+`project_name` and name an earlier `parent_step`. A parented step must capture
+Project and metrics observations; the runner passes the observed parent UUID on
+upload and fails unless both the child's parent projection and the parent's
+paginated children collection agree. Each completed step records the upload
+response, raw observation envelopes, and a stable-field summary. Component
+deltas are emitted only between consecutive steps for the same Project name and
+run-suffixed version. Failed runs rewrite `run.json` with `status=failed`, a
+timestamp, completed-step count, and a sanitized error.
+
+A step may supply comma-free, `dt-lab-`-prefixed `project_tags`. The runner
+retains the upload-key team projection, records requested versus observed tags,
+and verifies Project membership through the paginated tag-filter endpoint. A
+`probe_project_properties` step records either the property collection or the
+permission denial without granting management access. Reusing one fixture in
+multiple steps is allowed to isolate metadata changes; serial numbers must
+remain unique across distinct committed fixtures.
 
 The lab must not write Analysis, VEX, suppression, policy, or administrative
 state unless a scenario explicitly covers that mutation, uses a disposable
@@ -423,20 +538,22 @@ Before a Project is created, `/api/v1/team/self` must include
 `VIEW_POLICY_VIOLATION`, `VIEW_PORTFOLIO`, and `VIEW_VULNERABILITY` permissions
 may appear alongside it.
 
-The planned `triage-delegation-boundary` scenario determines how much security
-triage can stay in DT rather than being duplicated in sbom-ops. Its evidence
-must cover Analysis decisions and history, comments, suppression, VEX state,
-permissions, API-visible change detection, and reconciliation behavior. The
-result must identify separately:
+The implemented `triage-delegation-boundary` scenario determines how much
+security triage can stay in DT rather than being duplicated in sbom-ops. Its
+evidence covers Analysis decisions and history, comments, suppression,
+permissions, API-visible change detection, and reconciliation behavior; the
+separate VEX scenarios cover VEX state and targeting. The reviewed results
+identify separately:
 
 - security decisions that are authoritative in DT
 - orchestration state needed only for idempotency and reconciliation
 - remediation task state that remains authoritative in GitHub or Jira
 - actions that still require explicit human approval or workflow logic
 
-This scenario must not assume that every DT feature should be used. Its goal is
-the maximum safe delegation that simplifies the product without weakening the
-human decision boundary.
+DT owns the Analysis decision and audit trail; GitHub or Jira owns remediation
+task state. sbom-ops retains stable Finding/work-item correlation and a last
+observed semantic digest, not a second triage history. Comment-only task updates
+remain a future policy choice.
 
 ## Branch Workflow
 

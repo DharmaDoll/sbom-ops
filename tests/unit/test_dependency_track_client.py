@@ -44,6 +44,31 @@ def test_dependency_track_finding_is_normalized() -> None:
     assert findings[1].epss_score == 0.82
 
 
+def test_project_findings_include_suppressed_for_reconciliation() -> None:
+    client = DependencyTrackClient("https://dtrack.example", "api-key")
+    requests: list[tuple[str, dict[str, str] | None]] = []
+    payloads = {
+        "/api/v1/project/project-1": {"uuid": "project-1", "name": "service-a"},
+        "/api/v1/finding/project/project-1": load_fixture(
+            "dependency-track-findings.json"
+        ),
+        "/api/v1/vulnerability/project/project-1": [],
+    }
+
+    def fake_request(path, params=None):
+        requests.append((path, params))
+        return payloads[path]
+
+    client._request_json = fake_request  # type: ignore[method-assign]
+
+    client.get_project_findings("project-1")
+
+    assert (
+        "/api/v1/finding/project/project-1",
+        {"suppressed": "true"},
+    ) in requests
+
+
 def test_bom_upload_returns_processing_token(monkeypatch, tmp_path) -> None:
     bom_path = tmp_path / "bom.json"
     bom_path.write_text('{"bomFormat":"CycloneDX"}')
