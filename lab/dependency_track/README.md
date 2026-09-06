@@ -58,6 +58,15 @@ duplicate implementation. A `planned` scenario is an uncertainty backlog item;
 it need not be implemented when another experiment or official contract already
 answers its decision questions.
 
+### Exploit/PoC evidence boundary
+
+Public exploit metadata is evaluated in the separate
+[`exploit_intelligence`](../exploit_intelligence/README.md) lab. This DT lab
+supplies stable Finding coordinates and CVEs for those experiments but does not
+acquire or normalize external exploit feeds. Results may return here only as a
+reviewed product decision or as read-only evidence attached to a scenario; they
+must not mutate DT Analysis automatically.
+
 ## Layout
 
 ```text

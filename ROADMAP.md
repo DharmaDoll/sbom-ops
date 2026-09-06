@@ -64,6 +64,14 @@ The repository has a working MVP with:
   plus repeatable triage-field coverage summaries
 - an append-only-style experiment ledger that separates observed facts from
   interpretation and records failed or partial live runs
+- a physically separate exploit-intelligence lab with a pinned Vuls
+  `go-exploitdb` baseline, digest-pinned `vuls.db` comparison/offline path, and
+  a bounded Vulnerability-Lookup online candidate; source-attributed evidence,
+  three-state observation semantics, and CVE association remain distinct from
+  Component applicability
+- a DT Finding sampler that preserves purl identity, queries each unique CVE
+  once, caps retained examples without losing counts, and measured 55 of 151
+  CVEs with public references while leaving applicability explicitly unreviewed
 - a proposed GCP runtime ADR and static Terraform evaluation harness
 
 ## Phase 0: Production Validation (P0)
@@ -120,6 +128,29 @@ The runtime decision and PoC gates are in
 - Add a remediation policy model that keeps priority separate from SLA dates.
 - Extend `PriorityContext` with asset criticality, exposure, reachability, and
   compensating controls without allowing them to mutate priority implicitly.
+- Continue the bounded Vulnerability-Lookup evaluation as a complementary
+  online source. A deterministic 25-CVE DT sample found Sighting coverage for
+  five CVEs, all already covered by `vuls.db`, while `vuls.db` alone covered
+  thirteen more. Keep `vuls.db` as the broader comparison/offline candidate;
+  evaluate Vulnerability-Lookup for independently attributed exploitation,
+  KEV, EPSS, and VEX signals rather than as a PoC replacement. Add request
+  pacing, checkpoint/resume, cache freshness, 429/5xx recovery, and source URL
+  quality sampling before a 151-CVE public run. Preserve source, upstream type,
+  timestamps, API policy/version, OCI provenance, and `available` /
+  `not_observed` / `unknown` outcomes. Neither source may map record presence
+  directly to P0 or DT `EXPLOITABLE`.
+- Continue the manifest-backed evidence quality review. The first
+  `vuls-db-only` queue reduced 37 retained records to 27 URLs and exposed three
+  cross-CVE reused URLs plus two cross-datasource duplicate pairs. The review
+  template and validator now require reviewer, timestamp, rationale, exact queue
+  run, snapshot digest, and immutable record identity. An agreement tool now
+  compares the overlapping work of two independent reviewers using exact
+  agreement, Cohen's kappa, a confusion matrix, and explicit disagreements,
+  without applying a pass/fail threshold. Conduct a real human review sample,
+  use that artifact to refine label guidance, and define explicit re-review and
+  adjudication rules across source snapshots. Mechanical URL hints must remain
+  `unreviewed` and must not become confidence, priority, applicability, or
+  Analysis decisions.
 
 ## Phase 2: Human-reviewed VEX (P1)
 

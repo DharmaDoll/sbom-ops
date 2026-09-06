@@ -199,6 +199,22 @@ make dt-lab-corpus-validate
 make dt-lab-corpus-run CORPUS_ID=go-otel-obi-0-12-2
 make dt-lab-cleanup RUN_ID=<run-uuid>
 make dt-lab-cleanup RUN_ID=<run-uuid> EXECUTE=1
+make exploit-lab-validate
+make exploit-lab-test
+# With a local go-exploitdb server on 127.0.0.1:1326:
+make exploit-lab-run
+# With a pinned Vuls CLI and vuls.db:
+make exploit-lab-vuls-db-run
+# With one or more retained DT lab findings.json captures:
+make exploit-lab-dt-sample DT_FINDINGS='path/to/findings.json ...'
+# Bounded online enrichment (one retained record per signal by default):
+make exploit-lab-vulnerability-lookup-run
+# DT Finding sample; public bulk use is guarded at 25 CVEs unless raised explicitly:
+make exploit-lab-vulnerability-lookup-dt-sample DT_FINDINGS='path/to/findings.json ...'
+# Compare retained online and vuls.db results containing the same CVE set:
+make exploit-lab-vulnerability-lookup-compare \
+  VULS_RESULT='path/to/vuls-result.json' \
+  VULNERABILITY_LOOKUP_RESULT='path/to/vulnerability-lookup-result.json'
 make infra-gcp-poc-fmt-check
 make infra-gcp-poc-validate
 ```
@@ -219,6 +235,17 @@ Lab cleanup is run-scoped and dry-run by default; destructive execution requires
 a separate key and explicit `EXECUTE=1` after the target's asynchronous analysis
 has become quiet.
 
+The repository-only
+[`Exploit Intelligence lab`](lab/exploit_intelligence/README.md) is also kept
+outside the product package. Vulnerability-Lookup is the preferred online
+enrichment candidate, the maintained Vuls `vuls.db` CLI is its comparison and
+offline candidate, and the archived `go-exploitdb` API is only a pinned
+behavioral baseline. Public exploit records, Sightings, KEV assertions, EPSS,
+and vendor VEX remain separately attributed advisory evidence and never
+directly set DT Analysis state or product priority. Snapshot-bound human reviews
+can be compared for inter-reviewer agreement in the lab, but agreement is never
+treated as correctness or an automatic promotion gate.
+
 ## Documentation
 
 The active documentation has four primary entry points:
@@ -235,6 +262,8 @@ Supporting guides are grouped by purpose:
   [`Dependency-Track setup`](docs/dependency-track/setup.md)
 - Dependency-Track development: [`production API contract`](docs/dependency-track/api.md)
   and [`behavior lab`](lab/dependency_track/README.md)
+- Threat intelligence experiments:
+  [`Exploit Intelligence lab`](lab/exploit_intelligence/README.md)
 - Policies: [`priority`](docs/priority-policy.md) and
   [`VEX`](docs/vex.md)
 - Decisions and infrastructure: [`ADRs`](docs/adr/README.md) and the
