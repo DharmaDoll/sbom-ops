@@ -4,9 +4,12 @@ import json
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+_MAX_RETRY_SLEEP_SECONDS = 30.0
 
 
 class HttpApiError(RuntimeError):
@@ -32,6 +35,47 @@ class HttpJsonResponse:
     status: int
     headers: dict[str, str]
     duration_seconds: float
+
+
+def _retry_delay_seconds(
+    retry_after: str | None,
+    *,
+    fallback_seconds: float,
+) -> tuple[float, bool]:
+    if retry_after is None:
+        return fallback_seconds, False
+    value = retry_after.strip()
+    if value.isascii() and value.isdigit():
+        return float(value), True
+    try:
+        retry_at = parsedate_to_datetime(value)
+    except (TypeError, ValueError, OverflowError):
+        return fallback_seconds, False
+    if retry_at.tzinfo is None:
+        return fallback_seconds, False
+    return max(0.0, retry_at.timestamp() - time.time()), True
+
+
+def _http_api_error(
+    exc: HTTPError,
+    *,
+    error_message: str,
+    started: float,
+) -> HttpApiError:
+    response_body = exc.read()
+    try:
+        payload: Any = (
+            json.loads(response_body.decode("utf-8")) if response_body else None
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        payload = response_body.decode("utf-8", errors="replace")
+    return HttpApiError(
+        error_message,
+        status=exc.code,
+        payload=payload,
+        headers=dict(exc.headers.items()) if exc.headers else {},
+        duration_seconds=time.monotonic() - started,
+    )
 
 
 def request_json(
@@ -86,36 +130,27 @@ def request_json(
                     duration_seconds=time.monotonic() - started,
                 ) from exc
             if exc.code not in retryable_statuses or attempt == attempts - 1:
-                response_body = exc.read()
-                try:
-                    payload: Any = (
-                        json.loads(response_body.decode("utf-8"))
-                        if response_body
-                        else None
-                    )
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    payload = response_body.decode("utf-8", errors="replace")
-                raise HttpApiError(
-                    error_message,
-                    status=exc.code,
-                    payload=payload,
-                    headers=dict(exc.headers.items()) if exc.headers else {},
-                    duration_seconds=time.monotonic() - started,
+                raise _http_api_error(
+                    exc,
+                    error_message=error_message,
+                    started=started,
                 ) from exc
-            retry_after = exc.headers.get("Retry-After")
-            try:
-                delay = (
-                    float(retry_after)
-                    if retry_after
-                    else backoff_seconds * (2**attempt)
-                )
-            except ValueError:
-                delay = backoff_seconds * (2**attempt)
+            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            delay, server_directed = _retry_delay_seconds(
+                retry_after,
+                fallback_seconds=backoff_seconds * (2**attempt),
+            )
+            if server_directed and delay > _MAX_RETRY_SLEEP_SECONDS:
+                raise _http_api_error(
+                    exc,
+                    error_message=error_message,
+                    started=started,
+                ) from exc
         except (URLError, TimeoutError, json.JSONDecodeError) as exc:
             if attempt == attempts - 1:
                 raise HttpApiError(error_message) from exc
             delay = backoff_seconds * (2**attempt)
-        time.sleep(min(max(0.0, delay), 30.0))
+        time.sleep(min(max(0.0, delay), _MAX_RETRY_SLEEP_SECONDS))
     raise HttpApiError(error_message)
 
 

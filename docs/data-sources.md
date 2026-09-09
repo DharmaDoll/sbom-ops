@@ -183,6 +183,32 @@ Exploit-DBレコードが`exploited`、Nuclei templateが`confirmed`として登
 source、種別、識別子、時刻等のbounded metadataだけを残す。公開APIへの大規模
 実行はcorpus round-robinとCVE IDで決定論的に25 CVEへ絞り、別の25 CVE guardも
 適用する。両方を明示的に引き上げた場合だけ取得件数を増やせる。
+HTTP `408`、`429`、`500`、`502`、`503`、`504`だけを上限付きでretryし、
+`Retry-After`のdelay-secondsとHTTP-dateを尊重する。不正または未指定のheaderは
+指数backoffへ戻し、localの1回の待機は最大30秒とする。有効なserver指定が30秒を
+超える場合は早期再送せず、当該signalを`unknown`にする。retry枯渇も`unknown`に
+してcheckpointへ保存しない。実public instanceからの429/5xx応答はまだ観測して
+いないため、これはHTTP契約の合成テスト結果である。
+checkpoint entryは`disabled`、`missing`、`fresh`、`expired`、`future`、`invalid`
+をsignalごとに記録・集計する。期限切れの確定観測は証拠として返さず再取得し、
+成功時だけ新しいtimestampで置換する。再取得が`unknown`なら古いentryを延命せず、
+期限切れのまま診断用に保持するため、次回もcache hitにはならない。
+確定した各signalは次のrequest前にatomic保存する。途中でrunnerが中断した場合、
+未完了の集約resultは発行しないが、同じcontractで再実行すれば完了済みentryだけを
+再利用して残りを取得する。2/5 signal後の`KeyboardInterrupt`復旧は合成テスト済み
+である。別processを一時ファイル書込後・replace直前に`SIGKILL`した場合も、既存
+checkpointのbyte列が保全されることを確認した。次のwriterはlock内で当該checkpointの
+UUID付き孤児一時ファイルだけを削除してからmerge・replaceする。host停止やstorage
+障害時のdurabilityは未検証である。書込順序はtemporary fileのflush・`fsync`、
+atomic replace、親directoryの`fsync`とする。replace前の`fsync`失敗では旧checkpointを
+保全して一時ファイルを除去し、runを失敗させる。
+checkpoint更新時はPOSIX sidecar lock内でdiskを再読込し、同一contractのentryを
+timestampでmergeしてからatomic replaceする。異なるkeyのlost updateと、同一keyを
+古いwriterが巻き戻すことを防ぐ。HTTP request中はlockしないため重複requestは許容し、
+barrier同期した2つのlocal processでも両entryの保持を確認した。network filesystem
+上のlock動作とhost/storage停止は未検証である。lock取得は50ms間隔のnon-blocking pollingで、
+default 10秒後にfail closedとする。timeout時はcheckpointを置換せず、取得済みsignalを
+保存済みとは扱わない。設定値はrunのsample policyへ記録する。
 
 2026-09-05の小規模API probeでは、Log4Shellに対してEPSS、4件のKEV assertion、
 1,963件のSighting、Red HatとSUSEの2件のVEX summaryが返った。Sightingは
@@ -223,8 +249,14 @@ timezone付き日時、明示label、rationaleが揃った項目だけを部分�
 同一queue／snapshotを独立した2名がreviewした結果は、両者が完了した項目だけを母数
 として完全一致率、偶然一致率、Cohen's kappa、confusion matrix、不一致項目を比較
 できる。ただし一致度は判断の一貫性であって正しさではないため、自動合格閾値は
-設けず、本番状態を変更する根拠にもしない。実際の37 recordに対する人手reviewと
-adjudication方針は未検証である。
+設けず、本番状態を変更する根拠にもしない。不一致だけを両reviewerのlabel、日時、
+rationale、元queue run、snapshot digest付きでadjudication queueへ移せる。
+agreement artifactの件数、対象集合、reviewer provenanceに不整合があればfail closedとし、
+全項目は`unreviewed`のまま新しい人間のadjudicatorへ渡す。adjudication templateは
+上書きせず、queue／agreement／元review queue／snapshotの4 binding、record metadata、
+timezone付き日時、明示label、rationaleを検証する。元のいずれかのreviewerによる
+自己adjudicationは拒否し、部分適用で残る項目は`unreviewed`を維持する。実際の37
+recordに対する人手review、第三者判断、snapshot更新時の再review方針は未検証である。
 
 どちらの候補もCVE単位の情報であり、SBOM Componentのpurl／versionへの適用性は
 Dependency-Trackと人によるreviewに残す。公開レコード、Sighting、KEV assertion、

@@ -20,12 +20,14 @@ VULNERABILITY_LOOKUP_BASE_URL ?= https://vulnerability.circl.lu
 VULNERABILITY_LOOKUP_SAMPLE_CVES ?= 25
 VULNERABILITY_LOOKUP_MAX_CVES ?= 25
 VULNERABILITY_LOOKUP_RECORD_LIMIT ?= 1
+VULNERABILITY_LOOKUP_MAX_RETRIES ?= 1
 VULNERABILITY_LOOKUP_CHECKPOINT ?= $(EXPLOIT_LAB_DIR)/vulnerability-lookup-checkpoint.json
 VULNERABILITY_LOOKUP_CHECKPOINT_MAX_AGE ?= 86400
+VULNERABILITY_LOOKUP_CHECKPOINT_LOCK_TIMEOUT ?= 10
 VULNERABILITY_LOOKUP_REQUEST_INTERVAL ?= 0.25
 PYTHON ?= python3.12
 
-.PHONY: dt-up dt-down dt-logs dt-ps dt-openapi-check dt-lab-validate dt-lab-openapi dt-lab-run dt-lab-parent-child dt-lab-routing-metadata dt-lab-triage-analysis dt-lab-triage-delegation dt-lab-triage-vex dt-lab-triage-vex-targeting dt-lab-invalid-cyclonedx dt-lab-json-xml-equivalence dt-lab-corpus-validate dt-lab-corpus-run dt-lab-cleanup dt-lab-test exploit-lab-validate exploit-lab-run exploit-lab-vuls-db-run exploit-lab-dt-sample exploit-lab-vulnerability-lookup-run exploit-lab-vulnerability-lookup-dt-sample exploit-lab-vulnerability-lookup-compare exploit-lab-evidence-review-queue exploit-lab-evidence-review-template exploit-lab-evidence-review-apply exploit-lab-evidence-review-agreement exploit-lab-test dt-bom-upload dt-demo-upload dt-demo-update-upload infra-gcp-poc-fmt-check infra-gcp-poc-validate test lint
+.PHONY: dt-up dt-down dt-logs dt-ps dt-openapi-check dt-lab-validate dt-lab-openapi dt-lab-run dt-lab-parent-child dt-lab-routing-metadata dt-lab-triage-analysis dt-lab-triage-delegation dt-lab-triage-vex dt-lab-triage-vex-targeting dt-lab-invalid-cyclonedx dt-lab-json-xml-equivalence dt-lab-corpus-validate dt-lab-corpus-run dt-lab-cleanup dt-lab-test exploit-lab-validate exploit-lab-run exploit-lab-vuls-db-run exploit-lab-dt-sample exploit-lab-vulnerability-lookup-run exploit-lab-vulnerability-lookup-dt-sample exploit-lab-vulnerability-lookup-compare exploit-lab-evidence-review-queue exploit-lab-evidence-review-template exploit-lab-evidence-review-apply exploit-lab-evidence-review-agreement exploit-lab-evidence-adjudication-queue exploit-lab-evidence-adjudication-template exploit-lab-evidence-adjudication-apply exploit-lab-test dt-bom-upload dt-demo-upload dt-demo-update-upload infra-gcp-poc-fmt-check infra-gcp-poc-validate test lint
 
 dt-up:
 	docker compose -f $(COMPOSE_FILE) up -d
@@ -105,11 +107,11 @@ exploit-lab-dt-sample:
 	PYTHONPATH=$(EXPLOIT_LAB_PYTHONPATH) $(PYTHON) -m exploit_lab.cli sample-dt-findings --manifest "$(EXPLOIT_LAB_MANIFEST)" --binary "$(VULS_DB_CLI)" --db-path "$(VULS_DB_PATH)" --output-dir "$(EXPLOIT_LAB_DIR)/runs" $(if $(strip $(VULS_DB_SAMPLE_CVES)),--sample-cves "$(VULS_DB_SAMPLE_CVES)",) $(foreach path,$(DT_FINDINGS),--findings "$(path)")
 
 exploit-lab-vulnerability-lookup-run:
-	PYTHONPATH=$(EXPLOIT_LAB_PYTHONPATH) $(PYTHON) -m exploit_lab.cli run-vulnerability-lookup --manifest "$(EXPLOIT_LAB_MANIFEST)" --base-url "$(VULNERABILITY_LOOKUP_BASE_URL)" --record-limit-per-signal "$(VULNERABILITY_LOOKUP_RECORD_LIMIT)" --output-dir "$(EXPLOIT_LAB_DIR)/runs"
+	PYTHONPATH=$(EXPLOIT_LAB_PYTHONPATH) $(PYTHON) -m exploit_lab.cli run-vulnerability-lookup --manifest "$(EXPLOIT_LAB_MANIFEST)" --base-url "$(VULNERABILITY_LOOKUP_BASE_URL)" --max-retries "$(VULNERABILITY_LOOKUP_MAX_RETRIES)" --record-limit-per-signal "$(VULNERABILITY_LOOKUP_RECORD_LIMIT)" --output-dir "$(EXPLOIT_LAB_DIR)/runs"
 
 exploit-lab-vulnerability-lookup-dt-sample:
 	$(if $(strip $(DT_FINDINGS)),,$(error DT_FINDINGS is required and may contain multiple findings.json paths))
-	PYTHONPATH=$(EXPLOIT_LAB_PYTHONPATH) $(PYTHON) -m exploit_lab.cli sample-dt-findings-vulnerability-lookup --manifest "$(EXPLOIT_LAB_MANIFEST)" --base-url "$(VULNERABILITY_LOOKUP_BASE_URL)" --record-limit-per-signal "$(VULNERABILITY_LOOKUP_RECORD_LIMIT)" --sample-cves "$(VULNERABILITY_LOOKUP_SAMPLE_CVES)" --max-cves "$(VULNERABILITY_LOOKUP_MAX_CVES)" --checkpoint "$(VULNERABILITY_LOOKUP_CHECKPOINT)" --checkpoint-max-age-seconds "$(VULNERABILITY_LOOKUP_CHECKPOINT_MAX_AGE)" --request-interval-seconds "$(VULNERABILITY_LOOKUP_REQUEST_INTERVAL)" --output-dir "$(EXPLOIT_LAB_DIR)/runs" $(foreach path,$(DT_FINDINGS),--findings "$(path)")
+	PYTHONPATH=$(EXPLOIT_LAB_PYTHONPATH) $(PYTHON) -m exploit_lab.cli sample-dt-findings-vulnerability-lookup --manifest "$(EXPLOIT_LAB_MANIFEST)" --base-url "$(VULNERABILITY_LOOKUP_BASE_URL)" --max-retries "$(VULNERABILITY_LOOKUP_MAX_RETRIES)" --record-limit-per-signal "$(VULNERABILITY_LOOKUP_RECORD_LIMIT)" --sample-cves "$(VULNERABILITY_LOOKUP_SAMPLE_CVES)" --max-cves "$(VULNERABILITY_LOOKUP_MAX_CVES)" --checkpoint "$(VULNERABILITY_LOOKUP_CHECKPOINT)" --checkpoint-max-age-seconds "$(VULNERABILITY_LOOKUP_CHECKPOINT_MAX_AGE)" --checkpoint-lock-timeout-seconds "$(VULNERABILITY_LOOKUP_CHECKPOINT_LOCK_TIMEOUT)" --request-interval-seconds "$(VULNERABILITY_LOOKUP_REQUEST_INTERVAL)" --output-dir "$(EXPLOIT_LAB_DIR)/runs" $(foreach path,$(DT_FINDINGS),--findings "$(path)")
 
 exploit-lab-vulnerability-lookup-compare:
 	$(if $(strip $(VULS_RESULT)),,$(error VULS_RESULT is required))
@@ -135,6 +137,20 @@ exploit-lab-evidence-review-agreement:
 	$(if $(strip $(REVIEWED_RESULT_A)),,$(error REVIEWED_RESULT_A is required))
 	$(if $(strip $(REVIEWED_RESULT_B)),,$(error REVIEWED_RESULT_B is required))
 	PYTHONPATH=$(EXPLOIT_LAB_PYTHONPATH) $(PYTHON) -m exploit_lab.cli compare-evidence-reviews --manifest "$(EXPLOIT_LAB_MANIFEST)" --reviewer-a-result "$(REVIEWED_RESULT_A)" --reviewer-b-result "$(REVIEWED_RESULT_B)" --output-dir "$(EXPLOIT_LAB_DIR)/runs"
+
+exploit-lab-evidence-adjudication-queue:
+	$(if $(strip $(AGREEMENT_RESULT)),,$(error AGREEMENT_RESULT is required))
+	PYTHONPATH=$(EXPLOIT_LAB_PYTHONPATH) $(PYTHON) -m exploit_lab.cli build-evidence-adjudication-queue --manifest "$(EXPLOIT_LAB_MANIFEST)" --agreement-result "$(AGREEMENT_RESULT)" --output-dir "$(EXPLOIT_LAB_DIR)/runs"
+
+exploit-lab-evidence-adjudication-template:
+	$(if $(strip $(ADJUDICATION_QUEUE)),,$(error ADJUDICATION_QUEUE is required))
+	$(if $(strip $(ADJUDICATION_FILE)),,$(error ADJUDICATION_FILE is required))
+	PYTHONPATH=$(EXPLOIT_LAB_PYTHONPATH) $(PYTHON) -m exploit_lab.cli create-evidence-adjudication-template --manifest "$(EXPLOIT_LAB_MANIFEST)" --queue "$(ADJUDICATION_QUEUE)" --output "$(ADJUDICATION_FILE)"
+
+exploit-lab-evidence-adjudication-apply:
+	$(if $(strip $(ADJUDICATION_QUEUE)),,$(error ADJUDICATION_QUEUE is required))
+	$(if $(strip $(ADJUDICATION_FILE)),,$(error ADJUDICATION_FILE is required))
+	PYTHONPATH=$(EXPLOIT_LAB_PYTHONPATH) $(PYTHON) -m exploit_lab.cli apply-evidence-adjudications --manifest "$(EXPLOIT_LAB_MANIFEST)" --queue "$(ADJUDICATION_QUEUE)" --adjudications "$(ADJUDICATION_FILE)" --output-dir "$(EXPLOIT_LAB_DIR)/runs"
 
 exploit-lab-test:
 	PYTHONPATH=$(EXPLOIT_LAB_PYTHONPATH) $(PYTHON) -m pytest -q $(EXPLOIT_LAB_ROOT)/tests

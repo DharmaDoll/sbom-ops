@@ -235,6 +235,33 @@ def test_orchestrator_closes_after_second_verified_absence() -> None:
     assert result.actions[1].endswith("count=2 reason=consecutive_absence_confirmed")
 
 
+def test_suppressed_finding_cancels_pending_absence_closure() -> None:
+    # DT lab 2026-09-01: suppressed=true retains suppressed inventory.
+    class SuppressedInventory(FakeDependencyTrack):
+        def get_project_findings(
+            self, project_uuid: str
+        ) -> list[DependencyTrackFinding]:
+            return [replace(finding("CVE-2026-0002"), is_suppressed=True)]
+
+    github = FakeGitHub(
+        missing_count=1,
+        tracked_issue_key="project-1:openssl:3.0.0:CVE-2026-0002",
+    )
+    safe_config = replace(
+        config(),
+        runtime=RuntimeConfig(wait_for_analysis=True),
+        workflow=WorkflowConfig(close_missing_findings=True),
+    )
+    result = Orchestrator(safe_config, SuppressedInventory(), FakeKev(), github).run()
+
+    assert result.issues_created == 0
+    assert result.issues_closed == 0
+    assert github.closed == []
+    assert github.updated == [12]
+    assert "<!-- sbom-ops:finding-state=ACTIVE -->" in github.updated_bodies[0]
+    assert "sbom-ops:missing-count" not in github.updated_bodies[0]
+
+
 def test_orchestrator_dry_run_does_not_mutate_github() -> None:
     github = FakeGitHub()
     runtime = RuntimeConfig(dry_run=True)

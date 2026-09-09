@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
+from email.utils import format_datetime
 from io import BytesIO
 from urllib.error import HTTPError
 
 import pytest
 
 from sbom_ops.clients import github as github_module
+from sbom_ops.clients import http as http_module
 from sbom_ops.clients import kev as kev_module
 from sbom_ops.clients.github import GitHubIssuesClient
 from sbom_ops.clients.http import HttpApiError, HttpJsonResponse, request_json
@@ -116,6 +119,156 @@ def test_http_error_preserves_problem_details_without_retrying_client_error() ->
     assert raised.value.payload == problem
     assert raised.value.headers == {"Content-Type": "application/problem+json"}
     assert raised.value.duration_seconds is not None
+
+
+@pytest.mark.parametrize(
+    ("status", "retry_after", "backoff_seconds", "expected_delay"),
+    [
+        (429, "2", 0.5, 2.0),
+        (503, "not-a-valid-retry-time", 0.5, 0.5),
+        (503, "٢", 0.5, 0.5),
+    ],
+)
+def test_http_retry_honors_delay_seconds_and_invalid_header_fallback(
+    monkeypatch,
+    status: int,
+    retry_after: str,
+    backoff_seconds: float,
+    expected_delay: float,
+) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def open_after_one_failure(request, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise HTTPError(
+                request.full_url,
+                status,
+                "retry later",
+                {"Retry-After": retry_after},
+                BytesIO(b""),
+            )
+        return FakeResponse({"ok": True})
+
+    monkeypatch.setattr(http_module.time, "sleep", sleeps.append)
+
+    response = request_json(
+        request=kev_module.Request("https://example.test/data"),
+        timeout=1,
+        max_retries=1,
+        backoff_seconds=backoff_seconds,
+        error_message="failed",
+        opener=open_after_one_failure,
+    )
+
+    assert response == {"ok": True}
+    assert calls == 2
+    assert sleeps == [expected_delay]
+
+
+def test_http_retry_does_not_retry_before_long_server_delay(monkeypatch) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def reject(request, timeout):
+        nonlocal calls
+        calls += 1
+        raise HTTPError(
+            request.full_url,
+            429,
+            "retry later",
+            {"Retry-After": "45"},
+            BytesIO(json.dumps({"limited": True}).encode()),
+        )
+
+    monkeypatch.setattr(http_module.time, "sleep", sleeps.append)
+
+    with pytest.raises(HttpApiError) as raised:
+        request_json(
+            request=kev_module.Request("https://example.test/data"),
+            timeout=1,
+            max_retries=1,
+            backoff_seconds=0.5,
+            error_message="failed",
+            opener=reject,
+        )
+
+    assert calls == 1
+    assert sleeps == []
+    assert raised.value.status == 429
+    assert raised.value.payload == {"limited": True}
+
+
+def test_http_retry_honors_retry_after_http_date(monkeypatch) -> None:
+    calls = 0
+    sleeps: list[float] = []
+    now = datetime(2026, 9, 7, 12, 0, 0, tzinfo=UTC)
+    retry_at = datetime(2026, 9, 7, 12, 0, 10, tzinfo=UTC)
+
+    def open_after_one_failure(request, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise HTTPError(
+                request.full_url,
+                503,
+                "retry later",
+                {"Retry-After": format_datetime(retry_at, usegmt=True)},
+                BytesIO(b""),
+            )
+        return FakeResponse({"ok": True})
+
+    monkeypatch.setattr(http_module.time, "time", lambda: now.timestamp())
+    monkeypatch.setattr(http_module.time, "sleep", sleeps.append)
+
+    response = request_json(
+        request=kev_module.Request("https://example.test/data"),
+        timeout=1,
+        max_retries=1,
+        backoff_seconds=0.5,
+        error_message="failed",
+        opener=open_after_one_failure,
+    )
+
+    assert response == {"ok": True}
+    assert calls == 2
+    assert sleeps == [10.0]
+
+
+def test_http_retry_exhaustion_preserves_last_response(monkeypatch) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def reject(request, timeout):
+        nonlocal calls
+        calls += 1
+        raise HTTPError(
+            request.full_url,
+            503,
+            "unavailable",
+            {"Retry-After": "0", "X-Request-ID": f"request-{calls}"},
+            BytesIO(json.dumps({"attempt": calls}).encode()),
+        )
+
+    monkeypatch.setattr(http_module.time, "sleep", sleeps.append)
+
+    with pytest.raises(HttpApiError) as raised:
+        request_json(
+            request=kev_module.Request("https://example.test/data"),
+            timeout=1,
+            max_retries=1,
+            backoff_seconds=0.5,
+            error_message="failed",
+            opener=reject,
+        )
+
+    assert calls == 2
+    assert sleeps == [0.0]
+    assert raised.value.status == 503
+    assert raised.value.payload == {"attempt": 2}
+    assert raised.value.headers["X-Request-ID"] == "request-2"
 
 
 def test_kev_client_reads_cve_ids(monkeypatch) -> None:

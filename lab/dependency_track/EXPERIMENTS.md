@@ -57,6 +57,36 @@ List remaining uncertainty and the next discriminating experiment.
 - `var/dt-lab/runs/<run-id>/<scenario-id>/` (ignored; local only)
 ```
 
+## 2026-09-09 — Product regression from recorded suppression evidence
+
+### Purpose and Performed
+
+Encode the 2026-09-01 DT 4.14.3 suppression observation in a product service
+regression. No new live experiment or API change was performed. The test supplies
+a suppressed Finding while automatic closure is enabled and its existing task
+already has one missing observation.
+
+### Observed Facts
+
+The product test passes: the task remains open, its missing counter is cleared,
+and its inventory marker becomes ACTIVE. No new Issue is created. ACTIVE here
+is the work-item inventory marker, not a change to DT Analysis or suppression.
+
+### Interpretation and Product Decision
+
+Adopt the existing DT capability and encode the constraint in product tests;
+no second suppression workflow is needed. This verifies service behavior with
+a fixture derived from recorded evidence, not current live API behavior.
+ROADMAP.md now prioritizes product risks and defers further lab review/storage
+machinery until a concrete need exists.
+
+### Unverified and Local Evidence
+
+Current deployment behavior and a real GitHub closure dry-run remain unverified
+by this test. Reproducible evidence: `tests/unit/test_orchestrator.py`, test
+`test_suppressed_finding_cancels_pending_absence_closure`. No raw artifact or
+environment-specific identifier was generated.
+
 ## 2026-08-27 — Project Versions and Dependency Graph
 
 - Status: completed
