@@ -1,5 +1,67 @@
 # Dependency-Track Lab Experiment Ledger
 
+## 2026-09-11 — Product read-only validation and source visibility
+
+- Status: partial live validation; inventory and assessment completed
+- Target: Dependency-Track bundled 4.14.3, healthy local Docker container
+- Scope: existing accessible lab Projects; no BOM upload or DT/GitHub mutation
+
+### Purpose and Performed Work
+
+Exercise the product against the existing inventory before testing work-item
+transitions. Checked API connectivity and container health, listed Projects
+using the product client, and ran the product CLI with `--dry-run --no-github
+--output json`. Independently read Findings through the product client to count
+source, EPSS, suppression, and Analysis projections. Read the current team's
+permission names through the existing lab client, and inspected the retained
+target OpenAPI contract for configuration access.
+
+### Observed Facts
+
+- An initial sandbox connection failed, and the first host-side probe timed out.
+  A later host-side OpenAPI probe returned HTTP 200. The cause of the transient
+  timeout was not established.
+- All 22 accessible Projects had lab names. Both CLI runs processed 191 Findings:
+  P0 31, P1 38, P2 57, P3 65. GitHub operations were disabled; create/update/close
+  counts were zero and the action list was empty.
+- The independent read found ten empty Projects. All 191 Findings had source
+  NVD and a non-null EPSS value. None were suppressed; 11 had `NOT_SET` Analysis
+  and 180 had no Analysis state. These are time-specific observations.
+- The current team had VIEW_BADGES, VIEW_POLICY_VIOLATION, VIEW_PORTFOLIO,
+  VIEW_VULNERABILITY, and VULNERABILITY_ANALYSIS. It lacked SYSTEM_CONFIGURATION,
+  which the retained OpenAPI requires for GET `/v1/configProperty`. No settings
+  request or permission change was performed.
+- The first CLI run returned its result but did not save the optional sync log
+  because the parent directory was absent. The sink returns false on OSError
+  and the CLI ignores that return value. Created the directory and repeated
+  the read-only run to retain its JSONL result.
+
+### Interpretation and Product Decision
+
+The current inventory-to-priority path works against this lab instance. Reuse
+DT EPSS. NVD-only observations do not prove other analyzers are disabled, nor
+do empty Projects prove vulnerability absence. Obtain a redacted administrator
+observation of enabled analyzers/mirrors, last successful synchronization, and
+failures before interpreting ecosystem coverage. Preserve the read-key scope.
+
+GitHub-disabled runs produce assessments but do not exercise Issue planning,
+routing, or closure. No suppressed Finding was available, so the suppression
+boundary remains covered by prior live evidence and product regression tests,
+not newly verified here. Make optional audit-sink failures visible in a follow-up.
+
+### Unverified and Local Evidence
+
+Real-SBOM representativeness, datasource configuration/freshness, current
+suppression transitions, analysis-in-progress behavior, and GitHub task
+transitions remain unverified. The separate aggregate read and permission check
+were captured in the execution transcript, not raw response files.
+
+- Product result: `var/dt-lab/validation-2026-09-11/sync.jsonl` (ignored).
+- Retained contract: `var/dt-lab/openapi.json` (ignored; not refreshed this run).
+- Reproduce with the existing CLI after creating the log's parent directory:
+  `sbom-ops sync --dry-run --no-github --output json --sync-log-file <local-path>`.
+  Load local credentials without printing them; inventory counts may change.
+
 This is the single durable record of live Dependency-Track experiments. It
 records why an experiment was run, what was done, what was observed, and how
 the evidence affects the product direction. A result is recorded even when the

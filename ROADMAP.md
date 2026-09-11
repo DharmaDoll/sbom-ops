@@ -94,6 +94,18 @@ Do not require those storage experiments before a bounded local enrichment run.
 A larger public sample needs a stated coverage/freshness question and request
 budget, rather than a goal of completing all 151 CVEs.
 
+The 2026-09-11 read-only product run evaluated 191 Findings across 22 accessible
+lab Projects with GitHub disabled. All Findings were NVD-sourced and had EPSS;
+ten Projects had no Findings and none had suppressed Findings. This validates
+the current read/assessment path, not real repository routing, Issue transitions,
+or datasource completeness. Next, obtain a redacted administrator observation of
+enabled analyzers, mirrors, and last successful synchronization; then select
+representative real-SBOM Projects and a reviewed GitHub dry-run target. The read
+key lacks `SYSTEM_CONFIGURATION`; do not expand its permissions for this check.
+The experiment also exposed silent optional sync-log failure when its parent
+directory is absent. Make that failure visible without losing the primary sync
+result; create and verify the evidence directory for current validation runs.
+
 ## Phase 0: Production Validation (P0)
 
 - Validate Dependency-Track Project, Finding, EPSS, Analysis, pagination, and
