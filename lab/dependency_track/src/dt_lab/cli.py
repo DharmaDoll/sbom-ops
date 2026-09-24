@@ -9,6 +9,9 @@ from typing import Any
 
 from dt_lab.cleanup import cleanup_lab_run
 from dt_lab.client import DependencyTrackLabApiError, DependencyTrackLabClient
+from dt_lab.datasource_freshness import write_datasource_log_summary
+from dt_lab.datasource_markers import write_osv_marker_summary
+from dt_lab.datasources import configure_osv
 from dt_lab.domain import (
     LabCleanupError,
     LabCleanupResult,
@@ -33,6 +36,33 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run isolated Dependency-Track behavior experiments safely.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    osv_parser = subparsers.add_parser("configure-osv")
+    osv_parser.add_argument("--audit", required=True)
+    osv_parser.add_argument("--execute", action="store_true")
+    osv_parser.add_argument("--confirm-instance")
+    osv_parser.add_argument("--recovery-evidence")
+
+    datasource_log_parser = subparsers.add_parser("summarize-datasource-logs")
+    datasource_log_parser.add_argument(
+        "--input",
+        default="-",
+        help="Docker log file, or - to read the stream from stdin",
+    )
+    datasource_log_parser.add_argument("--window-start", required=True)
+    datasource_log_parser.add_argument("--window-end", required=True)
+    datasource_log_parser.add_argument("--output-dir", default="var/dt-lab/runs")
+
+    osv_marker_parser = subparsers.add_parser("summarize-osv-markers")
+    osv_marker_parser.add_argument(
+        "--input",
+        default="-",
+        help="Strict marker TSV file, or - to read the stream from stdin",
+    )
+    osv_marker_parser.add_argument("--ecosystem", action="append", required=True)
+    osv_marker_parser.add_argument("--observed-at", required=True)
+    osv_marker_parser.add_argument("--max-age-hours", required=True, type=float)
+    osv_marker_parser.add_argument("--output-dir", default="var/dt-lab/runs")
 
     validate_parser = subparsers.add_parser("validate-manifest")
     validate_parser.add_argument(
@@ -120,6 +150,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--poll-interval",
         type=float,
         default=float(os.getenv("SBOM_OPS_DT_ANALYSIS_POLL_INTERVAL_SECONDS", "5")),
+    )
+    corpus_run_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate the selected corpus and print an upload plan without calling DT",
+    )
+    corpus_run_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="explicitly authorize the live upload and readback workflow",
     )
     return parser
 
@@ -300,16 +340,41 @@ def _run_validate_corpus(args: argparse.Namespace) -> int:
 
 
 def _run_corpus(args: argparse.Namespace) -> int:
+    catalog = load_corpus_catalog(args.catalog)
+    manifest = build_corpus_lab_manifest(
+        catalog, args.artifact_dir, tuple(args.artifact)
+    )
+    if args.dry_run:
+        print(
+            json.dumps(
+                {
+                    "mode": "dry-run",
+                    "target": manifest.target.dependency_track_version,
+                    "artifacts": [
+                        {
+                            "id": scenario.id,
+                            "project": scenario.project_name,
+                            "version": scenario.project_version,
+                            "bom": scenario.steps[0].bom,
+                        }
+                        for scenario in manifest.scenarios
+                    ],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+    if not args.execute:
+        raise ValueError(
+            "run-corpus requires --execute for live Dependency-Track mutation"
+        )
     upload_key = os.getenv("SBOM_OPS_SBOM_UPLOAD_API_KEY")
     read_key = os.getenv("SBOM_OPS_DT_API_KEY")
     if not upload_key or not read_key:
         raise ValueError(
             "run-corpus requires SBOM_OPS_SBOM_UPLOAD_API_KEY and SBOM_OPS_DT_API_KEY"
         )
-    catalog = load_corpus_catalog(args.catalog)
-    manifest = build_corpus_lab_manifest(
-        catalog, args.artifact_dir, tuple(args.artifact)
-    )
     result = run_lab_scenarios(
         manifest,
         manifest_path=args.catalog,
@@ -336,6 +401,61 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     try:
+        if args.command == "summarize-osv-markers":
+            raw = (
+                sys.stdin.buffer.read()
+                if args.input == "-"
+                else Path(args.input).read_bytes()
+            )
+            result = write_osv_marker_summary(
+                raw,
+                ecosystems=args.ecosystem,
+                observed_at=args.observed_at,
+                max_age_hours=args.max_age_hours,
+                output_dir=args.output_dir,
+            )
+            print(f"DT OSV marker summary: {result}")
+            return 0
+        if args.command == "summarize-datasource-logs":
+            raw = (
+                sys.stdin.buffer.read()
+                if args.input == "-"
+                else Path(args.input).read_bytes()
+            )
+            result = write_datasource_log_summary(
+                raw,
+                window_start=args.window_start,
+                window_end=args.window_end,
+                output_dir=args.output_dir,
+            )
+            print(f"DT datasource log summary: {result}")
+            return 0
+        if args.command == "configure-osv":
+            base_url = os.getenv("SBOM_OPS_DT_BASE_URL", "").rstrip("/")
+            if not base_url:
+                raise ValueError("SBOM_OPS_DT_BASE_URL is required")
+            if args.execute and args.confirm_instance != base_url:
+                raise ValueError(
+                    "execution requires --confirm-instance matching DT URL"
+                )
+            key = os.getenv("SBOM_OPS_DT_CONFIG_API_KEY") or os.getenv(
+                "SBOM_OPS_DT_API_KEY"
+            )
+            if not key:
+                raise ValueError("DT configuration API key required")
+            configure_osv(
+                _dependency_track_client(key),
+                audit_path=Path(args.audit),
+                execute=args.execute,
+                recovery_evidence=(
+                    Path(args.recovery_evidence) if args.recovery_evidence else None
+                ),
+            )
+            print(
+                "OSV configuration verified" if args.execute else "OSV dry-run complete"
+            )
+            print("Mirror synchronization is not verified; see audit:", args.audit)
+            return 0
         if args.command == "validate-manifest":
             return _run_validate_manifest(args.manifest)
         if args.command == "openapi-inventory":

@@ -221,6 +221,61 @@ def test_lab_cli_validates_local_real_world_corpus(
     assert "components=1" in output
 
 
+def test_lab_cli_corpus_dry_run_does_not_require_api_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    catalog_path, artifact_directory = _write_test_corpus(tmp_path)
+    monkeypatch.delenv("SBOM_OPS_SBOM_UPLOAD_API_KEY", raising=False)
+    monkeypatch.delenv("SBOM_OPS_DT_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "dt-lab",
+            "run-corpus",
+            "--catalog",
+            str(catalog_path),
+            "--artifact-dir",
+            str(artifact_directory),
+            "--artifact",
+            "python-example-1-0-0",
+            "--dry-run",
+        ],
+    )
+
+    assert main() == 0
+    output = capsys.readouterr().out
+    assert '"mode": "dry-run"' in output
+    assert '"project": "dt-lab-corpus-python-example"' in output
+
+
+def test_lab_cli_corpus_requires_explicit_execute_for_live_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    catalog_path, artifact_directory = _write_test_corpus(tmp_path)
+    monkeypatch.setenv("SBOM_OPS_SBOM_UPLOAD_API_KEY", "upload-placeholder")
+    monkeypatch.setenv("SBOM_OPS_DT_API_KEY", "read-placeholder")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "dt-lab",
+            "run-corpus",
+            "--catalog",
+            str(catalog_path),
+            "--artifact-dir",
+            str(artifact_directory),
+            "--artifact",
+            "python-example-1-0-0",
+        ],
+    )
+
+    assert main() == 2
+    assert "requires --execute" in capsys.readouterr().err
+
+
 def test_lab_manifest_rejects_missing_implemented_bom(tmp_path: Path) -> None:
     manifest_path = tmp_path / "scenarios.yaml"
     manifest_path.write_text(

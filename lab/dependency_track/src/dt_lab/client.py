@@ -610,6 +610,40 @@ class DependencyTrackLabClient:
     def observe_current_team(self) -> DependencyTrackObservation:
         return self._observe_json("/api/v1/team/self")
 
+    def read_config_properties(self) -> Any:
+        """Sensitive response: callers must select safe fields before recording."""
+        return self._request_json("/api/v1/configProperty")
+
+    def update_config_property(
+        self, group: str, name: str, value: str, property_type: str
+    ) -> Any:
+        request = Request(
+            f"{self._base_url}/api/v1/configProperty",
+            method="POST",
+            headers={"Content-Type": "application/json", "X-Api-Key": self._api_key},
+            data=json.dumps(
+                {
+                    "groupName": group,
+                    "propertyName": name,
+                    "propertyValue": value,
+                    "propertyType": property_type,
+                }
+            ).encode(),
+        )
+        try:
+            return request_json(
+                request,
+                timeout=self._timeout,
+                max_retries=0,
+                backoff_seconds=0,
+                error_message="DT configuration update failed",
+            )
+        except HttpApiError as exc:
+            raise DependencyTrackLabApiError(
+                "DT configuration update failed; inspect readback before retry",
+                status=exc.status,
+            ) from exc
+
     def observe_project(self, project_uuid: str) -> DependencyTrackObservation:
         return self._observe_json(f"/api/v1/project/{project_uuid}")
 

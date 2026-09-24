@@ -3717,7 +3717,7 @@ def run_lab_scenarios(
             results=results,
             project_records=project_records,
         )
-    except Exception as exc:
+    except BaseException as exc:
         _write_json(
             run_directory / "run.json",
             {

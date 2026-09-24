@@ -89,8 +89,13 @@ class RunResult:
                     "project_uuid": item.project_uuid,
                     "finding_key": item.finding_key,
                     "vulnerability_id": item.vulnerability_id,
+                    "vulnerability_source": item.vulnerability_source,
+                    "severity": item.severity.value,
+                    "cvss_score": item.cvss_score,
+                    "epss_score": item.epss_score,
                     "priority": item.priority.value,
                     "analysis_state": item.analysis_state.value,
+                    "is_suppressed": item.is_suppressed,
                     "rationale": list(item.rationale),
                 }
                 for item in self.assessments
@@ -218,8 +223,15 @@ class Orchestrator:
                         project_uuid=project.uuid,
                         finding_key=prioritized_finding.finding.finding_key(),
                         vulnerability_id=prioritized_finding.finding.vulnerability_id,
+                        vulnerability_source=(
+                            prioritized_finding.finding.vulnerability_source
+                        ),
+                        severity=prioritized_finding.finding.severity,
+                        cvss_score=prioritized_finding.finding.cvss_score,
+                        epss_score=prioritized_finding.enrichment.epss_score,
                         priority=prioritized_finding.priority,
                         analysis_state=prioritized_finding.enrichment.analysis_state,
+                        is_suppressed=prioritized_finding.enrichment.is_suppressed,
                         rationale=prioritized_finding.rationale,
                     )
                 )

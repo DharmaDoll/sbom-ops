@@ -165,7 +165,12 @@ def test_orchestrator_keeps_stale_issue_open_by_default() -> None:
     assert payload["status"] == "succeeded"
     assert payload["run_id"] == result.run_id
     assert payload["kev_used_stale_cache"] is False
+    assert payload["assessments"][0]["vulnerability_source"] == "NVD"
+    assert payload["assessments"][0]["severity"] == "HIGH"
+    assert payload["assessments"][0]["cvss_score"] == 8.0
+    assert payload["assessments"][0]["epss_score"] == 0.1
     assert payload["assessments"][0]["priority"] == "P0"
+    assert payload["assessments"][0]["is_suppressed"] is False
     assert payload["actions"] == list(result.actions)
 
 
@@ -299,3 +304,30 @@ def test_orchestrator_can_disable_github_issue_actions() -> None:
     assert github.created == []
     assert github.updated == []
     assert github.closed == []
+
+
+def test_assessment_exposes_missing_scores_without_changing_priority_policy() -> None:
+    class MissingScores(FakeDependencyTrack):
+        def get_project_findings(
+            self, project_uuid: str
+        ) -> list[DependencyTrackFinding]:
+            return [
+                replace(
+                    finding("GHSA-ABCD-1234-5678", severity="HIGH"),
+                    cvss_score=None,
+                    epss_score=None,
+                    vulnerability_source="GITHUB",
+                )
+            ]
+
+    disabled_config = replace(config(), github=replace(config().github, enabled=False))
+    result = Orchestrator(
+        disabled_config, MissingScores(), FakeKev(), FakeGitHub()
+    ).run()
+
+    assessment = result.as_dict()["assessments"][0]
+    assert assessment["vulnerability_source"] == "GITHUB"
+    assert assessment["severity"] == "HIGH"
+    assert assessment["cvss_score"] is None
+    assert assessment["epss_score"] is None
+    assert assessment["priority"] == "P3"

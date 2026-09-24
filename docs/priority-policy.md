@@ -19,7 +19,7 @@ Example SLA (separate remediation policy)
 ---
 
 ## P2
-High severity
+CVSS at or above the configured P2 threshold
 Planned remediation
 
 ---
@@ -44,3 +44,9 @@ Priority expresses work ordering; an SLA expresses a due date and escalation
 policy. They must remain separate domain concepts. Asset criticality, exposure,
 reachability, and compensating controls are future `PriorityContext` inputs and
 must not be inferred from CVSS alone.
+
+The current P2 rule uses numeric CVSS, not the textual `HIGH` severity label.
+When Dependency-Track provides `HIGH` but no numeric CVSS, the current rule falls
+through to P3 unless an earlier KEV, active-exploitation, CRITICAL, or EPSS rule
+matches. Assessment output therefore exposes source, severity, CVSS, and EPSS;
+`P3` with a missing score must not be presented as evidence of low risk.

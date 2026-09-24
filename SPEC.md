@@ -335,6 +335,22 @@ Required fields:
 - `priority: Priority`
 - `rationale: tuple[str, ...]`
 
+### Finding Assessment
+
+The action-neutral sync projection must retain the inputs needed to interpret a
+priority without consulting an Issue body:
+
+- `project_uuid` and stable `finding_key`
+- `vulnerability_id` and `vulnerability_source`
+- textual `severity`
+- nullable numeric `cvss_score` and `epss_score`
+- `priority`
+- Dependency-Track `analysis_state` and `is_suppressed`
+- `rationale`
+
+A missing numeric score remains `null`; it must not be represented as zero or as
+evidence that the Finding is low risk.
+
 ## Priority Rules
 
 The priority engine must be deterministic and side-effect free.
@@ -546,6 +562,8 @@ bom_path
 
 The CLI prints a run summary and can optionally append completed sync results
 to a JSONL file through `runtime.sync_log_file` or `--sync-log-file`.
+Failure of this optional sink must not replace the primary sync result, but must
+be reported on stderr without corrupting machine-readable stdout.
 
 Each run should log:
 

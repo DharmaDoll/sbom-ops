@@ -80,11 +80,19 @@ def run_plan(config: AppConfig) -> int:
     return 0
 
 
+def _append_sync_event_with_warning(path: str, payload: dict[str, object]) -> None:
+    if not append_sync_event(path, payload):
+        print(
+            "warning: sync log could not be written; primary sync result is unchanged",
+            file=sys.stderr,
+        )
+
+
 def run_sync(config: AppConfig, output_format: str = "text") -> int:
     orchestrator = Orchestrator(config=config)
     result = orchestrator.run()
     if config.runtime.sync_log_file:
-        append_sync_event(config.runtime.sync_log_file, result.as_dict())
+        _append_sync_event_with_warning(config.runtime.sync_log_file, result.as_dict())
     if output_format == "json":
         print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
         return 0
@@ -101,9 +109,23 @@ def run_sync(config: AppConfig, output_format: str = "text") -> int:
     )
     for assessment in result.assessments:
         rationale = ", ".join(assessment.rationale)
+        cvss = (
+            f"{assessment.cvss_score:.1f}"
+            if assessment.cvss_score is not None
+            else "unavailable"
+        )
+        epss = (
+            f"{assessment.epss_score:.4f}"
+            if assessment.epss_score is not None
+            else "unavailable"
+        )
         print(
             f"finding {assessment.finding_key} priority={assessment.priority.value} "
-            f"analysis={assessment.analysis_state.value} rationale={rationale}"
+            f"source={assessment.vulnerability_source or 'UNKNOWN'} "
+            f"severity={assessment.severity.value} cvss={cvss} epss={epss} "
+            f"analysis={assessment.analysis_state.value} "
+            f"suppressed={str(assessment.is_suppressed).lower()} "
+            f"rationale={rationale}"
         )
     for action in result.actions:
         prefix = "DRY-RUN " if config.runtime.dry_run else ""
@@ -173,7 +195,7 @@ def main() -> int:
             and active_config is not None
             and active_config.runtime.sync_log_file
         ):
-            append_sync_event(
+            _append_sync_event_with_warning(
                 active_config.runtime.sync_log_file,
                 {
                     "run_id": str(uuid4()),

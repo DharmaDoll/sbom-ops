@@ -126,6 +126,11 @@ class FindingAssessment:
     project_uuid: str
     finding_key: str
     vulnerability_id: str
+    vulnerability_source: str | None
+    severity: Severity
+    cvss_score: float | None
+    epss_score: float | None
     priority: Priority
     analysis_state: AnalysisState
+    is_suppressed: bool
     rationale: tuple[str, ...]

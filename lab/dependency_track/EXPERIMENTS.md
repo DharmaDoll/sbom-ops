@@ -1,5 +1,1587 @@
 # Dependency-Track Lab Experiment Ledger
 
+## 2026-09-24 — Project 30-day metrics retention probe
+
+- Status: read-only observation completed
+- Target: Dependency-Track 4.14.3 bundled container, same disposable OpenProject corpus Project
+- Scope: `/v1/metrics/project/{uuid}/days/30`
+
+### Purpose and Performed Work
+
+Check whether the Project metrics endpoint provides a useful multi-day trend.
+The request was read-only and retained only the array size and min/max values
+for component and Finding totals.
+
+### Observed Facts
+
+- HTTP 200; response time was approximately 0.007 seconds.
+- The 30-day request returned one metrics object, not a 30-point time series.
+- `findingsTotal` remained 630 and `components` remained 16,742 for the
+  returned object.
+
+### Interpretation and Product Decision
+
+This DT instance does not expose a usable multi-day Project metric trend from
+this endpoint. The endpoint may represent only an available snapshot for the
+requested period. sbom-ops must not infer daily history or freshness from the
+array length; if trend visibility is required, it must record timestamped
+observations externally or use a supported DT history contract after upgrade
+validation.
+
+### Unverified and Evidence
+
+Retention behavior with multiple metric refreshes remains unverified. No raw
+response, credentials, or persistent environment-specific identifiers were
+retained.
+
+## 2026-09-24 — Project historical metrics contract probe
+
+- Status: read-only observation completed
+- Target: Dependency-Track 4.14.3 bundled container, same disposable OpenProject corpus Project
+- Scope: `/v1/metrics/project/{uuid}/days/1`
+
+### Purpose and Performed Work
+
+Read the one-day historical metrics endpoint to determine whether it supplies a
+usable time series or an explicit timestamp/freshness field. The request was
+read-only; only response shape and selected scalar values were retained.
+
+### Observed Facts
+
+- HTTP 200; response time was approximately 0.05 seconds.
+- The response contained one metrics object.
+- Its `findingsTotal` was 630 and `components` was 16,742, matching current
+  metrics.
+- The object exposes `firstOccurrence` and `lastOccurrence`, but no explicit
+  sample-date, recorded-at, or synchronization timestamp field.
+
+### Interpretation and Product Decision
+
+The historical endpoint is available but does not by itself provide a clear
+freshness contract for operator or product use. Treat its values as DT metric
+history, not datasource synchronization evidence. Product freshness must remain
+unknown unless a timestamp is supplied by a supported contract or an external
+observation records when the query was made.
+
+### Unverified and Evidence
+
+Multiple-day retention and behavior after a metric refresh remain unverified.
+No raw response, credentials, or persistent environment-specific identifiers
+were retained.
+
+## 2026-09-24 — Large-project current metrics readback
+
+- Status: read-only observation completed
+- Target: Dependency-Track 4.14.3 bundled container, same disposable OpenProject corpus Project
+- Scope: `/v1/metrics/project/{uuid}/current`
+
+### Purpose and Performed Work
+
+Read the current Project metrics after the Component and Finding collection
+checks to determine whether DT's aggregate metrics are available and how they
+relate to collection counts. No refresh endpoint or other mutation was called.
+Only scalar metric fields were retained.
+
+### Observed Facts
+
+- HTTP 200; response time was approximately 0.02 seconds.
+- `components=16742`, `vulnerabilities=630`, `findingsTotal=630`.
+- Severity counts were critical 15, high 150, medium 214, low 251,
+  unassigned 0; these sum to 630.
+- `vulnerableComponents=88`, `suppressed=0`, and all 630 Findings were
+  unaudited.
+- `collectionLogic=NONE`; policy-violation totals were all zero.
+- `inheritedRiskScore=1793.0`.
+
+### Interpretation and Product Decision
+
+The metrics endpoint is a fast, stable aggregate suitable for progress and
+operator display, while the Finding collection remains the authoritative detail
+set. `vulnerabilities` counts Finding instances rather than unique vulnerability
+identifiers (the collection-level sample had one unique identifier), and
+`vulnerableComponents` is an aggregate identity count (88 versus 87 distinct
+PURLs in the sampled payload). Product code must label these metrics precisely
+and must not treat them as interchangeable counts.
+
+### Unverified and Evidence
+
+Metric refresh timing and historical metric semantics remain unverified. No raw
+response, credentials, or persistent environment-specific identifiers were
+added to the ledger.
+
+## 2026-09-24 — Large-project aggregate/read consistency check
+
+- Status: read-only observation completed
+- Target: Dependency-Track 4.14.3 bundled container, same disposable OpenProject corpus Project
+- Scope: Project identity, component collection header, and Finding collection
+
+### Purpose and Performed Work
+
+Compare the stable Project identity with the two collections most relevant to
+the product inventory boundary. The Project resource and lookup projection were
+read without mutation; the Component endpoint was sampled with a single-item
+page to read its total header, and the Finding endpoint was read in full.
+
+### Observed Facts
+
+- The Project remained active with the expected lab name and run-scoped version.
+- The Component endpoint reported `X-Total-Count: 16742`.
+- The Finding endpoint returned 630 items.
+- No suppressed Findings were present in the returned collection.
+
+### Interpretation and Product Decision
+
+The large-project inventory and Finding readbacks are internally consistent
+with the prior live-run baseline (16,742 Components and 630 Findings). Product
+reconciliation should use the complete Component collection total and the
+Finding collection, rather than relying on optional aggregate fields in the
+Project representation or lookup projection.
+
+### Unverified and Evidence
+
+This does not establish asynchronous metric refresh behavior or explain prior
+historical Finding-count changes between SBOM imports. No raw payloads,
+credentials, or new persistent artifacts were retained.
+
+## 2026-09-24 — Large-project Finding collection readback
+
+- Status: read-only observation completed
+- Target: Dependency-Track 4.14.3 bundled container, disposable large OpenProject corpus Project
+- Scope: bounded Finding collection response and repeatability check
+
+### Purpose and Performed Work
+
+Retried the large-project Finding request using the configured DT base URL from
+the approved external network path after the sandbox-only probe failed. Three
+bounded GET requests were made with the existing read key; no upload, analysis,
+policy, VEX, or cleanup mutation was attempted. Only status, response size,
+latency, and array counts were retained.
+
+### Observed Facts
+
+- All three requests returned HTTP 200.
+- Each response contained exactly 630 Findings and 1,864,951 downloaded bytes.
+- Request times were 0.396s, 0.211s, and 0.126s.
+- The response contained 1 unique vulnerability identifier and 87 unique
+  component PURLs in the returned Finding collection.
+
+### Interpretation and Product Decision
+
+The large-project Finding collection is repeatably readable at this snapshot,
+with a roughly 1.8 MB response and sub-second request time. The current DT
+Finding endpoint returns the complete project collection in one response rather
+than requiring the lab client's paginated list helper; production adapters must
+still retain bounded timeouts and response-size safeguards. The low unique
+vulnerability count is a property of this imported snapshot and is not a
+general DT coverage claim.
+
+### Unverified and Evidence
+
+This did not measure asynchronous processing latency or behavior at larger
+Finding counts. No raw response or credential was persisted. The earlier
+sandbox-only connection failure remains recorded as a separate inconclusive
+attempt.
+
+## 2026-09-24 — Large-project Finding pagination probe unavailable
+
+- Status: inconclusive; read-only request did not reach the DT API
+- Target: Dependency-Track 4.14.3 bundled container, existing disposable large-SBOM Project
+- Scope: bounded Finding collection read for page/response-size validation
+
+### Purpose and Performed Work
+
+Attempted a read-only request for the existing large OpenProject corpus Project to
+measure the Finding collection response size, item count, unique vulnerability
+count, and request latency. No upload, analysis, policy, VEX, or cleanup action
+was attempted. The request failed immediately because the published host port
+was not accepting connections. A Docker health/status check was also attempted,
+but the current shell cannot access the Docker daemon socket.
+
+### Observed Facts
+
+- `127.0.0.1:8080` returned connection failure before an HTTP response.
+- No response body, Finding payload, credential, or new evidence artifact was
+  retained.
+- Container health and restart state could not be observed from this shell due
+  to Docker socket permission denial.
+
+### Interpretation and Product Decision
+
+The pagination and response-size behavior remain unverified by this attempt.
+Connection failure is transport/availability evidence only; it must not be
+interpreted as an empty Project or missing Findings. Retry after the DT service
+is reachable, using the same read-only request and bounded timeout.
+
+### Unverified and Evidence
+
+No durable raw evidence was created. This failed attempt is recorded here so the
+lab does not treat the planned measurement as completed.
+
+## 2026-09-24 — Large OpenProject SBOM live run
+
+- Status: live upload and readback completed; cleanup plan written, deletion not executed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: disposable corpus Project using the schema-valid OpenProject SBOM
+
+### Purpose and Performed Work
+
+Execute the largest pinned corpus artifact with the explicit `--execute` gate,
+then measure DT inventory counts and prepare the separate run-scoped cleanup.
+The upload used the dedicated lab upload/read keys; no analysis mutation was
+enabled. The CLI process lost its final summary output, so the run artifact
+remained marked `running`; the Project and paginated count headers were then
+verified independently with bounded read-only requests. Cleanup was planned but
+not executed.
+
+### Observed Facts
+
+- Input baseline: 14,113,899 bytes, 17,831 Components, 869 dependencies.
+- DT readback reported 16,742 Components, 630 Findings, and 630 Vulnerabilities.
+- The disposable Project is active and isolated by a run-specific version.
+- A run-scoped cleanup plan and local audit were created; no Project deletion
+  occurred.
+
+### Interpretation and Product Decision
+
+The large real-world SBOM is ingestible and queryable at approximately 16.7k
+Components. The discrepancy between input component count and DT inventory is a
+product-relevant fact requiring explanation before assuming one-to-one counts.
+The 630 Finding/Vulnerability counts provide a baseline for pagination and
+assessment performance. The interrupted final CLI output exposes a robustness
+gap: run completion must be durably finalized even when post-upload observation
+or output handling is interrupted.
+
+### Follow-up Count Reconciliation
+
+A bounded paginated read compared the complete DT Component collection with
+the local input PURLs without retaining raw payloads. The input had 17,831
+component entries, 3,690 PURL-bearing entries, 2,385 unique PURLs, and 14,141
+entries without a PURL. DT returned 16,742 rows, 2,603 PURL-bearing rows, the
+same 2,385 unique PURLs, 218 duplicate PURL entries, and 14,139 rows without a
+PURL. No input PURL was missing and DT introduced no new PURL.
+
+This explains the 1,089-row difference as DT normalization/deduplication of
+PURL-bearing entries plus a two-row difference among PURL-less entries. The
+product should compare semantic identity sets, not raw SBOM component-entry
+counts, while preserving the raw SBOM count as an audit metric.
+
+A second bounded comparison using name/version signatures found that the
+PURL-less collections differ by exactly two unique input entries; all remaining
+PURL-less names are represented in DT. Type/group/CPE fields are not stable
+cross-system comparison keys in this export, so they were excluded from the
+semantic reconciliation. The two unresolved names were represented only by
+short digests in the local diagnostic and were not written to the ledger.
+
+### Unverified and Evidence
+
+Upload and processing latency, full paginated response sizes, and the exact
+semantics of the two PURL-less row difference remain to be analyzed from the
+ignored run artifacts.
+Cleanup execution remains pending explicit review. Evidence paths use
+`var/dt-lab/runs/<run>/` patterns; no raw credentials or UUIDs were added to
+the ledger.
+
+## 2026-09-23 — Policy-violation endpoint contract probe
+
+- Status: read-only probe completed; no policy or analysis mutation
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: OpenAPI contract and portfolio policy-violation endpoint
+
+### Purpose and Performed Work
+
+Prepare the planned `triage-policy-violations` scenario using the supported
+REST surface. OpenAPI inspection identified portfolio, Project, and Component
+violation reads requiring `VIEW_POLICY_VIOLATION`, plus a separate violation
+analysis mutation endpoint. A bounded authenticated request to the portfolio
+endpoint with `limit=1` returned HTTP 200 and `X-Total-Count: 0`; only status
+metadata was retained.
+
+### Interpretation and Product Decision
+
+Policy violations are a distinct DT resource and permission boundary from
+vulnerability Findings. The scenario should compare separate read snapshots and
+avoid mixing policy violations into vulnerability priority until an explicit
+product rule exists. The mutation endpoint requires a separately authorized,
+disposable experiment and remains out of this read-only preparation.
+
+### Unverified and Evidence
+
+No live policy violation exists in the current portfolio, so state transitions,
+analysis semantics, and audit behavior remain unverified. No response payload,
+UUID, or credential was persisted.
+
+## 2026-09-22 — Normalized evidence for OSV full mirror
+
+- Status: read-only evidence capture completed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: marker and datasource-log summarizers for the 2026-09-21 full mirror
+
+### Purpose and Performed Work
+
+Run the repository's strict marker and bounded log summarizers against the
+successful full-mirror window. The marker summarizer used a caller-supplied
+30-hour threshold and persisted only normalized timestamps, counts, and a
+digest; the log summarizer retained sanitized event classifications only.
+
+### Observed Facts
+
+- All four ecosystems are `within-threshold` at the observation time
+  2026-09-21 22:09:17 UTC.
+- Full mirror start markers are recorded at 00:13:55–00:16:29 UTC on
+  2026-09-21, matching the successful task log window.
+- Evidence artifacts were written under ignored `var/dt-lab/runs/<run>/` paths;
+  raw marker input and raw Docker logs were not persisted.
+
+### Interpretation and Product Decision
+
+The lab diagnostic is reproducible for a successful OSV full mirror and can
+support operator investigation. It remains version-coupled and is not a
+production freshness API; no product code should consume these internal files.
+
+### Unverified and Evidence
+
+The cause of the earlier cadence gap and a supported DT freshness contract
+remain unresolved. The two sanitized run artifacts are the local evidence for
+this observation.
+
+## 2026-09-22 — OSV full fallback mirror completed
+
+- Status: read-only observation completed; OSV mirror success confirmed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: OSV markers and bounded 2026-09-21 task logs
+
+### Purpose and Observed Facts
+
+After API connectivity recovered, re-read the four OSV marker pairs and
+inspected the 2026-09-21 00:13:55–00:32:07 UTC OSV log window. All four full
+and modified markers advanced. The task performed a full mirror for each
+ecosystem, processing 4,778 RubyGems, 25,645 PyPI, 9,295 Go, and 229,117 npm
+advisories, and logged successful completion. Total logged task time was about
+18 minutes 11 seconds. No state or configuration was changed by the lab.
+
+### Interpretation and Product Decision
+
+The earlier absence of OSV runs is now followed by a successful full fallback
+mirror, proving that the task can execute and refresh the datastore after the
+observed timer gap. The marker timestamp represents the operation start, while
+completion occurs later; freshness tooling must preserve both semantics when
+available. Keep internal markers lab-only and continue treating product
+freshness as unknown without a supported telemetry contract.
+
+### Unverified and Evidence
+
+The reason for the long gap before this full fallback remains unverified; the
+24-hour cadence and five-day full-mirror fallback are both configured. No raw
+logs or API payloads were persisted; sanitized evidence uses ignored
+`var/dt-lab/runs/<run>/` paths.
+
+## 2026-09-22 — Host API recovered; OpenAPI telemetry inventory
+
+- Status: read-only connectivity recovery and OpenAPI inspection completed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: published port/container-IP probes and local OpenAPI paths
+
+### Purpose and Observed Facts
+
+Retry the host-to-container path after the 2026-09-21 timeout. Health requests
+to both the container IP (`172.18.0.2:8080`) and published loopback
+(`127.0.0.1:8080`) returned HTTP 200. The OpenAPI document then loaded
+successfully. It exposes configuration and metrics endpoints, but no task
+status, scheduler, datasource freshness, or mirror-history endpoint; the
+metrics paths are component/project/portfolio refresh and current/history
+views. No state or configuration was changed.
+
+### Interpretation and Product Decision
+
+The prior timeout was transient host/API-path unavailability, not a permanent
+port mapping failure. Docker health and host reachability can diverge
+temporarily, so lab readiness must include an explicit host API probe. Since
+the supported OpenAPI surface has no task telemetry contract, retain the
+version-coupled marker/log diagnostic and freshness-unknown product policy.
+
+### Unverified and Evidence
+
+The cause and duration of the transient timeout remain unknown. No OpenAPI
+payload or environment-specific network identifiers were persisted.
+
+## 2026-09-21 — Host/API path versus container health divergence
+
+- Status: read-only connectivity diagnosis completed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: host loopback probes and Docker healthcheck metadata
+
+### Purpose and Observed Facts
+
+Recheck API availability after a full day and compare host-visible routes with
+the container's own health signal. Host requests to `/health`, `/api/version`,
+and `/api/openapi.json` all timed out within five seconds on both
+`localhost:8080` and `127.0.0.1:8080`. Docker still reports `healthy`; its
+healthcheck is an in-container request to `http://127.0.0.1:8080/health`, and
+recent checks are succeeding. No restart or network/configuration mutation was
+performed.
+
+### Interpretation and Product Decision
+
+The current failure boundary is host-to-container port reachability or Docker
+forwarding, not proven application health: the in-container healthcheck can
+pass while the lab client cannot reach the API. Do not treat the container as
+lab-ready, and do not run mutating scenarios until host API connectivity is
+restored and independently verified.
+
+### Unverified and Evidence
+
+The external forwarding failure mechanism remains unverified. No response
+payloads, credentials, or network dumps were persisted.
+
+## 2026-09-20 — API timeout resource and port check
+
+- Status: read-only runtime diagnosis completed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: port mapping, JVM process state, and container resource usage
+
+### Purpose and Observed Facts
+
+Investigate whether the persistent API timeout is explained by a stopped
+process, missing port publication, or obvious resource exhaustion. Docker shows
+port 8080 published on IPv4 and IPv6; the Java process is running for the full
+post-restart interval. At observation time it used about 3.1 GiB of 8 GiB
+memory, 0.26% CPU, and 100 PIDs. No restart or mutation occurred.
+
+### Interpretation and Product Decision
+
+The timeout is not explained by a stopped JVM, absent port mapping, OOM state,
+or high instantaneous resource usage. The application/DB request path remains
+the leading unknown. Do not run mutating lab scenarios until the API responds.
+
+### Unverified and Evidence
+
+Thread-level and database diagnostics were not available through the bundled
+image tooling and remain unverified. No process output or credentials were
+persisted.
+
+## 2026-09-20 — API timeout persists
+
+- Status: read-only follow-up completed; API remains unresponsive
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: bounded HTTP probes and recent error-log inspection
+
+### Purpose and Observed Facts
+
+Retried `/api/version`, `/api/openapi.json`, and `/metrics` at
+2026-09-20 11:03:45 UTC after the earlier timeout. All three again exceeded
+five seconds. The bounded log search found only the previously recorded
+09:02:21 UTC Jetty/Jersey broken-pipe error and no OOM or shutdown signal.
+No restart or state change was performed.
+
+### Interpretation and Product Decision
+
+The API responsiveness issue is persistent across independent probes, while
+the container had previously reported healthy. Treat the Docker health result
+as insufficient for lab readiness and do not run mutating scenarios or further
+configuration reads until the supported API responds again. Product freshness
+remains unknown.
+
+### Unverified and Evidence
+
+The cause of the application-level timeout remains unverified. No raw response,
+credentials, or environment-specific identifiers were persisted.
+
+## 2026-09-20 — Supported API telemetry probe inconclusive
+
+- Status: read-only probe completed; API responsiveness degraded
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: local OpenAPI/version/metrics HTTP probes and container health metadata
+
+### Purpose and Performed Work
+
+Check whether supported HTTP telemetry can replace the internal marker
+diagnostic. Bounded requests to `/`, `/api/version`, `/api/openapi.json`, and
+`/metrics` all timed out. The container was then inspected without restarting
+it, and recent logs were searched for runtime errors.
+
+### Observed Facts
+
+- Docker reports the container `running`, `healthy`, `oom=false`, and exit code
+  zero; no restart was performed.
+- All four HTTP probes timed out at five seconds, so no OpenAPI or task-status
+  endpoint could be evaluated.
+- Recent logs contained a Jetty/Jersey broken-pipe response-write error, which
+  is compatible with a client disconnect but does not explain the timeouts.
+
+### Interpretation and Product Decision
+
+Supported API telemetry is currently inconclusive because the application did
+not respond within the bounded probe window. Docker health alone cannot prove
+API responsiveness or OSV task health. Preserve the freshness-unknown policy;
+do not restart or alter configuration merely to recover the probe.
+
+### Unverified and Evidence
+
+The cause of API unresponsiveness and availability of a supported task-status
+endpoint remain unverified. No response payloads or credentials were stored.
+
+## 2026-09-20 — Persisted datasource and cadence configuration read
+
+- Status: read-only API observation completed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: selected `configProperty` values; no POST or configuration mutation
+
+### Purpose and Performed Work
+
+Use the existing lab read key with the documented configuration endpoint to
+resolve whether OSV is enabled and which cadence the scheduler has persisted.
+The query printed only an allowlisted set of datasource and cadence fields;
+credentials and encrypted values were not recorded.
+
+### Observed Facts
+
+- `google.osv.enabled` is `RubyGems;PyPI;Go;npm`.
+- `google.osv.alias.sync.enabled` and `github.advisories.enabled` are `false`.
+- `task-scheduler.osv.mirror.cadence` is `24` hours; NIST, GHSA, and VulnDB
+  cadence values are also `24`.
+- NVD and EPSS source settings are enabled, while NVD feed download is false.
+
+### Interpretation and Product Decision
+
+The missing post-restart OSV recurrence is not explained by OSV being disabled
+or by an unexpected persisted cadence. With control tasks active and a 24-hour
+OSV cadence confirmed, the remaining uncertainty is timer lifecycle or an
+internal task failure after the successful startup run. Keep the API read in
+the lab; do not expose cadence as product freshness or alter configuration.
+
+### Unverified and Evidence
+
+The scheduler's effective timer execution and failure path remain unverified.
+Only sanitized facts are retained in this ledger; no API response or key was
+persisted.
+
+## 2026-09-20 — OSV startup-path and runtime-config check
+
+- Status: read-only diagnosis completed; no configuration mutation
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: container command/environment metadata and startup OSV logs
+
+### Purpose and Performed Work
+
+Investigate whether the absent post-restart OSV recurrence is caused by an
+obvious container-level schedule override. Listed configuration paths, reviewed
+the image command and selected non-secret environment values, and inspected the
+bounded startup log for the OSV task.
+
+### Observed Facts
+
+- The bundled image starts the Dependency-Track JAR with Java options and no
+  visible task-specific OSV/NIST/EPSS environment variables.
+- The only OSV task execution after the restart began at 22:00 UTC and was a
+  successful incremental mirror: RubyGems had no changes; PyPI processed 1;
+  Go processed 45; npm processed 29 advisories. The task logged completion.
+- No second OSV task execution is present in the retained post-restart logs,
+  while other scheduled controls continue.
+
+### Interpretation and Product Decision
+
+The first post-restart run is a valid successful incremental update, not a full
+mirror. The absence of a task-specific environment override shifts the open
+question toward persisted/system configuration, timer lifecycle, or an
+internal scheduling failure. Do not change product logic or force a mirror;
+investigate through supported DT configuration/telemetry on the next planned
+lab run.
+
+### Unverified and Evidence
+
+The persisted cadence value and the exact reason for the missing second task
+remain unverified. Only sanitized ledger facts are retained; no credentials or
+raw environment/configuration payloads were saved.
+
+## 2026-09-20 — Post-restart OSV recurrence remains absent
+
+- Status: read-only interval review completed; recurrence not observed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: runtime metadata, OSV markers, scheduler controls, and non-secret env inspection
+
+### Purpose and Performed Work
+
+Revisit the post-restart baseline after roughly four days of runtime. Read the
+container state and OSV markers, summarized logs from the restart through
+2026-09-19 21:04 UTC, and checked for non-secret scheduling environment
+variables. No state, configuration, or credentials were changed.
+
+### Observed Facts
+
+- The container remains running with start time 2026-09-15 21:59:46 UTC and
+  `restart_count=1`.
+- The four OSV modified markers remain at approximately 2026-09-15 22:00 UTC;
+  no later OSV marker exists. Full markers remain at their initial values.
+- Post-restart logs contain only the initial 32 OSV task lines, while control
+  tasks continue: 20 Portfolio Metrics pairs and four Internal Component
+  Identification pairs were observed through 2026-09-19.
+- No matching non-secret task scheduling environment variables were present.
+
+### Interpretation and Product Decision
+
+This is now strong evidence that the tested 4.14.3 process did not record a
+second OSV task execution while other scheduled controls continued. It still
+does not identify whether the OSV timer was disabled, suspended, or failed
+before logging. Treat OSV freshness as unknown; do not add a product alert or
+change cadence based on this internal marker alone. The next useful action is a
+version/configuration-specific investigation, not more frequent polling.
+
+### Unverified and Evidence
+
+The OSV scheduler's effective configuration and failure path remain unverified.
+Evidence remains in ignored `var/dt-lab/runs/<run>/` artifacts and the bounded
+log summary; no raw log was committed.
+
+## 2026-09-17 — Bounded quiet-window check
+
+- Status: read-only check completed; no matching task events
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: 2026-09-16 23:38:40–2026-09-17 00:05:00 UTC logs
+
+### Purpose and Observed Facts
+
+Checked a longer bounded window for OSV, NIST, EPSS, and scheduler-control
+events after the previous spot check. No matching task lines were emitted, and
+the command performed no mutation. The container and marker state were not
+changed by the lab.
+
+### Interpretation and Product Decision
+
+The quiet window is inconclusive and does not distinguish host suspension from
+task scheduling delay. Defer further polling until a meaningful runtime
+interval has elapsed; keep the observation lab-only and product freshness
+unknown.
+
+### Unverified and Evidence
+
+The next OSV recurrence remains unverified. No raw log artifact was retained;
+future sanitized evidence uses `var/dt-lab/runs/<run>/`.
+
+## 2026-09-17 — Runtime continuity spot check
+
+- Status: read-only spot check completed; no new datasource event
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: container state, OSV markers, and a bounded ten-minute log window
+
+### Purpose and Performed Work
+
+Verify that the post-restart observation baseline remains valid. Checked runtime
+metadata and markers, then searched logs from 2026-09-16 23:28:35–23:38:40 UTC.
+No state or configuration was changed.
+
+### Observed Facts
+
+- Container remains running with start time 2026-09-15 21:59:46 UTC and
+  `restart_count=1`.
+- All OSV markers are unchanged from the post-restart initial run.
+- No scheduler or datasource task lines appeared in the ten-minute window.
+
+### Interpretation and Product Decision
+
+This short quiet window adds no evidence about OSV timer health. Continue with
+longer, bounded checks after sufficient runtime; keep product freshness
+unknown unless a supported contract is available.
+
+### Unverified and Evidence
+
+The next OSV recurrence and effective timer runtime remain unverified. Any
+future artifacts use ignored `var/dt-lab/runs/<run>/` paths.
+
+## 2026-09-17 — Post-restart cadence checkpoint
+
+- Status: read-only checkpoint completed; post-restart recurrence still unverified
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: runtime metadata, OSV markers, and bounded logs
+
+### Purpose and Performed Work
+
+Continue from the verified 2026-09-15 restart boundary. Confirm the container
+remains stable, inspect the OSV markers, summarize logs from the restart through
+2026-09-16 23:28 UTC, and search the expected recurrence window for datasource
+errors. No state was changed.
+
+### Observed Facts
+
+- Container remains running with the same start time
+  (2026-09-15 21:59:46 UTC) and `restart_count=1`.
+- OSV markers still show the post-restart initial run around 22:00 UTC on
+  2026-09-15; no later marker is present.
+- The post-restart window includes the initial OSV/NIST/EPSS executions, nine
+  Portfolio Metrics pairs, and two Internal Component Identification pairs.
+  No datasource error or exception was found around the expected 24-hour OSV
+  recurrence window.
+
+### Interpretation and Product Decision
+
+The container and control timers are active, but a second OSV recurrence is not
+yet evidenced despite more than 24 hours of wall-clock time. Host suspension,
+fixed-delay scheduling, or task timing remain possible explanations; this does
+not justify changing product freshness behavior. Continue bounded observation
+until another OSV marker or a reproducible failure signal appears.
+
+### Unverified and Evidence
+
+Effective timer runtime and the next incremental update remain unverified.
+Evidence paths use ignored run patterns under `var/dt-lab/runs/<run>/`.
+
+## 2026-09-17 — Restart boundary discovered
+
+- Status: read-only follow-up completed; recurrence interpretation reset
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: OSV markers, bounded logs, and container runtime metadata
+
+### Purpose and Performed Work
+
+Reconcile the unchanged OSV markers after the prior observation window. Read
+the marker files, summarized logs from 2026-09-16 07:53:30–23:12:20 UTC, and
+inspected container start/restart metadata. No container or datasource mutation
+was performed by the lab.
+
+### Observed Facts
+
+- OSV modified markers remained at approximately 2026-09-15 22:00 UTC; full
+  markers remained at the initial 2026-09-11 values.
+- The bounded log window contained three Portfolio Metrics pairs and one
+  Internal Component Identification pair, with no OSV/NIST/EPSS task lines.
+- Container metadata reports `started=2026-09-15T21:59:46Z`,
+  `restart_count=1`, and `running`. This restart occurred after the previous
+  marker observation and was not initiated by the lab command.
+
+### Interpretation and Product Decision
+
+The 2026-09-15 22:00 OSV update is temporally adjacent to the container restart
+and cannot be used as evidence of a steady-state 24-hour recurrence. The timer
+observation window must be restarted from this process start; continue with
+read-only monitoring and do not infer a scheduler failure from the absence of a
+later update.
+
+### Unverified and Evidence
+
+The first post-restart incremental recurrence remains unverified. Evidence is
+kept under ignored paths using `var/dt-lab/runs/<run>/...` patterns.
+
+## 2026-09-16 — OSV interval follow-up
+
+- Status: read-only follow-up completed; no second OSV recurrence observed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: OSV markers and bounded scheduler logs; no state mutation
+
+### Purpose and Performed Work
+
+Continue the post-incremental observation without restarting Dependency-Track.
+Read the OSV marker files and inspected the 2026-09-16 03:37:10–07:53:30 UTC
+log window.
+
+### Observed Facts
+
+- All four modified markers remained at approximately 2026-09-15 22:00 UTC;
+  full markers remained at their initial 2026-09-11 values.
+- The window contained four Portfolio Metrics log lines (two start/end pairs).
+  No OSV, NIST, EPSS, or Internal Component Identification lines appeared.
+- The container was not restarted and no Dependency-Track state was changed.
+
+### Interpretation and Product Decision
+
+The unchanged marker during this four-hour window is consistent with the
+configured OSV cadence and does not establish a failure. Keep waiting for the
+next effective OSV timer execution; do not promote internal marker data into
+product freshness logic.
+
+### Unverified and Evidence
+
+The next incremental cycle and failure-specific diagnostics remain unverified.
+Evidence remains in ignored paths using the patterns
+`var/dt-lab/runs/<run>/osv-internal-markers.json` and
+`var/dt-lab/runs/<run>/datasource-log-window.json`.
+
+## 2026-09-16 — Post-incremental stability check
+
+- Status: read-only follow-up completed; no new OSV cycle yet
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: OSV markers and bounded scheduler logs; no state mutation
+
+### Purpose and Performed Work
+
+Check whether the successful 2026-09-15 incremental OSV update is followed by
+normal scheduler activity without restarting the container. Read the marker
+files and inspected a bounded 2026-09-16 00:16:30–03:37:10 UTC log window.
+
+### Observed Facts
+
+- All four OSV modified markers remained at approximately 2026-09-15 22:00 UTC;
+  full markers remained at the initial 2026-09-11 values.
+- The window contained one Internal Component Identification start/end pair and
+  three Portfolio Metrics start/end pairs (six matching log lines). No OSV,
+  NIST, or EPSS task lines appeared.
+- No container restart or mutation was performed.
+
+### Interpretation and Product Decision
+
+The scheduler control tasks continue to run while the OSV marker remains
+unchanged for this short interval. This is compatible with a 24-hour OSV
+cadence and does not indicate failure. Continue count-based observation until
+the next expected effective OSV cycle; keep internal markers lab-only.
+
+### Unverified and Evidence
+
+The next incremental cycle, task failure diagnostics, and timer behavior across
+host suspension remain unverified. Evidence paths are retained only as ignored
+run artifacts: `var/dt-lab/runs/<run>/osv-internal-markers.json` and
+`var/dt-lab/runs/<run>/datasource-log-window.json`.
+
+## 2026-09-16 — OSV incremental recurrence observed
+
+- Status: read-only observation completed; first incremental recurrence confirmed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: OSV internal markers and bounded datasource/scheduler logs; GHSA remains disabled
+
+### Purpose and Performed Work
+
+Re-check the OSV success markers after additional effective runtime without
+restarting the container. Read the four ecosystem marker pairs, then ran the
+strict marker summarizer and a bounded log summarizer. The commands were
+read-only; no datasource, Project, Analysis, credential, container, or GitHub
+Issue state was changed.
+
+### Observed Facts
+
+- All four `*-modified.csv.ts` markers advanced to approximately
+  2026-09-15 22:00 UTC, while the four full `.zip.ts` markers remained at the
+  2026-09-11 initial mirror times.
+- The bounded window 2026-09-15 02:31:19–2026-09-16 00:16:30 UTC contained
+  two OSV task starts/completions and eight incremental-download start/completion
+  pairs. NIST and EPSS also completed; GHSA was not observed because it is
+  disabled.
+- Portfolio Metrics had five start/end pairs and Internal Component
+  Identification one pair. The marker summary assessed all ecosystems as
+  `within-threshold` for the caller-supplied 30-hour threshold at
+  2026-09-16 00:16:20 UTC. Raw input was not persisted.
+
+### Interpretation and Product Decision
+
+The first effective recurring OSV execution is now evidenced as a successful
+incremental update. This validates that the scheduler and OSV datasource can
+progress after the initial full mirror; full archives are not rewritten for an
+incremental run. Keep this marker diagnostic lab-only and version-coupled, and
+do not infer upstream completeness or product freshness solely from it.
+
+### Unverified and Evidence
+
+Per-ecosystem record: `var/dt-lab/runs/<run>/osv-internal-markers.json`.
+Log-window record: `var/dt-lab/runs/<run>/datasource-log-window.json`.
+The exact task cadence under host suspension, subsequent incremental cycles,
+and independent datasource health remain unverified.
+
+## 2026-09-15 — OSV first-recurrence progress and GHSA log contract
+
+- Status: OSV recurrence pending; bounded read-only follow-up completed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: OSV markers and scheduled-task logs; GHSA remains disabled
+
+### Purpose and Performed Work
+
+Continue waiting for the first effective 24-hour OSV recurrence without forcing
+a restart, while using shorter diagnostics rather than blocking lab progress.
+An initial read-only command combined a full-history Docker log scan with marker
+inspection but did not return in a useful time and was interrupted by the user.
+It performed no write. Replaced it with a marker-only read and a 20-second-capped
+log query limited to 2026-09-14 11:00–2026-09-15 02:31 UTC.
+
+Captured the unchanged eight OSV marker lines through the strict marker
+summarizer with an explicit observation time and 30-hour diagnostic threshold.
+Separately reviewed the exact 4.14.3 `GitHubAdvisoryMirrorTask` implementation
+because GHSA is disabled and therefore unavailable for live parser validation.
+Added synthetic tests for both its initial and incremental start messages and
+both success outcomes. No datasource, Project, Analysis, credential, container,
+or GitHub Issue state was changed.
+
+### Observed Facts
+
+- At 2026-09-15 02:31:19 UTC, every OSV full and incremental marker still held
+  its initial 2026-09-11 value. Ages ranged from 336,375 to 336,535 seconds
+  (about 93 hours 26 minutes to 93 hours 29 minutes), so no newer successful OSV
+  update was recorded.
+- The bounded 15.5-hour log window contained four Portfolio Metrics start/end
+  pairs and one Internal Component Identification start/end pair, but no OSV,
+  NIST, or EPSS task event.
+- The first Portfolio Metrics pair in that bounded window was already present
+  in the preceding full-window summary. Combining non-overlapping starts yields
+  approximately 22 hourly control executions since process start: the initial
+  execution plus about 21 repeat intervals, still fewer than 24.
+- The interrupted full-history command produced no retained evidence. The
+  replacement marker summary persisted no raw input and its 422-byte input
+  digest matched the prior marker snapshot because all marker lines were
+  unchanged.
+- GHSA 4.14.3 logs a full or modified-since message at start and either a
+  successfully-mirrored count or already-up-to-date message on success. This is
+  verified against source and synthetic tests only; no live GHSA call occurred.
+
+### Interpretation and Product Decision
+
+The new control count remains consistent with the first 24-hour fixed-delay
+mirror recurrence not yet being due in effective runtime. Wall-clock OSV marker
+age now exceeds 93 hours, but it still must not be interpreted as a scheduler
+failure on this intermittently suspended host. Continue without restart until
+at least three more non-overlapping hourly control starts have occurred, then
+capture a narrow mirror window and markers again.
+
+GHSA classifier support is now reproducible but remains `implemented`, not live
+evidence. Do not enable GHSA merely to complete parser coverage. Its future
+enablement still requires an explicit, separately reviewed global datasource
+experiment and credential decision.
+
+### Unverified and Evidence
+
+The first OSV/NVD recurrence, incremental results, independent mirror timer
+health, and suspend/resume timer semantics remain unverified. The next check is
+count-based, not a wall-clock deadline. Local evidence pattern:
+`var/dt-lab/runs/<run>/osv-internal-markers.json` (ignored). Synthetic tests:
+`lab/dependency_track/tests/test_datasource_freshness.py`.
+
+- [GitHubAdvisoryMirrorTask 4.14.3](https://github.com/DependencyTrack/dependency-track/blob/4.14.3/src/main/java/org/dependencytrack/tasks/GitHubAdvisoryMirrorTask.java)
+
+## 2026-09-14 — OSV internal success-marker and scheduler-control diagnostic
+
+- Status: read-only observation completed; first recurrence remains pending
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: version-coupled OSV filesystem metadata; no API or state mutation
+
+### Purpose and Performed Work
+
+Follow up the absent datasource lifecycle logs with an independent success
+signal and a scheduler control. Reviewed the exact 4.14.3 `TaskScheduler` and
+`OsvDownloadTask` source, its Alpine 3.8.0 scheduler implementation, then
+compared them with the target OpenAPI and runtime. The OpenAPI contains no
+datasource task-status endpoint, and an unauthenticated status-only request to
+the bundled `/metrics` path returned 404.
+
+The implementation schedules OSV shortly after process start and then at the
+configured cadence captured during scheduler construction. Alpine creates a
+separate `java.util.Timer` for each event and uses fixed-delay `Timer.schedule`.
+After successful processing, `OsvDownloadTask` writes ecosystem-specific full
+and incremental timestamp marker files containing the operation start time. A
+successful full update writes both markers; a successful incremental update
+rewrites the incremental marker.
+
+Read only those eight marker files for the configured Go, npm, PyPI, and
+RubyGems ecosystems. Added a strict, 4.14.3-specific lab summarizer that requires
+both markers for every declared ecosystem, a caller-supplied observation time
+and maximum age. It rejects unexpected, duplicate, malformed, or incomplete
+input and reports future timestamps as a distinct clock/state anomaly. The
+summarizer stores normalized timestamps and an input digest, not raw paths or
+input. Extended the log summarizer with hourly Portfolio Metrics and six-hour
+Internal Component Identification control tasks, then summarized the full
+observation window. No restart or forced mirror was performed.
+
+### Observed Facts
+
+- All four full and incremental marker pairs were present and equal within each
+  ecosystem. Their values ranged from 2026-09-11 05:02:24 UTC to 05:05:03 UTC,
+  matching the recorded initial full-mirror starts.
+- At 2026-09-14 06:00:53 UTC, the latest ecosystem marker ages ranged from
+  262,549 to 262,709 seconds (about 72 hours 56 minutes to 72 hours 58 minutes).
+- With an explicitly supplied 30-hour diagnostic threshold, all four ecosystems
+  were `older-than-threshold`. No newer successful incremental or full OSV
+  update was recorded in this datastore after the initial mirror.
+- The command persisted 422 bytes of normalized marker input metadata as a
+  digest and summary under ignored `var/`; it did not persist the raw stream.
+- The earlier initial-run logs, later log-window absence, and marker ages agree,
+  but they are not independent implementations: both originate from the same DT
+  process and version.
+- Across 2026-09-11 05:01–2026-09-14 11:34 UTC, 1,911 timestamped log lines
+  contained 19 completed Portfolio Metrics executions and three completed
+  Internal Component Identification executions. Only the initial OSV, NIST,
+  and EPSS task executions appeared. No retained line matched the searched
+  scheduler-thread exception or uncaught-exception patterns.
+- Portfolio Metrics is configured by DT for a one-hour cadence, but only 18
+  repeat intervals occurred after its initial execution during about 78.5 hours
+  of wall-clock observation. Its run times had large wall-clock gaps. This is
+  consistent with the local host or runtime being suspended between work
+  sessions; the control does not prove every independent timer is healthy.
+
+### Interpretation and Product Decision
+
+This narrows the previous `unknown`: the lab can now state that DT 4.14.3 did
+not record a later successful OSV update on this datastore. It still cannot
+distinguish a scheduler event that never ran from one that failed before marker
+write, nor prove upstream completeness.
+
+The control evidence changes the scheduler interpretation. Wall-clock age since
+container start is not a valid substitute for elapsed timer cadence on this
+intermittently available lab host. Eighteen observed one-hour repeat intervals
+are fewer than the 24 needed for the first mirror recurrence and are consistent
+with that recurrence not yet being due in effective timer time. This is an
+inference from the task controls and Alpine implementation, not a measured JVM
+timer clock. Keep the container active and observe the first 24-hour recurrence
+without restarting; investigate an error path only if it then fails to appear.
+
+Keep filesystem markers as lab diagnostics only. They are internal,
+version-coupled, unavailable through the supported REST contract, and therefore
+must not become a production adapter dependency. Product freshness remains
+`unknown` unless a supported success signal is available. Production monitoring
+must distinguish datasource age from scheduler/runtime availability; otherwise
+a suspended or unavailable runtime can be mislabeled as an upstream mirror
+failure. Any age threshold must be configuration and a breach must alert
+operators rather than change priority or Analysis state.
+
+### Unverified and Evidence
+
+The first 24-hour effective-timer recurrence, suspend/resume timer semantics,
+failure-notification delivery, each independent timer's health, NVD/EPSS success
+timestamps, supported metrics in split deployments, and behavior after upgrade
+remain unverified. Local evidence paths:
+`var/dt-lab/runs/<run>/osv-internal-markers.json` (ignored). Reproducible checks:
+`lab/dependency_track/tests/test_datasource_markers.py`.
+
+The scheduler-control summary uses
+`var/dt-lab/runs/<run>/datasource-log-window.json` (ignored); reproducible checks
+are in `lab/dependency_track/tests/test_datasource_freshness.py`.
+
+The disabled GHSA task had no live event to validate. Its exact 4.14.3 source
+does not emit the generic start/completion phrases used by the other mirrors:
+it starts with either a full or modified-since message and completes with either
+a mirrored count or an already-up-to-date message. The lab classifier now
+encodes those four official phrases with synthetic coverage. This makes it
+runnable for a future explicitly approved GHSA experiment; it is not live GHSA
+evidence and does not enable GHSA or supply a token.
+
+- [TaskScheduler 4.14.3](https://github.com/DependencyTrack/dependency-track/blob/4.14.3/src/main/java/org/dependencytrack/tasks/TaskScheduler.java)
+- [OsvDownloadTask 4.14.3](https://github.com/DependencyTrack/dependency-track/blob/4.14.3/src/main/java/org/dependencytrack/tasks/OsvDownloadTask.java)
+- [AlpineTaskScheduler 3.8.0](https://github.com/stevespringett/Alpine/blob/alpine-parent-3.8.0/alpine-server/src/main/java/alpine/server/tasks/AlpineTaskScheduler.java)
+- [GitHubAdvisoryMirrorTask 4.14.3](https://github.com/DependencyTrack/dependency-track/blob/4.14.3/src/main/java/org/dependencytrack/tasks/GitHubAdvisoryMirrorTask.java)
+
+## 2026-09-14 — Datasource task log-window freshness observation
+
+- Status: initial-run control verified; later freshness remains inconclusive
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: read-only Docker state and logs; no DT setting, restart, or API mutation
+
+### Purpose and Performed Work
+
+Test whether the configured 24-hour mirror cadence can be confirmed by observed
+task execution rather than configuration alone. Reviewed the official recurring
+task and OSV behavior documentation and the target's retained OpenAPI contract.
+The OpenAPI contract exposes configuration but no datasource task-status read
+endpoint. Inspected the running container identity, health, start time, restart
+count, and bounded timestamped Docker log windows.
+
+Added a lab-only parser and CLI that classify OSV, NIST, EPSS, and GitHub
+Advisory mirror lifecycle events. It persists no raw messages or identifiers:
+only the supplied window, input SHA-256 and byte count, task/event/timestamp
+metadata, bounded OSV ecosystem names, counts, and an interpretation boundary.
+Validated the parser first against the retained initial-mirror log window, then
+against two later 30-hour windows. No credential, Analysis state, Project,
+datasource setting, or GitHub Issue was changed.
+
+### Observed Facts
+
+- The container was healthy on image `dependencytrack/bundled:4.14.3`, had run
+  since 2026-09-11 05:01:51 UTC, and reported zero restarts at observation time.
+- The 2026-09-11 05:01:50–05:16:00 UTC control contained 256 timestamped lines.
+  OSV emitted four full-download starts, four ecosystem completions, and one
+  overall completion. NIST and EPSS each emitted an overall completion. GitHub
+  Advisory emitted no event, consistent with its separately observed disabled
+  configuration. This confirms the parser recognizes the target's real format.
+- The 2026-09-12 19:23:06–2026-09-14 01:23:06 UTC window contained 150
+  timestamped non-empty log lines but no classified OSV, NIST, EPSS, or GitHub
+  Advisory lifecycle event. A separate earlier 30-hour sample contained 794
+  timestamped lines and likewise contained no event for those four tasks.
+- Narrow checks around expected daily hours also produced no matching
+  datasource/scheduler event. No raw log was persisted by the new command.
+- These observations do not establish whether a scheduler invocation occurred
+  without matching logs, whether retained data was current, or whether any
+  upstream source had changed.
+
+### Interpretation and Product Decision
+
+Enabled settings, a configured interval, process health, and uptime are not
+sufficient freshness evidence. Adopt an explicit `unknown` freshness outcome
+when neither a successful synchronization timestamp nor an equivalent bounded
+observation is available. `not-observed` remains a statement about the supplied
+log window only and must not become a priority, suppression, Analysis, or Issue
+decision. Retain the lab summarizer as diagnostic evidence; do not import it
+into the product runtime or infer source completeness from Finding labels.
+
+Before productizing datasource freshness, identify a stable last-success signal
+or supported task telemetry and define per-source stale thresholds in config.
+Investigate scheduler timing and log retention without restarting DT merely to
+force a run, since restart-triggered execution would not validate steady-state
+recurrence. The later scheduler-control diagnostic found independent recurring
+tasks still active but fewer than 24 one-hour repeat intervals; it supersedes a
+wall-clock-only interpretation of this window.
+
+### Unverified and Evidence
+
+Steady-state scheduler execution, timer reset semantics, log-driver completeness,
+the exact cause of the absent later events, upstream change handling, and last
+successful synchronization timestamps remain unverified. Upgrade behavior also
+requires revalidation.
+
+- Local evidence pattern: `var/dt-lab/runs/<run>/datasource-log-window.json`
+- Reproducible synthetic checks:
+  `lab/dependency_track/tests/test_datasource_freshness.py`
+- [Official recurring tasks](https://docs.dependencytrack.org/getting-started/recurring-tasks/)
+- [Official OSV integration](https://docs.dependencytrack.org/datasources/osv/)
+
+## 2026-09-13 — Product audit-sink and assessment-input visibility
+
+- Status: completed synthetic validation and read-only live follow-up
+- Target: Dependency-Track 4.14.3; 26 accessible lab Projects; GitHub disabled
+- Source evidence: 2026-09-11 product read-only and real-corpus validations
+
+### Purpose and Performed Work
+
+Apply the smallest product change justified by the recorded observation that a
+successful read-only sync silently lost its configured JSONL record when the
+parent directory did not exist. Kept the sink optional and non-authoritative,
+but routed its boolean write result through one CLI warning boundary for both
+successful and handled-failure events. Added synthetic CLI tests for successful
+and failed sink writes in machine-readable output mode.
+
+Extended the action-neutral Finding assessment with vulnerability source,
+severity, nullable numeric CVSS and EPSS, and suppression. After the tests
+passed, ran `sync --dry-run --no-github --output json` against all accessible
+Projects because the local optional Project selector was empty. The sandboxed
+attempt failed at the first DT request and wrote a failed sync event; the same
+read-only command then completed through the authorized local-network path.
+
+### Observed Facts
+
+- A simulated sink failure emits one warning on stderr while the successful sync
+  remains exit code zero and stdout remains valid JSON.
+- A simulated successful sink write emits no warning.
+- A synthetic HIGH-severity Finding without numeric CVSS or EPSS remains P3 under
+  the unchanged rules, while source, severity, null scores, Analysis state, and
+  suppression are now explicit in the action-neutral assessment.
+- The live run processed 26 Projects and 1,066 Finding associations. Every
+  assessment contained the new fields. Sources were GITHUB 477, NVD 505, and
+  OSV 84; priorities were P0 31, P1 63, P2 208, and P3 764.
+- Numeric CVSS was absent on 561 assessments: 477 GITHUB and 84 OSV. Of these,
+  543 were P3 and 18 CRITICAL-severity records were P1 under the existing
+  severity rule. All 135 HIGH-severity records without numeric CVSS were P3.
+- Numeric EPSS was absent on the same 561 assessments. No Finding was suppressed
+  at observation time.
+- The live run was dry-run with GitHub disabled: actions and create, update, and
+  close counts were all zero.
+- The product change does not alter the orchestrator result, retry the sink, or
+  create its parent directory. The synthetic sink tests contact no external
+  system; the separate live follow-up performed only DT and KEV reads.
+
+### Interpretation and Product Decision
+
+Adopt the verified gap as a product constraint: optional audit persistence must
+not replace the primary synchronization result, but its loss must be observable.
+stderr preserves the stdout JSON contract for downstream consumers. Operators
+remain responsible for provisioning and monitoring the configured evidence path.
+The assessment projection also adopts the earlier real-corpus requirement that
+missing numeric scores remain visible. This is observability, not a severity
+fallback or triage-policy change.
+
+### Unverified and Evidence
+
+Centralized log collection, alert delivery, disk-full behavior, concurrent
+append durability, and a real deployment filesystem failure remain unverified.
+The current data cannot justify a textual-severity fallback or any priority
+change; PoC, exposure, applicability, and reachability remain separate missing
+inputs. Reproducible tests are in `tests/unit/test_cli.py` and
+`tests/unit/test_orchestrator.py`. Local evidence is ignored at
+`var/dt-lab/validation-2026-09-13/sync.jsonl`; it contains environment-specific
+identifiers and must not be committed.
+
+## 2026-09-11 — Rails after OSV and evidence-join readiness
+
+- Status: Rails corpus observation completed; identity readiness assessed offline
+- Target: DT 4.14.3 after initial OSV synchronization
+- Input: pinned OpenProject 17.7.2 schema-valid CycloneDX 1.6 derivative
+
+### Purpose and Performed Work
+
+Complete the four-language corpus check and determine whether real Findings
+provide stable identity for future PoC and asset-context joins. Imported the
+unchanged Rails derivative into a fresh run-marked Project and retained nine
+observations. Compared the summary with the earlier retained run. Separately
+tested the existing exploit-lab capture loader on the three prior post-OSV
+captures, without external intelligence requests or target probing.
+
+### Observed Facts
+
+- The Rails run completed from 09:08:49 to 09:11:15 UTC (about 146 seconds).
+  DT's BOM log reported about five seconds for BOM processing itself; that does
+  not include all asynchronous work and observation retrieval.
+- DT retained 16,742 Components, matching the earlier run, from 17,831 input
+  records. The BOM log reported deduplication and an incomplete graph because
+  the metadata root was not a graph entry; this is not evidence of reachability.
+- Findings increased from 285 NVD records to 619: NVD 307, GITHUB 311, OSV 1.
+  These are associations, not unique flaws. The NVD records alone represented
+  147 unique primary CVE IDs.
+- All 619 Findings had PURLs and Component UUIDs. Their PURL types were gem 496,
+  npm 94, deb 26, pypi 2, and generic 1. All aliases were empty. EPSS was populated
+  for 307 Finding projections. The Project was retained for follow-up.
+- In the preceding Go/n8n/Airflow captures, all 83 Findings had PURLs and Component
+  UUIDs, only seven primary IDs were CVEs, and aliases were empty. The existing
+  CVE-only exploit loader rejected each capture on a GO or GHSA identifier.
+  No external PoC requests were issued by that local loader check.
+
+### Interpretation and Product Decision
+
+Component joins are feasible for these Findings, but vulnerability-ID resolution
+is a prerequisite for CVE-based enrichment. Do not relabel unresolved identifiers
+as absent PoC or silently discard them. Record resolution coverage and preserve
+original source/ID before evaluating mapping providers. This loader behavior is
+fail-closed but prevents current mixed-source captures from entering the sampler.
+
+Defer triage-rule changes as agreed by the user. First validate source-attributed
+PoC evidence and deployment-specific internet-facing evidence as separate inputs.
+There is no supplied deployment inventory for these public software artifacts:
+their exposure remains unknown. A public repository or service URL cannot fill
+that gap, and the incomplete graph cannot establish vulnerable-code reachability.
+
+### Limits and Local Evidence
+
+The earlier corpus run used older source data; the increase is not attributable
+solely to OSV with a frozen baseline. No applicability decisions, priority-rule
+changes, exposure probes, Analysis mutations, or GitHub Issue operations occurred.
+The product was not rerun on Rails in this step. Cross-source deduplication,
+CVE mapping, actual PoC coverage, and deployed exposure remain unverified.
+
+- Rails: `var/dt-lab/runs/6e2c1aa2-43cf-4bd9-9854-d5d6b7d657c0/` (ignored).
+- Earlier Rails: `var/dt-lab/runs/91ab16d8-3221-408f-be67-93bd50bea233/`.
+- Other inputs: `var/dt-lab/runs/26008b9d-bb03-49ca-81a3-c325c48a66e1/`.
+- Local identifier counts are reproducible from `findings.json` and
+  `summary.json`; loader failures were observed in the execution transcript.
+
+## 2026-09-11 — Completed OSV mirror and real-corpus reassessment
+
+- Status: initial mirror completed; three real inputs and product assessments observed
+- Target: DT 4.14.3; pinned CycloneDX 1.6 inputs; GitHub operations disabled
+
+### Purpose and Performed Work
+
+Waited for explicit mirror completion before rerunning the unchanged OTel OBI,
+n8n, and converted Airflow corpus artifacts in fresh run-marked Projects.
+Captured nine observations per import with the existing runner. Compared their
+summaries with retained earlier runs, then ran the product CLI separately for
+each new Project with `--dry-run --no-github` and a local JSONL log.
+
+### Observed Facts
+
+The mirror began at 05:02:24.484 UTC and reported completion at 05:15:02.718 UTC
+(about 12 minutes 38 seconds). Per-ecosystem parsing totals were RubyGems 4,778,
+PyPI 25,560, Go 9,212, and npm 228,941 (268,491 advisory inputs, not unique CVEs).
+The four downloaded ZIP files totalled 265,066,730 bytes. A mid-run observation
+showed npm at 80%, about 188% CPU and 5.483 GiB memory of the 8 GiB limit; this
+was a point observation, not a peak measurement.
+
+| Same pinned input | Components before/after | Earlier Findings | New Findings by source | Product priorities |
+| --- | ---: | --- | --- | --- |
+| OTel OBI 0.12.2 | 233 / 233 | NVD 7 | NVD 7, GITHUB 3, OSV 12 | P2 5, P3 17 |
+| n8n 2.36.8 | 1,458 / 1,458 | 0 | GITHUB 42 | P3 42 |
+| Airflow 3.3.0, converted 1.6 | 121 / 121 | 0 | GITHUB 10, OSV 9 | P3 19 |
+
+- All three imports and product dry-runs completed; no Issues were created,
+  updated, or closed. The new Projects were retained for follow-up observations.
+- All 83 Finding projections had no aliases. EPSS appeared in seven Go Finding
+  projections; n8n and Airflow had no populated numeric CVSS or EPSS fields in
+  their recorded coverage. All had severity fields.
+- n8n had 19 HIGH, 22 MEDIUM, and one LOW Finding; Airflow had ten HIGH and nine
+  MEDIUM Findings. Despite HIGH labels, all were P3 in the product dry-run.
+- Go had seven HIGH, three MEDIUM, and twelve UNASSIGNED Findings.
+
+### Interpretation and Product Decisions
+
+Source configuration materially changes the observed inventory of vulnerabilities
+for identical SBOM input. This supports using DT's existing ecosystem mirrors
+instead of adding parallel package-vulnerability matching to sbom-ops.
+
+`vulnerability.source=GITHUB` does not prove that the GHSA mirror is enabled:
+these records appeared after OSV ingestion with GHSA disabled. Preserve source
+labels and distinguish advisory identity/source from acquisition mechanism.
+
+The current priority engine requires numeric CVSS for P2; HIGH severity alone
+does not satisfy that rule. Consequently missing enrichment can produce P3,
+which must not be presented as evidence of low risk. Next evaluate an explicit
+missing-score indicator and a reviewed configurable severity fallback, without
+silently changing policy. Alias absence also limits CVE-based KEV correlation
+and cross-source deduplication; do not infer separate records are distinct flaws
+or enable OSV alias sync automatically.
+
+### Limits and Evidence
+
+Earlier runs occurred at different times, so this is not a frozen-feed causal
+comparison. Findings count Component/vulnerability associations, not distinct
+flaws or verified applicability. Numeric field absence was measured on the
+Finding projection, not all possible upstream data. Rails/OpenProject remains
+the next real-corpus case. Incremental mirror behavior, sustained freshness,
+full post-import quiescence, and unique-vulnerability comparison remain open.
+
+- New run: `var/dt-lab/runs/26008b9d-bb03-49ca-81a3-c325c48a66e1/` (ignored).
+- Earlier summaries: the retained run directories for the same three corpus IDs.
+- Product logs: `var/dt-lab/osv-enablement-20260911/corpus-sync.jsonl` (ignored).
+- Mirror timestamps and resource sample were observed in Docker command output;
+  no full container log containing unrelated configuration was persisted.
+
+## 2026-09-11 — Audited OSV enablement and first mirror start
+
+- Status: configuration verified; initial mirror started, completion pending
+- Target: original bundled DT 4.14.3, after cold backup and isolated recovery test
+- Scope: instance-wide OSV selection; no Analysis or GitHub Issue changes
+
+### Purpose and Performed Work
+
+Implemented a repository-only `configure-osv` command with a domain plan,
+baseline checks, explicit execution/instance confirmation, recovery-evidence
+hash, exclusive durable JSONL audit, non-retried POST, and independent readback.
+The client holds only API communication; the service owns the exact four-source
+policy. Full settings and API errors are not copied to the audit.
+
+Reviewed the target OpenAPI and official 4.14.3 ConfigPropertyResource and
+OsvDownloadTask implementations. OSV splits its configuration on semicolons.
+The requested legacy `/usage/vex/` and `/usage/analysis/` documentation URLs
+returned HTTP 404; no Analysis/VEX behavior was changed by this experiment.
+
+Ran a live dry-run, then executed the reviewed change using the user-authorized
+existing key and retained recovery evidence. Rechecked after a readback mismatch,
+corrected set comparison, and verified without another configuration POST.
+Restarted the original DT explicitly to initiate mirroring after no start message
+was observed immediately following the settings change.
+
+### Observed Facts
+
+- Preview saw OSV ecosystems null; proposed `Go;npm;PyPI;RubyGems`.
+- The first execution wrote its intent and sent the update. DT returned the
+  selected ecosystems as `RubyGems;PyPI;Go;npm`. Exact string comparison rejected
+  the readback, and the audit correctly ended as failed despite the applied
+  setting. No automatic rollback was attempted.
+- An independent read confirmed the exact four ecosystems; GHSA and OSV alias
+  sync remained false. Set-aware validation then succeeded with no second POST.
+- Added a regression for reordered settings and no-op execution. All 76 lab
+  tests passed; all 67 product tests passed. Ruff passed. Multi-file Black hung
+  and was interrupted; individual-file Black runs completed successfully.
+- After restart, DT logged at 05:02:24 UTC: the OSV mirror started for RubyGems,
+  PyPI, Go, and npm. A subsequent check found DT running/healthy, with no mirror
+  completion message yet observed. The background mirror remains active in DT;
+  no shell polling process was left running.
+
+### Interpretation and Remaining Work
+
+Configuration comparison must use ecosystem-set semantics, not serialization
+order. Write failure and post-write verification failure must be distinguished
+operationally by the durable intent and readback. The command does not implement
+server-side concurrency protection; serialize configuration experiments. Recovery
+evidence is a human-reviewed attestation, not proof reconstructed by the command.
+
+Observe successful mirror completion or errors before interpreting new Findings
+or importing the real corpus. Initial mirror duration, storage growth, freshness,
+and extra detections remain unverified. Existing DT Projects can be reanalyzed
+as sources change; this is not confined to a single Project. OSV disablement is
+not data rollback. GHSA and GitHub Issue synchronization remain deferred.
+
+### Local Evidence and Sources
+
+- `var/dt-lab/osv-enablement-20260911/{preview,execute,verify}.jsonl` (ignored).
+- Recovery evidence: `var/dt-lab/restore-tests/osv-baseline-20260911/README.md`.
+- [OSV task, DT 4.14.3](https://github.com/DependencyTrack/dependency-track/blob/4.14.3/src/main/java/org/dependencytrack/tasks/OsvDownloadTask.java)
+- [Configuration resource, DT 4.14.3](https://github.com/DependencyTrack/dependency-track/blob/4.14.3/src/main/java/org/dependencytrack/resources/v1/ConfigPropertyResource.java)
+
+## 2026-09-11 — Isolated restoration of the OSV baseline
+
+- Status: bounded recovery validation completed
+- Target: exact local image used by bundled DT 4.14.3
+- Safety: separate data copy, Docker network `none`, no published ports
+
+### Purpose and Performed Work
+
+Validate that the cold backup can start a usable database before the OSV mirror
+experiment. Copied the entire backup into an ignored restore-test directory;
+the original backup was not started or modified. Before startup, the copied H2
+SHA-256 matched the backup manifest. Started a separately named container on the
+original immutable image ID, with an 8 GiB memory limit and two CPUs.
+
+Checked Docker health, the internal API, authentication, Project count, selected
+source settings, and portfolio metrics using container-local curl. The API key
+was supplied through standard input, not process arguments or a persisted file.
+Only selected non-secret fields were output. Stopped the validation container
+after the checks and confirmed that the original DT remained running/healthy.
+No mirror settings or GitHub Issue state were changed.
+
+### Observed Facts
+
+- Restored container became healthy; internal `/api/version` returned HTTP 200.
+- Docker reported network `none` and no host port bindings.
+- Existing-key authentication succeeded, returning 22 Projects.
+- Source settings matched the recorded baseline: NVD and EPSS enabled, GHSA
+  disabled, OSV ecosystems null, and OSV alias synchronization disabled.
+- Portfolio metrics reported 22 Projects, 36 Components, 191 vulnerabilities,
+  12 vulnerable Projects, and 19 vulnerable Components. The 191 aggregate agrees
+  numerically with the preceding Finding count but is not row-level equality.
+- The isolated container was stopped successfully and retained with its data.
+
+### Interpretation and Limits
+
+The backup supports database startup, existing-key authentication, selected
+configuration recovery, and inventory aggregates on the same image. It is now
+sufficient evidence to proceed with a bounded, explicitly audited mirror
+experiment. This does not test a full original-volume replacement, every row,
+all encrypted external credentials, cross-version recovery, or external
+integrations. Network isolation intentionally prevents mirror synchronization;
+no source freshness conclusion follows from this run.
+
+### Local Evidence and Reproduction
+
+- Immutable baseline: `var/dt-lab/backups/osv-baseline-*/` (ignored, private).
+- Restore copy and manifest: `var/dt-lab/restore-tests/osv-baseline-20260911/`.
+- Container: `dt-lab-restore-osv-20260911` (stopped; not auto-removed).
+- Start a separate copy with the baseline image ID, `--network none`, no `-p`,
+  and its `/data` bind mount; inspect health and use `docker exec` for local API
+  checks. Never point the test container at the immutable backup or live volume.
+
+## 2026-09-11 — Cold backup before OSV mirror experiment
+
+- Status: backup completed; isolated restoration remains unverified
+- Target: running bundled DT 4.14.3, Docker volume mounted at `/data`
+
+### Purpose and Performed Work
+
+Following the user's instruction to continue the proposed four-ecosystem lab
+work, inspected the local datastore and prepared recovery evidence before any
+global OSV configuration change. The data directory used about 5.4 GiB, with
+an H2 `db.mv.db` file of 2,541,670,400 bytes. The filesystem reported 128 GiB
+available before copying.
+
+Created an ignored backup parent with mode 0700 and a new private directory.
+Stopped the exact existing container with a 60-second timeout, copied its entire
+`/data` directory, and restarted it. An EXIT trap guarded restart if copying
+failed. Calculated the copied H2 file's SHA-256 and retained it in a local backup
+manifest. No source data was deleted or overwritten.
+
+### Observed Facts and Decision
+
+The copy completed (about 5.4 GiB). The original container restarted; the
+production client's authenticated Project listing subsequently succeeded with
+22 Projects. This checks API recovery and count continuity, not all inventory
+or configuration equality. No OSV settings, alias settings, or GHSA credentials
+were changed, and no GitHub Issue operations were performed.
+
+A checksum and successful original-instance restart do not prove the copied
+database can be restored. Keep the backup untouched and test a separate copy
+with the same image and outbound networking blocked before changing mirrors.
+This backup contains sensitive material and must remain private and ignored.
+
+### Unverified and Local Evidence
+
+Isolated restore/startup, baseline configuration/Finding equality, encryption
+material usability, and OSV synchronization are still unverified. Backup and
+local manifest: `var/dt-lab/backups/osv-baseline-*/` (ignored). The recovery
+procedure is documented in the lab README. The backup is not a full-database
+reset feature or part of run-scoped Project cleanup.
+
+## 2026-09-11 — OSV/GHSA readiness and local corpus denominators
+
+- Status: local preparation completed; no new live DT experiment
+- Inputs: six pinned local corpus artifacts; official DT v4.14 datasource docs
+
+### Purpose and Performed Work
+
+Determine a bounded source-enablement experiment for the actual corpus. Ran
+`validate-corpus --require-local`: all six artifacts passed integrity checks
+(30,835,677 bytes total). This command did not perform full schema validation.
+Counted top-level Component PURL types in four selected compatible inputs.
+
+### Observed Facts
+
+| Input | Top-level Components | Relevant PURL counts |
+| --- | ---: | --- |
+| OTel OBI 0.12.2 | 233 | golang 219; github 7; maven 1; missing 6 |
+| n8n 2.36.8 | 1,458 | npm 1,458 |
+| OpenProject 17.7.2 schema-valid derivative | 17,831 | gem 1,432; npm 1,338; pypi 12; missing 14,141 |
+| Airflow 3.3.0 CycloneDX 1.6 derivative | 121 | pypi 121 |
+
+OpenProject also has cargo 174, deb 283, github 229, nuget 219, maven 1,
+and generic 2. Counts describe source records, not unique packages or the
+post-ingestion DT inventory. Original invalid/compatibility inputs remain pinned
+and separate from derivatives.
+
+### Interpretation and Next Experiment
+
+1. Preserve a baseline and verified backup of the existing DT datastore before
+   a global mirror change. Source settings affect the whole instance, including
+   existing lab Projects. Record the backup/restore procedure and configuration.
+2. Initially select OSV ecosystems Go, npm, PyPI, and RubyGems; keep OSV alias
+   synchronization disabled. Review and explicitly approve this administrative
+   change before execution. Do not enable GHSA simultaneously, so effects can
+   be distinguished.
+3. Observe mirror completion/errors separately from BOM event completion.
+   Use the same pinned inputs in disposable run-marked Projects. Capture
+   complete inventory, Finding sources/identifiers/aliases, EPSS presence,
+   suppression, processing duration, and the GitHub-disabled product assessment.
+4. Compare per ecosystem and stable package identity, retaining both raw
+   Finding counts and unique vulnerability counts. Empty results are not proof
+   of safety; all-Component counts are not a coverage denominator. Do not infer
+   that missing PURLs make all other matching impossible.
+5. Evaluate GHSA separately after OSV. DT's documented GHSA mirror needs a PAT
+   without assigned scopes. Do not copy the existing GitHub CLI credential into
+   DT implicitly. GitHub Issue synchronization remains the last work item.
+
+### Limits, Recovery, and Sources
+
+OSV is documented as preview in DT v4.14. Disabling it clears ecosystem
+selection but retains mirrored vulnerabilities, so toggling it off is not a
+data rollback. A verified datastore restore is needed to recover the exact
+baseline. No backup, restore, mirror change, or new import was performed here.
+Mirror duration, disk growth, synchronization health, and additional Findings
+remain unmeasured. Local evidence inputs: `var/dt-lab/corpus/` (ignored); pinned
+hashes and reproduction inputs: `lab/dependency_track/corpus/corpus.yaml`.
+
+- [Official OSV integration](https://docs.dependencytrack.org/datasources/osv/)
+- [Official GHSA integration](https://docs.dependencytrack.org/datasources/github-advisories/)
+
+## 2026-09-11 — Datasource configuration after user-granted permission
+
+- Status: configuration observed; synchronization health still unverified
+- Target: existing DT 4.14.3 instance
+
+### Purpose and Performed Work
+
+After the user added SYSTEM_CONFIGURATION to the existing read team, confirmed
+the permission through the existing lab client's team observation and read
+GET `/api/v1/configProperty` through that client's request method. No settings
+were changed. Only permission presence, configuration field names, boolean
+values, and explicitly selected ecosystem/cadence/timestamp values were output.
+The full settings response was not persisted because it may contain secrets.
+
+### Observed Facts
+
+- SYSTEM_CONFIGURATION was present and the settings read succeeded (102 items).
+- Initial filtering by group names returned no selected settings. Inspection
+  established that source configuration uses group `vuln-source`; an empty
+  filter result was not treated as evidence of disabled sources.
+- `github.advisories.enabled=false`; `epss.enabled=true`; `nvd.enabled=true`.
+- `google.osv.enabled` was null. Its description defines a list of ecosystems
+  to mirror, not a boolean. No OSV ecosystems were configured in this response.
+- `nvd.api.enabled=false` and `nvd.api.download.feeds=false`.
+- NVD, GHSA, and OSV mirror cadence settings were each 24 hours.
+- GHSA and NVD API latest-observed-modification timestamp fields were null.
+  These fields describe upstream modification times, not last successful runs.
+
+### Interpretation and Product Decision
+
+The configuration explains a concrete coverage limitation: GHSA was disabled
+and OSV had no configured ecosystems. The NVD-only Finding observation must not
+be generalized to all ecosystem coverage or to vulnerability absence. Review
+the required OSV ecosystems and GHSA setup before enabling sources and comparing
+real SBOMs again. GitHub Advisories is vulnerability intelligence and is separate
+from the deferred GitHub Issue synchronization workflow.
+
+### Unverified and Evidence
+
+NVD/EPSS last successful synchronization, mirror failures, historical settings,
+and runtime analyzer behavior remain unverified. Enabled flags and cadence do
+not establish freshness. No permission or datasource mutation was made by the
+agent. Selected non-secret observations are recorded above from the execution
+transcript; no raw settings file was retained. Existing local target contract:
+`var/dt-lab/openapi.json` (ignored). The product dry-run evidence remains at
+`var/dt-lab/validation-2026-09-11/sync.jsonl` (ignored).
+
 ## 2026-09-11 — Product read-only validation and source visibility
 
 - Status: partial live validation; inventory and assessment completed

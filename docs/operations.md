@@ -33,10 +33,14 @@ collection and prioritization. Set `github.enabled: false`, export
 `SBOM_OPS_GITHUB_ENABLED=false`, or pass `sbom-ops sync --no-github` (the CLI
 flag takes precedence). `plan --no-github` displays the same mode.
 
-The sync result always includes the Finding key, Priority, Dependency-Track
-Analysis state, and prioritization rationale before any external action is
-selected. This assessment output is therefore available for future Jira,
-notification, VEX, or reporting adapters without coupling them to GitHub.
+The sync result always includes the Finding key, vulnerability source, severity,
+numeric CVSS and EPSS values (including explicit `null` when unavailable),
+Priority, Dependency-Track Analysis/suppression state, and prioritization
+rationale before any external action is selected. This assessment output is
+therefore available for future Jira, notification, VEX, or reporting adapters
+without coupling them to GitHub. A `P3` result with `cvss_score: null` is not
+evidence of low severity; it means the configured numeric CVSS rule did not
+match the observed input.
 
 For downstream adapters, use machine-readable output:
 
@@ -54,7 +58,10 @@ its parent directory must already exist.
 Successful records have `status: succeeded`. If the configured sync encounters
 a handled API, configuration, or client error, a `status: failed` record with
 an error type and message is appended as well. Log sink write failures do not
-replace the original sync result.
+replace the original sync result. They emit a warning on stderr, while JSON
+output on stdout and the primary command exit status remain unchanged. Monitor
+stderr because a successful synchronization without its configured audit record
+is an operational evidence gap.
 
 The JSONL sink is isolated from CLI and orchestration logic so it can later be
 replaced with a database or centralized logging adapter.

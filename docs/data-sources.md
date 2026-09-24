@@ -55,6 +55,35 @@ https://dtrack.example.com/api/v1/finding/project/{uuid}
 | VEX | CycloneDX VEX | サプライヤー／製品チーム → Dependency-Track | Dependency-TrackへのVEX投入後、Findingの`analysis`を読み取り | DT／Security team | `NOT_AFFECTED`等の判断反映 |
 | 対応管理 | Issue、担当、対応状況 | GitHub Issues | GitHub REST API | sbom-ops | Issue作成・更新・クローズ |
 
+### データソースの鮮度
+
+Dependency-TrackでAnalyzerやMirrorが有効であること、更新間隔が設定されている
+こと、コンテナがhealthyであることは、直近の同期成功やデータ完全性の証明では
+ない。同期成功時刻または同等の安定した観測値を取得できない場合、鮮度は
+`unknown`として扱い、Findingのsource名から取得経路や同期状態を推定しない。
+
+2026-09-14のlab観測では初回のOSV、NIST、EPSS完了ログは識別できた一方、後続の
+2つの30時間窓では通常ログが存在しても対象taskイベントを観測できなかった。
+これは「指定したログ窓では未観測」という事実であり、task未実行やデータの
+staleを断定するものではない。再現手順と限界は
+[`lab/dependency_track/README.md`](../lab/dependency_track/README.md)および
+実験台帳に記録する。現時点ではこの情報を優先度、Analysis、抑制、Issue操作へ
+使用しない。
+
+同日の追加観測では、DT 4.14.3が成功したOSV処理後に書く内部markerを確認し、
+Go、npm、PyPI、RubyGemsの全markerが初回mirror時刻から約73時間更新されて
+いなかった。これは「このdatastoreに、より新しい成功OSV更新が記録されて
+いない」ことを示すが、scheduler未実行と更新失敗は区別できない。markerは
+REST API契約ではなくバージョン依存の内部実装なので、製品clientでは使用せず
+lab診断だけに限定する。
+
+同じ期間には、1時間周期のPortfolio Metricsが初回を含め19回、6時間周期の
+Internal Component Identificationが3回完了していた。scheduler全体の停止では
+ない一方、壁時計約78.5時間に対して1時間taskの反復は18周期に留まる。断続稼働
+するlab hostでは、コンテナ起動からの壁時計を24時間timerの経過時間とみなさず、
+control taskの反復も併記する。本番監視ではdatasource ageとruntime availabilityを
+分離し、停止中のruntimeを上流mirror障害と誤分類しない。
+
 ## 1. Dependency-TrackのFinding
 
 ### 取得
@@ -345,6 +374,57 @@ Dependency-Trackで反映された次の状態を読み取る。
 MVPでは`NOT_AFFECTED`、`FALSE_POSITIVE`、抑制済みFindingを新規Issue作成から
 除外する。ただし、既存Issueを自動的にクローズするかどうかは、Finding消滅と
 Analysis state変更を区別した明示的な運用ルールで決める。
+
+## 今後の検証：PoCと資産コンテキストの紐づけ
+
+以下は計画中の証拠モデルであり、現行の優先度計算への入力ではない。
+トリアージルールの変更に先立ち、取得可能性と紐づけの正確性を検証する。
+
+| 証拠 | 紐づけ単位 | 保存・確認すべき事項 |
+| --- | --- | --- |
+| 脆弱性識別子 | DT vulnerability source/IDとComponent UUID/PURL | CVE対応の出典・確認日時・未解決理由。GHSA/GOをCVEとみなさない |
+| 公開PoC | 根拠付きで解決した脆弱性識別子 | 出典、観測日時、対象バージョン、レビュー状態。公開と悪用確認は別 |
+| Internet facing | デプロイ環境とProject／サービス | 運用台帳や明示的な担当者入力、観測日時、有効期限、不明・競合状態 |
+| 到達可能性 | 対象Component／機能とデプロイ環境 | 外部公開から脆弱な処理まで到達できる根拠。公開状態だけで推定しない |
+
+パッケージが公開されていること、公開GitHubリポジトリがあること、SBOMに
+サービスURLがあることだけでは、実際のデプロイ先が外部公開されているとは
+判断しない。公開SBOMコーパスに対応する運用環境は未指定なので、公開状況は
+不明とする。ユーザーから別途対象が指定されるまでネットワーク探索は行わない。
+
+CVE対応が不明ならPoC照会は「識別子未解決」であり「PoCなし」ではない。
+取得失敗、照会成功だが未観測、未レビュー、証拠の期限切れも区別する。
+これらを残した上で、将来、人がレビューした設定可能な評価方針を検討する。
+
+2026-09-13の全範囲等間隔25件（GHSA 9・GO 8・PYSEC 8）比較では、
+Vulnerability-LookupはGHSA 8件とPYSEC 8件を単一CVEへ解決した一方、GOは8件
+とも未解決だった。OSV公式のID別レコードではその16件が同じCVE aliasを返し、
+GOも7件にCVE aliasがあり、残るGO 1件とGHSA 1件はレコードあり・aliasなし
+だった。候補集合の不一致、missing、取得失敗は観測されなかった。
+したがって単一aggregatorを識別子解決の権威とせず、元IDを保持したまま、出典別
+候補・照合時刻・一致／競合／未解決を保存する。OSV照合も同じ上流データを共有
+し得るため独立証拠とは呼ばず、PoCや適用可能性の根拠にも転用しない。
+未解決GOには非CVEの`related`が1件あったが、`aliases`、`related`、`upstream`は
+OSV schema上の意味が異なる。自由記述内の別IDも含め、明示的な`aliases`以外を
+同一脆弱性の対応候補へ昇格させない。
+照合契約は[OSV ID別API](https://google.github.io/osv.dev/get-v1-vulns/)と
+[OSV alias semantics](https://ossf.github.io/osv-schema/#aliases-field)に従う。
+
+候補はcross-check snapshotのSHA-256に固定したreview queueへ移し、初期値を必ず
+`unreviewed`とする。人が`confirmed-alias`、`rejected`、または
+`needs-more-evidence`を根拠付きで選ぶ。review fileもqueue snapshotへ固定し、
+placeholder、snapshot差替え、未完了判断は拒否する。`confirmed-alias`は後続の
+bounded PoC検証へ渡せるlab証拠であり、優先度、Analysis、Issue操作の許可ではない。
+handoffではqueueとreviewed resultを再検証し、元の非CVE ID、候補CVE、出典、
+reviewer、時刻、根拠を保持する。確認済み0件または25件超過を拒否し、artifact生成
+自体は外部照会を開始しない。
+
+後続のmapped-ID PoC検証も別コマンドとし、既定ではdry-runである。dry-runはhandoff
+を検証して、確認済みCVEごとのPoC公開、悪用観測、confirmed、KEV、EPSSという5 signal
+のrequest計画だけを出力し、外部APIもcheckpointも変更しない。live実行には明示的な
+`EXECUTE=1`が必要で、最大25 CVE・125 request、pacing、signal単位checkpointを適用する。
+結果は元IDと人手review provenanceに結合し、`available`、`not_observed`、`unknown`を
+区別するが、priority、Analysis、抑制、Issue状態を変更しない。
 
 ## 5. GitHub Issues
 

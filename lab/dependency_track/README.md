@@ -380,6 +380,20 @@ cyclonedx-cli validate \
   --input-version v1_6
 ```
 
+Before any live corpus upload, inspect the exact disposable Project and local
+artifact with the no-network dry run:
+
+```bash
+make PYTHON=.venv/bin/python dt-lab-corpus-run \
+  CORPUS_ID=rails-openproject-17-7-2-schema-valid \
+  DRY_RUN=1
+```
+
+`DRY_RUN=1` validates and prints the upload plan without reading API keys or
+calling Dependency-Track. A live run is an explicit, separate operation and
+must pass the CLI `--execute` flag, use the run-scoped cleanup, and follow the
+audit procedure below. The Make target forwards this flag with `EXECUTE=1`.
+
 Do not replace the source artifact or describe the derived file as attested.
 Its provenance is the verified source plus the one documented transform and
 the independently pinned derived hash.
@@ -477,6 +491,117 @@ preserves the reviewed v4.14.3 delete contract (`204`, `401`, `403`, `404`) and
 permissions, and the current-team preflight contract used to reject an
 overprivileged Analysis key. Recheck it against the target instance's
 `/api/openapi.json` before upgrading Dependency-Track.
+
+## Global Datasource Experiments and Backups
+
+The bounded `configure-osv` command selects exactly Go, npm, PyPI, and RubyGems.
+It requires GHSA and OSV alias synchronization to remain disabled, rejects
+unexpected existing ecosystem selections, and is read-only by default:
+
+```bash
+PYTHONPATH=src:lab/dependency_track/src python -m dt_lab.cli configure-osv \
+  --audit var/dt-lab/osv-change/preview.jsonl
+```
+
+After reviewing the preview and recovery evidence, explicitly apply the global
+change (use a fresh audit path for each invocation):
+
+```bash
+PYTHONPATH=src:lab/dependency_track/src python -m dt_lab.cli configure-osv \
+  --audit var/dt-lab/osv-change/execute.jsonl --execute \
+  --confirm-instance http://localhost:8080 \
+  --recovery-evidence var/dt-lab/restore-tests/<test>/README.md
+```
+
+Use `SBOM_OPS_DT_CONFIG_API_KEY` with SYSTEM_CONFIGURATION, or the explicitly
+authorized local `SBOM_OPS_DT_API_KEY` fallback. Recovery evidence is an operator
+attestation, not machine-verified restoration. The command hashes that evidence,
+durably records intent before POST, disables POST retries, and verifies settings
+through a separate GET. It accepts DT's reordering of the exact ecosystem set.
+Do not run simultaneous configuration operations: the API has no compare-and-set
+contract. A failure after write intent may have changed DT; inspect readback
+before any retry. No automatic rollback or restart is performed. Settings
+verification does not establish synchronization completion; observe the separate
+DT mirror task (daily or after an explicitly scheduled restart).
+
+For a bounded, reproducible observation of datasource task logs, supply an
+explicit UTC window. The command stores only task names, classified lifecycle
+events, timestamps, an input digest, and counts under ignored `var/dt-lab/runs/`;
+it never stores the raw log stream:
+
+```bash
+docker logs dependency-track \
+  --since 2026-09-12T19:23:06Z \
+  --until 2026-09-14T01:23:06Z \
+  --timestamps | \
+make dt-lab-datasource-freshness \
+  DATASOURCE_LOG_WINDOW_START=2026-09-12T19:23:06Z \
+  DATASOURCE_LOG_WINDOW_END=2026-09-14T01:23:06Z
+```
+
+Input is capped at 20 MiB and retained events at 500, while aggregate event
+counts continue beyond that limit. `completed`, `failed`, and `incomplete` are
+observations from matching log lines. `not-observed` means only that no matching
+event appeared in the supplied window; it does not prove a task never ran or
+that the retained datasource is fresh, complete, or stale. A configured cadence,
+enabled setting, healthy container, or non-empty general log window is likewise
+not proof of a successful mirror. Keep the generated evidence local and record
+the interpreted result in `EXPERIMENTS.md`.
+
+The same summary includes Portfolio Metrics and Internal Component
+Identification under `scheduler_controls`. They provide independent one-hour
+and six-hour cadence context for this DT version. Their activity can disprove a
+global scheduler stop, but cannot prove the health or elapsed cadence of a
+separate mirror timer. On a laptop or suspended lab VM, compare observed control
+repetitions rather than treating wall-clock time since container start as timer
+runtime. Keep the target active through a full effective mirror interval before
+calling a scheduled event missing.
+
+DT 4.14.3 also keeps internal OSV success markers. They are not a supported REST
+contract and must remain a version-coupled lab diagnostic. Capture only the
+marker filename and its first timestamp line, then declare the expected
+ecosystems, observation time, and a reviewable age threshold:
+
+```bash
+docker exec dependency-track sh -c \
+  'for f in /data/.dependency-track/osv/*.ts; do
+     [ -f "$f" ] || continue
+     printf "%s\t" "${f##*/}"
+     head -c 64 "$f"
+     printf "\n"
+   done' | \
+make dt-lab-osv-markers \
+  OSV_MARKER_OBSERVED_AT=2026-09-14T06:00:53Z \
+  OSV_MARKER_MAX_AGE_HOURS=30
+```
+
+The default expected set is Go, npm, PyPI, and RubyGems; override it with the
+space-separated `OSV_MARKER_ECOSYSTEMS` variable only after reviewing the live
+configuration. The threshold has no default and is never a priority threshold.
+`older-than-threshold` establishes that no newer successful OSV update was
+recorded in these marker files. It cannot distinguish a missing scheduler run
+from a failed run, and it does not prove upstream completeness. Revalidate the
+marker contract before every DT upgrade and never import this diagnostic into
+`src/sbom_ops/`.
+
+Changing a mirror affects the entire instance and is separate from run-scoped
+Project cleanup. Before enabling OSV, capture the existing source settings
+without secrets and make a datastore backup. For the local bundled H2 instance,
+stop the verified `dependency-track` container cleanly, copy its entire `/data`
+directory into a new access-restricted directory under ignored
+`var/dt-lab/backups/`, and restart the original container even if copying fails.
+Check available disk space first. Treat the copy as sensitive: it includes
+credentials and encryption material, and must never enter Git.
+
+A completed copy and checksum are not a restore test. Before a mirror change,
+restore a separate copy into an isolated instance using the same image version,
+with outbound traffic blocked and no production port binding. Verify database
+startup and baseline inventory/configuration before declaring recovery tested.
+Preserve the original backup untouched. Restoring the original instance is a
+separate explicit operation that loses all changes since the backup; never
+automatically overwrite its volume. OSV disablement retains mirrored data and
+cannot substitute for restoration. Record attempted backups, restoration tests,
+and mirror changes in the experiment ledger.
 
 ## Scenario Contract
 
