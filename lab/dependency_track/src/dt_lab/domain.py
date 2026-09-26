@@ -278,6 +278,7 @@ class VexTargetingProbe:
     decision: AnalysisAction
     control_component_purl: str
     input_component_bom_ref: str
+    comparison_project_step: str | None = None
 
     def __post_init__(self) -> None:
         _require_slug(self.id, "VEX targeting probe id")
@@ -297,6 +298,8 @@ class VexTargetingProbe:
             raise LabManifestError(
                 f"VEX targeting probe {self.id!r} requires input_component_bom_ref"
             )
+        if self.comparison_project_step is not None:
+            _require_slug(self.comparison_project_step, "comparison project step")
 
 
 @dataclass(frozen=True)

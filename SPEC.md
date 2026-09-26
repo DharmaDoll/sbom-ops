@@ -388,6 +388,11 @@ unresolved references, and require explicit approval for the complete expected
 Finding set. After DT's event token completes, it must reconcile that exact set
 and fail closed on missing or additional changes. Schema validity and an
 accepted upload are not evidence that the intended Finding was updated.
+Approval is bound to the resolved target scope: a Component-scoped review must
+not be widened to Project scope. Project-scoped VEX requires explicit review of
+the complete matching Finding set, including Findings on other Components in
+the Project. DT 4.14.3 lab evidence showed that Project scope applies the
+decision to matching Findings beyond the reviewed Component.
 
 Findings marked `NOT_AFFECTED`, `FALSE_POSITIVE`, or suppressed are excluded
 from new remediation issues unless an explicit future policy says otherwise.
@@ -669,8 +674,10 @@ same vulnerability. It compares unresolved DT-exported and source Component
 `bom-ref` values, a `components[]`-declared Component reference, and the
 Project-level `affects.ref`. It records both target and control projections
 after each import and restores both Findings between probes and on every exit
-path. Product code must not infer Component isolation from a bare reference or
-a Project-scoped export.
+path. It also imports the same synthetic SBOM into a second run-scoped Project
+and verifies that VEX applied to the target Project does not change the
+comparison Project's matching Findings. Product code must not infer Component
+isolation from a bare reference or a Project-scoped export.
 
 An invalid-BOM experiment must be explicitly selected and declare its expected
 HTTP client-error status, base response media type, and Project-creation side

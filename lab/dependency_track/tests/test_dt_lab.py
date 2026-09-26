@@ -120,7 +120,7 @@ def test_repository_lab_manifest_is_valid() -> None:
         "robustness-invalid-cyclonedx",
         "robustness-json-xml-equivalence",
     ]
-    assert sum(len(scenario.steps) for scenario in implemented) == 22
+    assert sum(len(scenario.steps) for scenario in implemented) == 23
     format_scenario = implemented[-1]
     assert format_scenario.steps[1].equivalent_to_step == "json"
 
@@ -628,7 +628,7 @@ def test_lab_cli_validates_repository_manifest(
     )
 
     assert main() == 0
-    assert "scenarios=18 implemented=16 planned=2 steps=22" in capsys.readouterr().out
+    assert "scenarios=18 implemented=16 planned=2 steps=23" in capsys.readouterr().out
 
 
 def test_lab_cli_writes_openapi_inventory(
@@ -1307,29 +1307,30 @@ class FakeVexTargetingClient(FakeLabClient):
 
     def __init__(self) -> None:
         super().__init__()
-        self.scope_analysis: dict[str, dict[str, object]] = {
-            self.PRIMARY_PURL: {
-                "state": "NOT_SET",
-                "suppressed": False,
-                "justification": "NOT_SET",
-                "detail": "",
-                "comments": [],
-            },
-            self.CONTROL_PURL: {
-                "state": "NOT_SET",
-                "suppressed": False,
-                "justification": "NOT_SET",
-                "detail": "",
-                "comments": [],
-            },
-        }
+        self.scope_analysis: dict[str, dict[str, dict[str, object]]] = {}
         self.component_uuids = {
             self.PRIMARY_PURL: "component-primary",
             self.CONTROL_PURL: "component-control",
         }
 
-    def _scope_finding(self, purl: str) -> dict[str, object]:
-        state = self.scope_analysis[purl]
+    def _project_scope(self, project_uuid: str) -> dict[str, dict[str, object]]:
+        if project_uuid not in self.scope_analysis:
+            self.scope_analysis[project_uuid] = {
+                purl: {
+                    "state": "NOT_SET",
+                    "suppressed": False,
+                    "justification": "NOT_SET",
+                    "detail": "",
+                    "comments": [],
+                }
+                for purl in (self.PRIMARY_PURL, self.CONTROL_PURL)
+            }
+        return self.scope_analysis[project_uuid]
+
+    def _scope_finding(
+        self, project_uuid: str, purl: str
+    ) -> dict[str, object]:
+        state = self._project_scope(project_uuid)[purl]
         return {
             "uuid": f"finding-{self.component_uuids[purl]}",
             "component": {
@@ -1355,9 +1356,10 @@ class FakeVexTargetingClient(FakeLabClient):
     ) -> DependencyTrackObservation:
         if self.last_bom != "triage-vex-targeting.cdx.json":
             return super().observe_project_findings(project_uuid, suppressed=suppressed)
+        project_scope = self._project_scope(project_uuid)
         findings = [
-            self._scope_finding(purl)
-            for purl, state in self.scope_analysis.items()
+            self._scope_finding(project_uuid, purl)
+            for purl, state in project_scope.items()
             if suppressed or state["suppressed"] is False
         ]
         return self._observation(f"/api/v1/finding/project/{project_uuid}", findings)
@@ -1432,14 +1434,15 @@ class FakeVexTargetingClient(FakeLabClient):
             for component in payload.get("components", [])
             if isinstance(component, dict)
         }
+        project_scope = self._project_scope(project_uuid)
         if affects_ref == project_uuid:
-            targets = tuple(self.scope_analysis)
-        elif declared_components.get(affects_ref) in self.scope_analysis:
+            targets = tuple(project_scope)
+        elif declared_components.get(affects_ref) in project_scope:
             targets = (declared_components[affects_ref],)
         else:
             targets = ()
         for purl in targets:
-            state = self.scope_analysis[purl]
+            state = project_scope[purl]
             state["state"] = str(analysis["state"]).upper()
             state["suppressed"] = state["state"] == "NOT_AFFECTED"
             state["justification"] = str(
@@ -1471,7 +1474,7 @@ class FakeVexTargetingClient(FakeLabClient):
             for purl, observed_uuid in self.component_uuids.items()
             if observed_uuid == component_uuid
         )
-        state = self.scope_analysis[purl]
+        state = self._project_scope(project_uuid)[purl]
         state["state"] = action.state.value
         state["suppressed"] = action.suppressed
         state["justification"] = action.justification.value
@@ -1507,7 +1510,7 @@ class FakeVexTargetingClient(FakeLabClient):
             for purl, observed_uuid in self.component_uuids.items()
             if observed_uuid == component_uuid
         )
-        state = self.scope_analysis[purl]
+        state = self._project_scope(project_uuid)[purl]
         return self._observation(
             "/api/v1/analysis",
             {
@@ -2285,10 +2288,10 @@ def test_lab_runner_compares_component_and_project_vex_targeting(
         allow_analysis_mutation=True,
     )
 
-    assert len(result.steps) == 1
-    assert result.steps[0].observation_count == 45
+    assert len(result.steps) == 2
+    assert result.steps[1].observation_count == 53
     directory = (
-        Path(result.steps[0].snapshot_directory)
+        Path(result.steps[1].snapshot_directory)
         / "vex-targeting"
         / "project-and-component-scope"
     )
@@ -2305,6 +2308,14 @@ def test_lab_runner_compares_component_and_project_vex_targeting(
     assert verification["declared_component_scope"]["control"]["state"] == "NOT_SET"
     assert verification["project_scope"]["primary"]["state"] == "NOT_AFFECTED"
     assert verification["project_scope"]["control"]["state"] == "NOT_AFFECTED"
+    assert verification["comparison_project"]["before"] == {
+        "control": {"state": "NOT_SET", "suppressed": False},
+        "primary": {"state": "NOT_SET", "suppressed": False},
+    }
+    assert verification["comparison_project"]["project_scope"] == {
+        "control": {"state": "NOT_SET", "suppressed": False},
+        "primary": {"state": "NOT_SET", "suppressed": False},
+    }
     assert verification["comparison"] == {
         "declared_component_scope_control_unchanged": True,
         "declared_component_scope_primary_changed": True,
@@ -2314,6 +2325,7 @@ def test_lab_runner_compares_component_and_project_vex_targeting(
         "input_component_scope_primary_changed": False,
         "project_scope_control_changed": True,
         "project_scope_primary_changed": True,
+        "comparison_project_unchanged": True,
     }
     final_verification = json.loads(
         (directory / "final-restore" / "verification.json").read_text(encoding="utf-8")

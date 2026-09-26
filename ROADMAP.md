@@ -45,7 +45,8 @@ The repository has a working MVP with:
   suppression behavior, measures replay idempotency, and safely restores the
   disposable Finding
 - an isolated VEX targeting probe that compares unresolved, explicitly declared
-  Component, and Project references across two Findings for the same vulnerability
+  Component, and Project references across two Findings for the same vulnerability,
+  plus cross-Project isolation using the same synthetic SBOM
 - an explicit invalid-CycloneDX probe that records RFC 9457 rejection details,
   verifies non-retryable HTTP 400 behavior, and tracks the auto-created empty
   Project for cleanup
@@ -102,6 +103,7 @@ They apply to the tested DT environment; upgrades require revalidation.
 | DT ledger, 2026-09-01: suppression hides a Finding only from the default view; include-suppressed retains it | Adopt DT Analysis and suppression. The client already includes suppressed Findings; the orchestrator keeps them in inventory before task filtering. A product regression now verifies that suppression cancels pending absence closure. | Exercise a representative read-only dry-run and inspect task transitions before enabling closure. |
 | DT ledger, 2026-08-27: NVD Findings exposed EPSS; GitHub/OSV records were absent | Reuse DT EPSS. Missing Findings do not establish source coverage or absence of vulnerabilities. | Verify enabled datasource coverage before comparing ecosystems. |
 | DT ledger, 2026-09-03: creation-only upload did not update existing tags; properties returned 403 to the read key | Retain YAML routing; defer migration to DT metadata. | Validate real Project-to-repository mappings without expanding upload permissions. |
+| DT ledger, 2026-09-25/26: Component-scoped VEX affected one Component; Project scope affected matching Findings within that Project, while identical Findings in a second Project stayed unchanged | Keep DT as VEX/Analysis authority; bind approval to target Project and scope. Never widen a Component review to Project scope. | Phase 2 must present the complete target-Project Finding diff and require explicit approval when VEX scope is Project-wide. |
 | Exploit ledger, 2026-09-06: 25-CVE comparison had no unique Sighting-covered CVE; thirteen vuls.db-only matches included broad references | Defer a production PoC flag. Keep source-attributed public references distinct from applicability and exploitation. | Review a bounded retained URL sample with recorded human rationale before choosing product presentation. |
 
 Prioritize the closure/inventory boundary and datasource coverage over additional
@@ -162,8 +164,14 @@ P3 as low risk or change policy implicitly. Source
 GITHUB appeared despite GHSA mirroring being disabled; source labels do not
 identify enabled acquisition mechanisms. Rails/OpenProject now also completed:
 16,742 Components and 619 Findings (earlier: 285), all with PURL/Component UUID,
-but only 307 primary CVE IDs and no aliases. Next assess CVE/alias correlation
-gaps and deployment-context joins; measure incremental synchronization separately.
+but only 307 primary CVE IDs and no aliases. The 17,831-to-16,742 component-count
+difference is accounted for by repeated PURL identities plus two no-PURL
+GitHub-action occurrences (same name/version/CPE, distinct source references
+and locations) represented once each by DT. No unique name/version identity was
+missing in the no-PURL comparison; the API did not establish that occurrence
+location metadata survives. Compare normalized inventory identity separately
+from raw SBOM occurrence counts. Next assess CVE/alias correlation gaps and
+deployment-context joins; measure incremental synchronization separately.
 The experiment also exposed silent optional sync-log failure when its parent
 directory is absent. The CLI now makes that failure visible on stderr without
 losing the primary sync result or corrupting JSON stdout. Current validation
@@ -305,11 +313,17 @@ The runtime decision and PoC gates are in
   proposing any configurable priority policy. Lab runs must not assign a final
   security decision or silently change current prioritization.
 - Continue the bounded Vulnerability-Lookup evaluation as a complementary
-  online source. A deterministic 25-CVE DT sample found Sighting coverage for
-  five CVEs, all already covered by `vuls.db`, while `vuls.db` alone covered
-  thirteen more. Keep `vuls.db` as the broader comparison/offline candidate;
-  evaluate Vulnerability-Lookup for independently attributed exploitation,
-  KEV, EPSS, and VEX signals rather than as a PoC replacement. Request pacing,
+  online source. In a 2026-09-26 refresh of the same 25-CVE cohort, five CVEs
+  still had Sightings in both sources, `vuls.db` alone covered thirteen, and
+  Vulnerability-Lookup alone covered one new Telegram-associated Sighting.
+  That label does not establish a usable PoC. All 25 EPSS observations had
+  changed since the 2026-09-05 query and carried a 2026-09-25 data date. Keep
+  `vuls.db` as the broader comparison/offline candidate; evaluate
+  Vulnerability-Lookup for independently attributed exploitation, KEV, EPSS,
+  and VEX signals rather than as a PoC replacement. The public CIRCL policy
+  currently exposes neither a Sighting `since` filter nor a stream; use
+  targeted CVE refreshes with checkpointing and the 3-second default pacing,
+  verifying the instance policy before live runs. Request pacing,
   checkpoint/resume, expiry refresh, bounded transient retry, and both
   Retry-After forms now have deterministic contracts. A controlled mid-run
   interruption also resumes only missing signals, and locked timestamp merge

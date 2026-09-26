@@ -684,6 +684,12 @@ identify separately:
 - remediation task state that remains authoritative in GitHub or Jira
 - actions that still require explicit human approval or workflow logic
 
+The `triage-vex-targeting` scenario imports the same synthetic SBOM into two
+run-scoped Projects. It applies Component- and Project-scoped VEX to one Project
+and checks both matching Findings in the other Project for unintended changes.
+Both Projects are recorded in the run ledger and require the normal reviewed,
+run-scoped cleanup flow.
+
 DT owns the Analysis decision and audit trail; GitHub or Jira owns remediation
 task state. sbom-ops retains stable Finding/work-item correlation and a last
 observed semantic digest, not a second triage history. Comment-only task updates

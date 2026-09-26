@@ -1,5 +1,376 @@
 # Dependency-Track Lab Experiment Ledger
 
+## 2026-09-26 — VEX targeting isolation across Projects
+
+- Status: live two-Project run completed; Analysis state restored; both Projects cleaned
+- Target: Dependency-Track 4.14.3 bundled container
+- Scenario: `triage-vex-targeting`
+- Input: same repository-owned synthetic CycloneDX SBOM uploaded to two disposable Projects
+
+### Purpose and Performed Work
+
+Extend the Component-versus-Project VEX test to check whether an import into one
+Project changes matching Findings in another Project that contains the same
+Component versions and vulnerability. The run imported identical synthetic
+SBOMs into two run-scoped Projects, exercised exported-reference, input-reference,
+declared-Component, and Project-scoped VEX paths in the target Project, captured
+both matching Findings in the comparison Project after every import, and
+restored the target Project's two Findings to `NOT_SET`. The comparison Project
+was never mutated. After reviewing the output and allowing a short quiescence
+period, run-scoped cleanup deleted both Projects.
+
+### Observed Facts
+
+- Both Projects ingested 2 Components and returned 19 Findings across 10 unique
+  vulnerabilities.
+- The target Project's Component-scoped declared reference changed only the
+  selected Component's Finding; its Project-scoped reference changed both
+  matching Findings in the target Project.
+- In the comparison Project, both matching Findings remained unsuppressed and
+  had no Analysis state projection after every tested VEX import, including
+  Project-scoped import to the target Project.
+- The target Project's final verification reported `NOT_SET` and unsuppressed
+  for both Findings.
+- Cleanup completed for exactly two recorded Projects with zero failures; a
+  subsequent lookup for each run-scoped name/version returned HTTP 404.
+
+### Interpretation and Product Decision
+
+For DT 4.14.3, CycloneDX VEX ingestion through a Project-specific endpoint
+confines its resulting Analysis decisions to matching Findings in that Project.
+Within the target Project, Project scope is broader than Component scope; across
+Projects, the observed decision did not leak to matching inventory. Product
+approval must still bind to the full target Project Finding set and preserve
+Project identity. This does not authorize sbom-ops to upload VEX in the MVP.
+
+### Unverified and Evidence
+
+Concurrent analyst changes during VEX import, cross-Project references encoded
+with an external supplier's identifiers, and behavior after a DT upgrade remain
+unverified. Raw observations, UUIDs, and cleanup audits remain under ignored
+`var/dt-lab/runs/<run-id>/`; no credentials or target-specific IDs were copied
+to this ledger.
+
+## 2026-09-26 — OSV marker recheck; no newer run
+
+- Status: read-only marker and sanitized log check completed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: four enabled OSV ecosystems since the prior 2026-09-25 observation
+
+At 2026-09-25T21:52:54Z, Go, npm, PyPI, and RubyGems still pointed to the
+2026-09-21 full-mirror window and exceeded the 30-hour threshold. The bounded
+log query found no later `OsvDownloadTask` events through the observation
+window. This is a repeated no-change observation about 70 minutes after the
+prior check, not new evidence about why the scheduler has not produced a later
+marker. The normalized artifact is under the ignored
+`var/dt-lab/runs/<run-id>/osv-internal-markers.json`; raw markers and logs were
+not retained.
+
+## 2026-09-26 — OpenProject no-PURL count reconciliation
+
+- Status: read-only live inventory check completed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: the retained schema-valid OpenProject SBOM and its existing disposable Project
+
+### Purpose and Performed Work
+
+Resolve the two-row difference among PURL-less components without changing
+Analysis or Project state. Verified the local input against its pinned SHA-256,
+then fetched the full paginated Component inventory again and compared only the
+four source records for the two suspected name/version identities.
+
+### Observed Facts
+
+- The input hash still matches the corpus catalog. Its 14,141 no-PURL records
+  include two records each for `./.github/actions/install-openssl` and
+  `./.github/actions/install-ruby`, both at version `UNKNOWN`.
+- For each name, the two CycloneDX records have distinct `bom-ref` values and
+  distinct `syft:location:0:path` properties. Their name, version, type, and
+  CPE match; both have no PURL.
+- The live DT API returned 16,742 Components, including one no-PURL row for
+  each of these names. Both rows have version `UNKNOWN`, classifier `LIBRARY`,
+  the corresponding CPE, and no returned properties. Total no-PURL rows were
+  14,139. The request was read-only; no Project or Analysis state was changed.
+
+### Interpretation and Product Decision
+
+The two-row count difference is explained by DT representing each pair of
+same-name/version/CPE records as one inventory row. This is consistent with
+DT deduplicating on its component identity rather than preserving each source
+occurrence. It is not evidence that location metadata from both source records
+survives: the Component API response returned no properties. No unique
+PURL-less name/version identity from this comparison is missing. For product
+reconciliation, compare normalized inventory identities separately from raw
+SBOM occurrences, and do not claim occurrence-level metadata preservation.
+
+### Unverified and Evidence
+
+The exact DT deduplication key and whether either source location remains
+available through another endpoint are unverified. The full prior paginated
+response is in the ignored run evidence under
+`var/dt-lab/runs/<run-id>/rails-openproject-17-7-2-schema-valid/01-import/`;
+the current check retained only the summary above. No credentials, raw payloads,
+or environment-specific UUIDs were added to the ledger.
+
+## 2026-09-26 — Large-collection pagination and full-list endpoints
+
+- Status: read-only live contract and pagination checks completed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: OpenProject Component inventory, Project Findings/Vulnerabilities, and portfolio Project listing
+
+### Purpose and Performed Work
+
+Measure how page size affects complete reads for the 16,742-Component
+OpenProject Project and verify the collection semantics used by the production
+adapter. Reviewed the pinned 4.14.3 OpenAPI description, fetched the Component
+collection with several `pageSize` values, read Project Findings and
+Vulnerabilities without pagination parameters, and walked the portfolio
+Project endpoint using the production adapter's `offset`/`limit` pattern.
+Only counts and timings were retained.
+
+### Observed Facts
+
+- Component reads with `pageSize` 100, 500, 1,000, 2,000, and 5,000 all
+  returned HTTP 200 and exactly 16,742 rows, matching `X-Total-Count`. The
+  corresponding page counts were 168, 34, 17, 9, and 4.
+- The sequential measurements were 40.960 seconds at 100 (repeat), 25.381 at
+  500, 6.910 then 6.233 at 1,000, 5.478 at 2,000, and 4.071 then 3.477 at
+  5,000. Compact JSON serialization of the combined Component payload was
+  26,521,391 bytes. The API schema sets a default page size of 100 and does not
+  declare a maximum; the tested values through 5,000 were accepted.
+- `GET /v1/finding/project/{uuid}` and
+  `GET /v1/vulnerability/project/{uuid}` have no pagination parameters in the
+  OpenAPI definition. Each returned all 630 rows for this Project with
+  `X-Total-Count: 630`.
+- The production adapter's Project-list pattern (`offset`/`limit`) returned
+  page counts 7, 7, 7, and 6 at a limit of 7. The 27 returned Project IDs were
+  unique and matched `X-Total-Count: 27`.
+- All requests were reads; no Project, Finding, or Analysis state changed.
+
+### Interpretation and Product Decision
+
+The production Project-list pagination contract worked against the target, and
+the Finding/Vulnerability operations return complete unpaginated lists as
+described. Component inventory reads can reduce round trips substantially with
+larger page sizes, but the timing run was sequential, cache state was not
+controlled, and its 26.5 MB aggregate payload makes memory cost material. The
+current production adapter does not read the Component collection, and its
+page-size setting applies to Project listing; these measurements do not justify
+changing the product default. Keep page size configurable and establish
+representative portfolio size, payload, and latency before tuning a deployment.
+
+### Unverified and Evidence
+
+No server-side maximum above 5,000, concurrent load impact, cold-cache latency,
+or memory pressure under production concurrency was measured. The target
+OpenAPI document and raw responses remain in ignored `var/dt-lab/`; the current
+run retained only the summarized facts above. No credentials or
+environment-specific UUIDs were copied to the ledger.
+
+## 2026-09-25 — VEX Component versus Project targeting live run
+
+- Status: live disposable run completed; state restored; run-scoped cleanup completed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scenario: `triage-vex-targeting`
+
+### Purpose and Performed Work
+
+On a run-scoped disposable Project, imported the synthetic VEX-targeting SBOM,
+applied the declared Component-scoped VEX decision, then applied the
+Project-scoped comparison. The runner captured Finding projections, Analysis
+trails, suppression changes, VEX export/restore checkpoints, and final reset to
+unsuppressed `NOT_SET`. A separate run-scoped cleanup dry-run verified one
+Project target; deletion was intentionally not executed.
+
+### Observed Facts
+
+- The run completed with one Project and 45 recorded observations.
+- Baseline: 2 Components and 19 Findings from NVD across 10 unique
+  vulnerabilities.
+- Component-scoped VEX (`NOT_AFFECTED`, `CODE_NOT_REACHABLE`) changed the
+  reviewed primary Component/Finding and suppressed that Finding; the control
+  Component remained unaffected.
+- Project-scoped VEX changed both the reviewed primary Finding and the control
+  Finding to the same `NOT_AFFECTED`/suppressed projection, demonstrating
+  broader Project scope.
+- CycloneDX VEX export and re-import checkpoints were observed; the runner
+  restored the final primary and control targets to `NOT_SET` and unsuppressed.
+- The run-scoped cleanup dry-run contained exactly one target.
+
+The evidence was reviewed, the target had remained quiescent after the
+experiment, and the separate run-scoped cleanup command then deleted exactly
+the recorded disposable Project. Its execution audit reports one deletion and
+zero failures; a subsequent name/version lookup returned HTTP 404. The audit is
+retained under the ignored run directory.
+
+### Interpretation and Product Decision
+
+DT applies a Component-scoped VEX decision narrowly to the referenced Component,
+while a Project-scoped reference propagates the decision to matching Findings
+throughout the Project. sbom-ops must preserve the reviewed target scope and
+reject or escalate Project-scoped VEX when the human review covered only one
+Component. The VEX document and DT Analysis trail are authoritative evidence;
+the orchestrator should retain correlation and restoration/reconciliation state,
+not duplicate the decision history.
+
+### Unverified and Evidence
+
+Cross-Project reuse, multiple vulnerabilities sharing a Component, and
+concurrent analyst edits remain unverified. Raw responses and UUIDs remain under
+ignored `var/dt-lab/runs/<run-id>/`; no credentials or target-specific IDs were
+added to the ledger. Cleanup plan and execution audits are retained under that
+ignored run directory.
+
+## 2026-09-25 — VEX targeting preflight rejected excessive key permission
+
+- Status: live attempt failed closed during permission preflight; no Project or VEX mutation
+- Target: Dependency-Track 4.14.3 bundled container
+- Scenario: `triage-vex-targeting`
+
+### Purpose and Performed Work
+
+Attempted the explicitly gated VEX targeting scenario to compare Component- and
+Project-scoped VEX behavior on a disposable Project. The runner was invoked
+with `--allow-analysis-mutation` and performed its team-permission preflight
+before creating a Project.
+
+### Observed Facts
+
+- The analysis key's team permissions included `VULNERABILITY_ANALYSIS` and
+  `SYSTEM_CONFIGURATION`.
+- The lab allowlist permits only `VULNERABILITY_ANALYSIS` plus the documented
+  read permissions, so the preflight rejected the key.
+- A retry after adding `VULNERABILITY_ANALYSIS` produced the same rejection;
+  `SYSTEM_CONFIGURATION` is still present on the team.
+- No Project was created, no VEX or Analysis state was changed, and no cleanup
+  target was generated.
+
+### Interpretation and Product Decision
+
+The fail-closed least-privilege guard works as intended and prevents a VEX
+experiment from using an over-privileged key. The scenario remains unverified;
+it requires a dedicated analysis key whose team permissions satisfy the lab
+allowlist. Do not weaken the allowlist or reuse administrative permissions just
+to complete the experiment.
+
+### Unverified and Evidence
+
+Component-versus-Project VEX targeting semantics remain unverified. The
+attempt produced no durable raw response; only this normalized failure fact is
+recorded.
+
+## 2026-09-25 — DT runtime continuity check for OSV gap
+
+- Status: read-only runtime metadata observation completed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: container start, restart, status, and health metadata
+
+### Purpose and Performed Work
+
+Check whether a container restart after the last OSV mirror could explain the
+absence of newer internal markers. Only Docker runtime metadata was read; no
+container, database, scheduler, or datasource state was changed.
+
+### Observed Facts
+
+- Container start time: 2026-09-15T21:59:46Z.
+- Docker restart count: 1.
+- Current status: running; health status: healthy.
+- The container started before the 2026-09-21 OSV task window and has not
+  restarted since that start according to the runtime metadata.
+
+### Interpretation and Product Decision
+
+The missing OSV recurrence is not explained by a post-mirror container restart
+in this runtime. Health status also does not prove that the scheduler executed
+or completed its task. Keep the datasource health state stale/unknown and avoid
+using container health as a proxy for mirror freshness.
+
+### Unverified and Evidence
+
+Scheduler trigger history, executor queue state, and task-specific failure
+diagnostics remain unavailable from the current supported API surface. Only
+normalized runtime facts were retained; no raw Docker metadata was persisted.
+
+## 2026-09-25 — OSV task-log recurrence check
+
+- Status: read-only log metadata observation completed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: sanitized `OsvDownloadTask` log metadata since 2026-09-21
+
+### Purpose and Performed Work
+
+Inspect bounded container logs after the stale-marker observation to distinguish
+an absent recurrence from an explicit task failure. The command retained only
+task name, UTC date, count, first/last timestamps, and a simple error-token
+count. Log bodies were not persisted.
+
+### Observed Facts
+
+- 69 `OsvDownloadTask` log events were present after 2026-09-21T00:00:00Z.
+- All 69 events occurred on 2026-09-21, from approximately 00:13:55Z through
+  00:32:06Z.
+- No task-log event was observed on later dates through the observation window.
+- No failure/exception/error tokens were present in the bounded event metadata.
+- Current configuration readback still reports `osv.mirror.cadence=24`,
+  `google.osv.enabled=RubyGems;PyPI;Go;npm`, and alias synchronization disabled.
+- The configuration surface does not expose a task-run history or per-run
+  failure state.
+
+### Interpretation and Product Decision
+
+The logs corroborate one successful-looking OSV task window on September 21
+and no later recurrence, but they do not prove that the scheduler did not run
+silently or that all four ecosystem operations succeeded independently. The
+stale/unknown product health state remains appropriate. Do not increase cadence
+or infer datasource failure solely from this absence; investigate supported
+scheduler telemetry or task configuration next.
+
+### Unverified and Evidence
+
+Per-ecosystem completion semantics, scheduler trigger history, and log retention
+limits remain unverified. Only sanitized counts were retained; no raw logs or
+credentials were written. Evidence path pattern remains
+`var/dt-lab/runs/<run-id>/`.
+
+## 2026-09-25 — OSV recurrence marker check
+
+- Status: read-only marker observation completed; no new recurrence observed
+- Target: Dependency-Track 4.14.3 bundled container
+- Scope: internal OSV success markers for Go, npm, PyPI, and RubyGems
+
+### Purpose and Performed Work
+
+Re-read the internal OSV marker files after the previous successful full mirror
+to determine whether a later incremental or full cycle had been recorded. The
+existing lab-only marker summarizer was run with a 30-hour threshold. No DT
+configuration, scheduler, datasource, or product state was changed.
+
+### Observed Facts
+
+- All four ecosystems still report their latest successful operation at
+  2026-09-21T00:13:55Z–00:16:29Z.
+- At observation time 2026-09-24T20:42:52Z, all four were classified
+  `older-than-threshold` (approximately 92.4 hours old).
+- No newer marker was present for either full or modified OSV files.
+- The normalized diagnostic was written under the ignored
+  `var/dt-lab/runs/<run-id>/` path; raw marker input was not persisted.
+
+### Interpretation and Product Decision
+
+No post-mirror OSV recurrence is evidenced by this datastore's internal
+markers. This does not distinguish a task that never ran from a failed task and
+does not prove upstream data is incomplete. Product code must not claim OSV
+freshness from these files; an operator-facing health state should remain
+unknown/stale until a supported telemetry contract or explicit task evidence is
+available. Investigate scheduler/API diagnostics before changing cadence.
+
+### Unverified and Evidence
+
+The effective scheduler timer, task failure path, and cause of the missing
+recurrence remain unverified. Evidence path pattern:
+`var/dt-lab/runs/<run-id>/osv-internal-markers.json`.
+
 ## 2026-09-24 — Project 30-day metrics retention probe
 
 - Status: read-only observation completed
@@ -261,22 +632,22 @@ same 2,385 unique PURLs, 218 duplicate PURL entries, and 14,139 rows without a
 PURL. No input PURL was missing and DT introduced no new PURL.
 
 This explains the 1,089-row difference as DT normalization/deduplication of
-PURL-bearing entries plus a two-row difference among PURL-less entries. The
-product should compare semantic identity sets, not raw SBOM component-entry
-counts, while preserving the raw SBOM count as an audit metric.
+PURL-bearing entries plus two collapsed PURL-less occurrences. A follow-up
+read-only live comparison (2026-09-26 entry) found that the two names and
+versions are present once each in DT: each source pair shared name/version/CPE
+but had distinct `bom-ref` values and location properties. Thus no unique
+name/version identity was absent, although the API response did not establish
+whether occurrence-level location metadata survived import.
 
-A second bounded comparison using name/version signatures found that the
-PURL-less collections differ by exactly two unique input entries; all remaining
-PURL-less names are represented in DT. Type/group/CPE fields are not stable
-cross-system comparison keys in this export, so they were excluded from the
-semantic reconciliation. The two unresolved names were represented only by
-short digests in the local diagnostic and were not written to the ledger.
+The product should compare normalized semantic identity sets, not raw SBOM
+component-entry counts, while preserving raw SBOM counts as audit metrics.
 
 ### Unverified and Evidence
 
-Upload and processing latency, full paginated response sizes, and the exact
-semantics of the two PURL-less row difference remain to be analyzed from the
-ignored run artifacts.
+Upload and processing latency and full paginated response sizes remain to be
+analyzed from the ignored run artifacts. The no-PURL row-count difference is
+explained at the observed identity level; DT's exact deduplication key and
+occurrence-level property preservation remain unverified.
 Cleanup execution remains pending explicit review. Evidence paths use
 `var/dt-lab/runs/<run>/` patterns; no raw credentials or UUIDs were added to
 the ledger.

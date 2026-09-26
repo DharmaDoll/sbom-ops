@@ -189,7 +189,13 @@ def _load_vex_targeting_probe(
     probe = _mapping(payload, field_name)
     _reject_unknown(
         probe,
-        {"id", "decision", "control_component_purl", "input_component_bom_ref"},
+        {
+            "id",
+            "decision",
+            "control_component_purl",
+            "input_component_bom_ref",
+            "comparison_project_step",
+        },
         field_name,
     )
     return VexTargetingProbe(
@@ -200,6 +206,11 @@ def _load_vex_targeting_probe(
         ),
         input_component_bom_ref=_required_string(
             probe, "input_component_bom_ref", field_name
+        ),
+        comparison_project_step=(
+            _required_string(probe, "comparison_project_step", field_name)
+            if probe.get("comparison_project_step") is not None
+            else None
         ),
     )
 
@@ -2787,17 +2798,44 @@ def _run_vex_targeting_probe(
     project_uuid: str,
     read_client: DependencyTrackLabApi,
     analysis_client: DependencyTrackLabApi,
+    comparison_project_uuid: str | None,
     timeout: float,
     poll_interval: float,
 ) -> int:
     directory = step_directory / "vex-targeting" / probe.id
     directory.mkdir(parents=True, exist_ok=False)
     primary = probe.decision
+    if probe.comparison_project_step is not None and comparison_project_uuid is None:
+        raise LabManifestError(
+            f"VEX targeting probe {probe.id!r} comparison Project was not created"
+        )
     control = _retarget_analysis_action(
         primary,
         action_id="control-component",
         component_purl=probe.control_component_purl,
     )
+    comparison_targets: tuple[tuple[str, AnalysisAction], ...] = ()
+    if comparison_project_uuid is not None:
+        comparison_targets = (("primary", primary), ("control", control))
+        baseline: dict[str, dict[str, Any]] = {}
+        for label, action in comparison_targets:
+            _, _, _, finding = _wait_for_analysis_target(
+                client=read_client,
+                project_uuid=comparison_project_uuid,
+                action=action,
+                timeout=timeout,
+                poll_interval=poll_interval,
+            )
+            baseline[label] = _finding_analysis_projection(finding)
+        if any(
+            projection["state"] not in (None, AnalysisState.NOT_SET.value)
+            or projection["suppressed"] is True
+            for projection in baseline.values()
+        ):
+            raise LabManifestError(
+                f"VEX targeting probe {probe.id!r} comparison Findings are not clean"
+            )
+        _write_json(directory / "comparison-project-before.json", baseline)
     (
         primary_before,
         primary_component_uuid,
@@ -2922,6 +2960,29 @@ def _run_vex_targeting_probe(
         ),
     )
     observation_count = 4
+
+    def capture_comparison_projection(label: str) -> dict[str, dict[str, Any]]:
+        if comparison_project_uuid is None:
+            return {}
+        projection: dict[str, dict[str, Any]] = {}
+        for target_label, action in comparison_targets:
+            findings, _, _, finding = _wait_for_analysis_target(
+                client=read_client,
+                project_uuid=comparison_project_uuid,
+                action=action,
+                timeout=timeout,
+                poll_interval=poll_interval,
+            )
+            _write_json(
+                directory / f"{label}-comparison-{target_label}-findings.json",
+                _observation_dict(findings),
+            )
+            projection[target_label] = _finding_analysis_projection(finding)
+        _write_json(
+            directory / f"{label}-comparison-project.json", projection
+        )
+        return projection
+
     restored = False
     try:
         exported_component_scope = _apply_vex_targeting_document(
@@ -2936,6 +2997,10 @@ def _run_vex_targeting_probe(
             poll_interval=poll_interval,
         )
         observation_count += 5
+        exported_component_comparison = capture_comparison_projection(
+            "exported-component-scope"
+        )
+        observation_count += len(exported_component_comparison)
 
         after_exported_component_restore = _restore_vex_targeting_targets(
             targets=targets,
@@ -2961,6 +3026,10 @@ def _run_vex_targeting_probe(
             poll_interval=poll_interval,
         )
         observation_count += 5
+        input_component_comparison = capture_comparison_projection(
+            "input-component-scope"
+        )
+        observation_count += len(input_component_comparison)
 
         after_input_component_restore = _restore_vex_targeting_targets(
             targets=targets,
@@ -2986,6 +3055,10 @@ def _run_vex_targeting_probe(
             poll_interval=poll_interval,
         )
         observation_count += 5
+        declared_component_comparison = capture_comparison_projection(
+            "declared-component-scope"
+        )
+        observation_count += len(declared_component_comparison)
 
         after_declared_component_restore = _restore_vex_targeting_targets(
             targets=targets,
@@ -3011,6 +3084,8 @@ def _run_vex_targeting_probe(
             poll_interval=poll_interval,
         )
         observation_count += 5
+        project_scope_comparison = capture_comparison_projection("project-scope")
+        observation_count += len(project_scope_comparison)
 
         _write_json(
             directory / "verification.json",
@@ -3029,6 +3104,14 @@ def _run_vex_targeting_probe(
                 "declared_component_scope": declared_component_scope,
                 "after_declared_component_restore": (after_declared_component_restore),
                 "project_scope": project_scope,
+                "comparison_project": {
+                    "enabled": comparison_project_uuid is not None,
+                    "before": baseline if comparison_project_uuid is not None else {},
+                    "exported_component_scope": exported_component_comparison,
+                    "input_component_scope": input_component_comparison,
+                    "declared_component_scope": declared_component_comparison,
+                    "project_scope": project_scope_comparison,
+                },
                 "comparison": {
                     "exported_component_scope_primary_changed": (
                         exported_component_scope["primary"]["state"]
@@ -3058,6 +3141,20 @@ def _run_vex_targeting_probe(
                     ),
                     "project_scope_control_changed": (
                         project_scope["control"]["state"] == primary.state.value
+                    ),
+                    "comparison_project_unchanged": (
+                        comparison_project_uuid is None
+                        or all(
+                            projection["state"] in (None, AnalysisState.NOT_SET.value)
+                            and projection["suppressed"] is False
+                            for scope in (
+                                exported_component_comparison,
+                                input_component_comparison,
+                                declared_component_comparison,
+                                project_scope_comparison,
+                            )
+                            for projection in scope.values()
+                        )
                     ),
                 },
             },
@@ -3608,6 +3705,13 @@ def _run_scenario_steps(
                     project_uuid=project_uuid,
                     read_client=read_client,
                     analysis_client=analysis_client,
+                    comparison_project_uuid=(
+                        project_uuids_by_step.get(
+                            step.vex_targeting_probe.comparison_project_step
+                        )
+                        if step.vex_targeting_probe.comparison_project_step is not None
+                        else None
+                    ),
                     timeout=processing_timeout,
                     poll_interval=poll_interval,
                 )
