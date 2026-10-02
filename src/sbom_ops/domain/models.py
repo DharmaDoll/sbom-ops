@@ -42,6 +42,12 @@ class RemediationState(StrEnum):
     CLOSED = "CLOSED"
 
 
+class AnalysisSnapshotStatus(StrEnum):
+    NOT_REQUESTED = "not_requested"
+    STABLE = "stable"
+    NO_PROJECTS = "no_projects"
+
+
 @dataclass(frozen=True)
 class Finding:
     project_uuid: str
@@ -58,6 +64,8 @@ class Finding:
     vulnerability_source: str | None = None
     dependency_track_component_uuid: str | None = None
     component_purl: str | None = None
+    vulnerability_aliases: tuple[str, ...] = ()
+    cvss_version: str | None = None
 
     def finding_key(self) -> str:
         """Return an opaque, versioned machine identity for the finding."""
@@ -134,3 +142,11 @@ class FindingAssessment:
     analysis_state: AnalysisState
     is_suppressed: bool
     rationale: tuple[str, ...]
+    analysis_detail: str | None = None
+    in_kev: bool = False
+    component_uuid: str | None = None
+    component_purl: str | None = None
+    component_name: str | None = None
+    component_version: str | None = None
+    vulnerability_aliases: tuple[str, ...] = ()
+    cvss_version: str | None = None

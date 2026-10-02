@@ -66,6 +66,61 @@ def test_invalid_timeout_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
         load_config(Namespace(dry_run=False, project_uuid=None, log_level=None))
 
 
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_non_finite_priority_threshold_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("SBOM_OPS_DT_BASE_URL", "https://dtrack.example.com")
+    monkeypatch.setenv("SBOM_OPS_DT_API_KEY", "dt-key")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_TOKEN", "gh-token")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_OWNER", "acme")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_REPO", "svc")
+    monkeypatch.setenv("SBOM_OPS_PRIORITY_P2_CVSS_THRESHOLD", value)
+
+    with pytest.raises(ValueError, match="finite number"):
+        load_config(Namespace(dry_run=False, project_uuid=None, log_level=None))
+
+
+def test_boolean_priority_threshold_is_rejected(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+dependency_track:
+  base_url: https://dtrack.example.com
+  api_key: dt-key
+github:
+  enabled: false
+priority:
+  p2_cvss_threshold: true
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="priority.p2_cvss_threshold must be a number"):
+        load_config(
+            Namespace(
+                config=str(config_path),
+                dry_run=False,
+                project_uuid=None,
+                log_level=None,
+            )
+        )
+
+
+def test_cvss_threshold_above_scale_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SBOM_OPS_DT_BASE_URL", "https://dtrack.example.com")
+    monkeypatch.setenv("SBOM_OPS_DT_API_KEY", "dt-key")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_TOKEN", "gh-token")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_OWNER", "acme")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_REPO", "svc")
+    monkeypatch.setenv("SBOM_OPS_PRIORITY_P2_CVSS_THRESHOLD", "10.1")
+
+    with pytest.raises(ValueError, match="must be between 0 and 10"):
+        load_config(Namespace(dry_run=False, project_uuid=None, log_level=None))
+
+
 def test_gh_token_is_fallback_for_github_authentication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

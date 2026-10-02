@@ -42,10 +42,29 @@ def prioritize_finding(
         finding.cvss_score is not None
         and finding.cvss_score >= config.p2_cvss_threshold
     ):
+        cvss_label = finding.cvss_version or "CVSS"
         rationale.append(
-            f"CVSS {finding.cvss_score:.1f} >= {config.p2_cvss_threshold:.1f}"
+            f"{cvss_label} {finding.cvss_score:.1f} >= {config.p2_cvss_threshold:.1f}"
         )
         return PrioritizedFinding(finding, enrichment, Priority.P2, tuple(rationale))
 
     rationale.append("Default monitoring priority")
+    if enrichment.epss_score is None:
+        rationale.append("EPSS unavailable")
+    else:
+        rationale.append(
+            f"EPSS {enrichment.epss_score:.4f} < "
+            f"{config.p1_epss_threshold:.4f} threshold"
+        )
+
+    if finding.cvss_score is None:
+        rationale.append(
+            "CVSS unavailable; severity label is not used as a score fallback"
+        )
+    else:
+        cvss_label = finding.cvss_version or "CVSS"
+        rationale.append(
+            f"{cvss_label} {finding.cvss_score:.1f} < "
+            f"{config.p2_cvss_threshold:.1f} threshold"
+        )
     return PrioritizedFinding(finding, enrichment, Priority.P3, tuple(rationale))

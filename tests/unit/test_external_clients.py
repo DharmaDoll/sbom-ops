@@ -271,6 +271,33 @@ def test_http_retry_exhaustion_preserves_last_response(monkeypatch) -> None:
     assert raised.value.headers["X-Request-ID"] == "request-2"
 
 
+def test_http_retry_recovers_from_connection_error(monkeypatch) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def reconnect(request, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ConnectionResetError("connection closed")
+        return FakeResponse({"ok": True})
+
+    monkeypatch.setattr(http_module.time, "sleep", sleeps.append)
+
+    response = request_json(
+        request=kev_module.Request("https://example.test/data"),
+        timeout=1,
+        max_retries=1,
+        backoff_seconds=0.5,
+        error_message="failed",
+        opener=reconnect,
+    )
+
+    assert response == {"ok": True}
+    assert calls == 2
+    assert sleeps == [0.5]
+
+
 def test_kev_client_reads_cve_ids(monkeypatch) -> None:
     monkeypatch.setattr(
         kev_module,

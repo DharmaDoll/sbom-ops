@@ -18,11 +18,30 @@ The repository has a working MVP with:
 - Dependency-Track project, Finding, EPSS, Analysis state, and SBOM upload clients
 - deterministic KEV/EPSS/CVSS priority calculation
 - action-neutral assessments before optional GitHub Issue synchronization
+- assessments and priority rationale identify which CVSS version supplied the
+  selected score; the DT 4.14.3 `cvssV4Score` response field is now consumed
+- action-neutral assessment JSON retains Dependency-Track Component UUID,
+  PURL, name, and version where available; text output shows package name,
+  version, and PURL alongside priority and evidence inputs for review; JSON and
+  text also expose the per-Finding KEV match explicitly; JSON retains the
+  Dependency-Track analysis detail as human-authored context and aliases as
+  review context; only an explicit, syntactically valid CVE alias may match KEV,
+  without changing the primary ID or stable Finding identity
+- On the tested DT 4.14.3 target, the Project Finding projection omits Analysis
+  justification and response; those require per-Finding Analysis trail reads.
+  Keep them out of the MVP assessment until the extra request cost and intended
+  consumer are justified.
 - `--no-github`, dry-run, JSON output, and optional JSONL sync records
 - safe, opt-in closure after consecutive verified absence observations
 - UUID/PURL-based Finding identity with legacy-key migration
 - YAML configuration and Dependency-Track Project to GitHub repository routing
 - retry, timeout, pagination, contract fixtures, and failure-path tests
+- `wait_for_analysis` now rechecks all current assessment-relevant Finding
+  fields, including Component identity and Analysis detail, before accepting
+  two consecutive stable snapshots; the sync result reports `not_requested`,
+  `stable`, or `no_projects`. This remains a heuristic, not a DT job token
+- explicit project filters fail closed when any requested UUID is absent from
+  the accessible Dependency-Track project list
 - a hardened repository-local GitHub Actions sync example
 - a versioned DT lab scenario manifest, OpenAPI contract inventory, and isolated
   scenario runner with raw observations and Component delta reports
@@ -104,7 +123,7 @@ They apply to the tested DT environment; upgrades require revalidation.
 | DT ledger, 2026-08-27: NVD Findings exposed EPSS; GitHub/OSV records were absent | Reuse DT EPSS. Missing Findings do not establish source coverage or absence of vulnerabilities. | Verify enabled datasource coverage before comparing ecosystems. |
 | DT ledger, 2026-09-03: creation-only upload did not update existing tags; properties returned 403 to the read key | Retain YAML routing; defer migration to DT metadata. | Validate real Project-to-repository mappings without expanding upload permissions. |
 | DT ledger, 2026-09-25/26: Component-scoped VEX affected one Component; Project scope affected matching Findings within that Project, while identical Findings in a second Project stayed unchanged | Keep DT as VEX/Analysis authority; bind approval to target Project and scope. Never widen a Component review to Project scope. | Phase 2 must present the complete target-Project Finding diff and require explicit approval when VEX scope is Project-wide. |
-| Exploit ledger, 2026-09-06: 25-CVE comparison had no unique Sighting-covered CVE; thirteen vuls.db-only matches included broad references | Defer a production PoC flag. Keep source-attributed public references distinct from applicability and exploitation. | Review a bounded retained URL sample with recorded human rationale before choosing product presentation. |
+| Exploit ledger, 2026-09-06 and 2026-09-27/28: 25-CVE comparison had no unique Sighting-covered CVE; Trickest references include duplicates/incidental matches. In the refreshed snapshot, one new GitHub record explicitly reports a negative research result. Vuls's latest GHCR inTheWild raw artifact was republished Sep 28 but still points to its Apr 21 commit; the extracted commit remains Apr 23. One Log4Shell sample has source-native labels `exploit` (213) and `exploitation` (3); five Metasploit modules split into four `exploit` and one `auxiliary`. The lab preserves these provider fields, the inTheWild source label, and Nuclei's template ID plus nullable `verified` assertion (23 true, 21 missing in this sample). Its Vuls runner also emits per-source `available`/`not_observed`/`unknown` status and total/retained counts. Four GitHub associations were added and one removed since Sep 4; bounded page review found a self-described controlled reproduction lab, advisory-triage documentation, and two inaccessible pages. The upstream README claims hourly updates, but a fresh export request also timed out after 20 seconds; raw GitHub API returned 404. | Defer a production PoC flag and automatic source confidence. Keep source provenance, URL identity, provider classification, content type, per-datasource artifact revision, applicability, and exploitation separate; provider labels and controlled reproduction claims are not independent verification. AI-assisted inspection remains provisional and never a human review label. | Keep `unreviewed` labels and retry a small upstream comparison only when its export is reachable. Extend metadata only for schema-demonstrated fields. A lab-only advisory presentation contract is documented in `lab/exploit_intelligence/README.md`; obtain a product ADR/SPEC decision before adopting a production DTO, display rule, or priority behavior. |
 
 Prioritize the closure/inventory boundary and datasource coverage over additional
 lab workflow machinery. Human-review tooling is sufficient for an initial
@@ -180,8 +199,11 @@ The 2026-09-13 read-only rerun processed 1,066 Findings across 26 accessible lab
 Projects with GitHub disabled and emitted the expanded assessment contract for
 every Finding. Numeric CVSS and EPSS were absent on 561 records; all 135 HIGH
 records without numeric CVSS remained P3 under the unchanged numeric-score rule.
-Keep source, severity, null scores, Analysis, and suppression visible, but do not
-add a severity fallback until PoC and deployment context can be reviewed.
+The P3 rationale now distinguishes unavailable from below-threshold EPSS/CVSS
+and explicitly says severity is not substituted for missing numeric CVSS. Keep
+the existing rule unchanged; do not add a severity fallback until PoC and
+deployment context can be reviewed. Keep source, severity, null scores,
+Analysis, and suppression visible, and do not interpret P3 as low risk.
 The 2026-09-14 datasource log-window check recognized the initial OSV, NIST, and
 EPSS completions, but found no lifecycle event for those tasks in two later
 30-hour samples despite a healthy, restart-free container and non-empty general
@@ -290,7 +312,10 @@ The runtime decision and PoC gates are in
   review before any PoC join. Only explicit aliases are identity candidates;
   never promote `related`, `upstream`, or free-text references to equivalence.
   Do not drop non-CVE Findings or treat them as PoC absence. Validate future
-  mappings with source, timestamp, and freshness policy. A snapshot-bound lab
+  mappings with source, timestamp, and freshness policy. The product now checks
+  KEV against a primary CVE or a syntactically valid, explicit Dependency-Track
+  CVE alias while retaining the original ID and Finding key; this bounded join
+  is not reused for other intelligence sources. A snapshot-bound lab
   review queue now makes every candidate `unreviewed`, requires an identified
   human, rationale, and timezone-aware decision, and emits confirmed aliases
   without authorizing downstream actions. Use reviewed mappings—not source
@@ -323,7 +348,9 @@ The runtime decision and PoC gates are in
   and VEX signals rather than as a PoC replacement. The public CIRCL policy
   currently exposes neither a Sighting `since` filter nor a stream; use
   targeted CVE refreshes with checkpointing and the 3-second default pacing,
-  verifying the instance policy before live runs. Request pacing,
+  verifying the instance policy before live runs. A one-CVE check over a mixed
+  Go capture completed five public reads in 14.38 seconds; the sampler reported
+  15 non-CVE Findings separately instead of failing CVE enrichment. Request pacing,
   checkpoint/resume, expiry refresh, bounded transient retry, and both
   Retry-After forms now have deterministic contracts. A controlled mid-run
   interruption also resumes only missing signals, and locked timestamp merge
@@ -333,9 +360,12 @@ The runtime decision and PoC gates are in
   intact, and the next locked write removes its UUID-named orphan temporary
   file before merging. Temporary-file and parent-directory `fsync` now bound the
   atomic replace, and a pre-replace sync failure preserves the old file.
-  Exercise transient HTTP failures on a controlled endpoint when validating the
-  acquisition path. Host/storage failure and non-local filesystem experiments
-  are deployment-specific follow-ups, not prerequisites for bounded local runs.
+  Local controlled-endpoint tests now exercise `429 → 200`, `503 → 200`,
+  connection-close → retry, and a delayed-response timeout through the real
+  adapter and HTTP transport.
+  Host/storage failure and non-local filesystem
+  experiments are deployment-specific follow-ups, not prerequisites for
+  bounded local runs.
   Lock waits use a configurable fail-closed timeout.
   Preserve source, upstream type, timestamps, API policy/version, OCI provenance,
   and `available` / `not_observed` / `unknown` outcomes. Neither source may map

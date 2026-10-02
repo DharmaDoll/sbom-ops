@@ -146,7 +146,7 @@ def request_json(
                     error_message=error_message,
                     started=started,
                 ) from exc
-        except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+        except (URLError, TimeoutError, ConnectionError, json.JSONDecodeError) as exc:
             if attempt == attempts - 1:
                 raise HttpApiError(error_message) from exc
             delay = backoff_seconds * (2**attempt)

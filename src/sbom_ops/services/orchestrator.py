@@ -15,6 +15,7 @@ from sbom_ops.clients.github import GitHubIssuesClient
 from sbom_ops.clients.kev import KevClient
 from sbom_ops.config import AppConfig
 from sbom_ops.domain.models import (
+    AnalysisSnapshotStatus,
     AnalysisState,
     Enrichment,
     Finding,
@@ -44,6 +45,26 @@ class KevClientProtocol(Protocol):
     def get_known_exploited_vulnerabilities(self) -> set[str]: ...
 
 
+class ProjectSelectionError(ValueError):
+    """Raised when a requested project is not in the accessible DT inventory."""
+
+
+_CVE_IDENTIFIER = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
+
+
+def _kev_match(
+    vulnerability_id: str, aliases: tuple[str, ...], kev_ids: set[str]
+) -> bool:
+    """Match KEV against a primary CVE ID or explicit Dependency-Track CVE alias."""
+    candidates = (vulnerability_id, *aliases)
+    return any(
+        isinstance(identifier, str)
+        and _CVE_IDENTIFIER.fullmatch(identifier.strip()) is not None
+        and identifier.strip().upper() in kev_ids
+        for identifier in candidates
+    )
+
+
 class GitHubIssuesClientProtocol(Protocol):
     def find_open_issue_by_finding_key(self, finding_key: str) -> dict | None: ...
 
@@ -67,6 +88,9 @@ class RunResult:
     issues_updated: int
     issues_closed: int
     dry_run: bool
+    analysis_snapshot_status: AnalysisSnapshotStatus = (
+        AnalysisSnapshotStatus.NOT_REQUESTED
+    )
     actions: tuple[str, ...] = ()
     assessments: tuple[FindingAssessment, ...] = ()
 
@@ -83,6 +107,7 @@ class RunResult:
             "issues_updated": self.issues_updated,
             "issues_closed": self.issues_closed,
             "dry_run": self.dry_run,
+            "analysis_snapshot_status": self.analysis_snapshot_status.value,
             "actions": list(self.actions),
             "assessments": [
                 {
@@ -90,12 +115,20 @@ class RunResult:
                     "finding_key": item.finding_key,
                     "vulnerability_id": item.vulnerability_id,
                     "vulnerability_source": item.vulnerability_source,
+                    "vulnerability_aliases": list(item.vulnerability_aliases),
+                    "component_uuid": item.component_uuid,
+                    "component_purl": item.component_purl,
+                    "component_name": item.component_name,
+                    "component_version": item.component_version,
                     "severity": item.severity.value,
                     "cvss_score": item.cvss_score,
+                    "cvss_version": item.cvss_version,
                     "epss_score": item.epss_score,
                     "priority": item.priority.value,
                     "analysis_state": item.analysis_state.value,
                     "is_suppressed": item.is_suppressed,
+                    "analysis_detail": item.analysis_detail,
+                    "in_kev": item.in_kev,
                     "rationale": list(item.rationale),
                 }
                 for item in self.assessments
@@ -182,11 +215,30 @@ class Orchestrator:
         projects = self._dependency_track.list_projects()
         project_filter = set(self._config.runtime.project_uuids)
         if project_filter:
+            available_project_uuids = {project.uuid for project in projects}
+            unavailable = sorted(project_filter - available_project_uuids)
+            if unavailable:
+                raise ProjectSelectionError(
+                    "requested Dependency-Track project UUID(s) are not accessible: "
+                    + ", ".join(unavailable)
+                )
             projects = [
                 project for project in projects if project.uuid in project_filter
             ]
+        if not self._config.runtime.wait_for_analysis:
+            snapshot_status = AnalysisSnapshotStatus.NOT_REQUESTED
+        elif not projects:
+            snapshot_status = AnalysisSnapshotStatus.NO_PROJECTS
+        else:
+            # Every project must complete its stable-snapshot wait before the
+            # run can reach result construction.
+            snapshot_status = AnalysisSnapshotStatus.STABLE
 
-        kev_ids = self._kev.get_known_exploited_vulnerabilities()
+        kev_ids = {
+            identifier.strip().upper()
+            for identifier in self._kev.get_known_exploited_vulnerabilities()
+            if isinstance(identifier, str) and identifier.strip()
+        }
         kev_used_stale_cache = bool(getattr(self._kev, "used_stale_cache", False))
         current_keys: set[str] = set()
         created = updated = closed = findings_processed = 0
@@ -233,6 +285,20 @@ class Orchestrator:
                         analysis_state=prioritized_finding.enrichment.analysis_state,
                         is_suppressed=prioritized_finding.enrichment.is_suppressed,
                         rationale=prioritized_finding.rationale,
+                        analysis_detail=(
+                            prioritized_finding.enrichment.analysis_detail
+                        ),
+                        in_kev=prioritized_finding.enrichment.in_kev,
+                        component_uuid=(
+                            prioritized_finding.finding.dependency_track_component_uuid
+                        ),
+                        component_purl=prioritized_finding.finding.component_purl,
+                        component_name=prioritized_finding.finding.component_name,
+                        component_version=prioritized_finding.finding.component_version,
+                        vulnerability_aliases=(
+                            prioritized_finding.finding.vulnerability_aliases
+                        ),
+                        cvss_version=prioritized_finding.finding.cvss_version,
                     )
                 )
 
@@ -368,6 +434,7 @@ class Orchestrator:
             issues_updated=updated,
             issues_closed=closed,
             dry_run=self._config.runtime.dry_run,
+            analysis_snapshot_status=snapshot_status,
             actions=tuple(actions),
             assessments=tuple(assessments),
         )
@@ -390,11 +457,14 @@ class Orchestrator:
             vulnerability_source=raw.vulnerability_source,
             dependency_track_component_uuid=raw.component_uuid,
             component_purl=raw.component_purl,
+            vulnerability_aliases=raw.vulnerability_aliases,
+            cvss_version=raw.cvss_version,
         )
+        kev_match = _kev_match(raw.vulnerability_id, raw.vulnerability_aliases, kev_ids)
         enrichment = Enrichment(
-            in_kev=raw.vulnerability_id in kev_ids,
+            in_kev=kev_match,
             epss_score=raw.epss_score,
-            has_known_active_exploitation=raw.vulnerability_id in kev_ids,
+            has_known_active_exploitation=kev_match,
             analysis_state=self._analysis_state(raw.analysis_state),
             is_suppressed=raw.is_suppressed,
             analysis_detail=raw.analysis_detail,
@@ -488,6 +558,7 @@ class Orchestrator:
 - Vulnerability source: `{finding.vulnerability_source or "unknown"}`
 - Priority: `{item.priority.value}`
 - CVSS: `{finding.cvss_score if finding.cvss_score is not None else "unknown"}`
+- CVSS version: `{finding.cvss_version or "unknown"}`
 - EPSS: `{enrichment.epss_score if enrichment.epss_score is not None else "unknown"}`
 - KEV: `{"yes" if enrichment.in_kev else "no"}`
 - Dependency-Track analysis: `{enrichment.analysis_state.value}`

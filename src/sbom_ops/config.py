@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -227,10 +228,15 @@ def _as_int(value: Any, name: str) -> int:
 
 
 def _as_float(value: Any, name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a number")
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{name} must be a number") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be a finite number")
+    return number
 
 
 def _as_bool(value: Any, name: str) -> bool:
@@ -363,8 +369,8 @@ def _validate(config: AppConfig) -> AppConfig:
         )
     if not 0 <= config.priority.p1_epss_threshold <= 1:
         raise ValueError("priority.p1_epss_threshold must be between 0 and 1")
-    if config.priority.p2_cvss_threshold < 0:
-        raise ValueError("priority.p2_cvss_threshold must not be negative")
+    if not 0 <= config.priority.p2_cvss_threshold <= 10:
+        raise ValueError("priority.p2_cvss_threshold must be between 0 and 10")
     if config.workflow.missing_confirmation_runs < 2:
         raise ValueError("workflow.missing_confirmation_runs must be at least 2")
     return config

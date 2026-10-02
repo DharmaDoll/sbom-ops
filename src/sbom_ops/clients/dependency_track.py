@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -40,6 +41,8 @@ class DependencyTrackFinding:
     vulnerability_source: str | None = None
     component_uuid: str | None = None
     component_purl: str | None = None
+    vulnerability_aliases: tuple[str, ...] = ()
+    cvss_version: str | None = None
 
 
 class DependencyTrackApiError(RuntimeError):
@@ -52,12 +55,38 @@ class BomUpload:
 
 
 def _number(value: Any) -> float | None:
-    if value is None or value == "":
+    if value is None or value == "" or isinstance(value, bool):
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None
+
+
+def _score(value: Any, *, maximum: float) -> float | None:
+    number = _number(value)
+    if number is None or not 0 <= number <= maximum:
+        return None
+    return number
+
+
+def _first_score(*values: Any, maximum: float) -> float | None:
+    for value in values:
+        score = _score(value, maximum=maximum)
+        if score is not None:
+            return score
+    return None
+
+
+def _first_cvss_score(
+    *values: tuple[str, Any],
+) -> tuple[float | None, str | None]:
+    for version, value in values:
+        score = _score(value, maximum=10.0)
+        if score is not None:
+            return score, version
+    return None, None
 
 
 def _cwes(value: Any) -> tuple[int, ...]:
@@ -76,6 +105,20 @@ def _cwes(value: Any) -> tuple[int, ...]:
     return tuple(result)
 
 
+def _vulnerability_aliases(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    identifiers: list[str] = []
+    for alias in value:
+        if not isinstance(alias, dict):
+            continue
+        for field in ("cveId", "ghsaId"):
+            identifier = alias.get(field)
+            if isinstance(identifier, str) and identifier.strip():
+                identifiers.append(identifier.strip())
+    return tuple(dict.fromkeys(identifiers))
+
+
 def _finding_from_payload(
     payload: dict[str, Any], project: DependencyTrackProject
 ) -> DependencyTrackFinding:
@@ -85,12 +128,12 @@ def _finding_from_payload(
     aliases = vulnerability.get("aliases") or []
     vulnerability_id = vulnerability.get("vulnId") or vulnerability.get("id")
     if not vulnerability_id:
-        for alias in aliases:
-            if alias.get("cveId"):
-                vulnerability_id = alias["cveId"]
-                break
-    if not vulnerability_id:
         raise DependencyTrackApiError("finding has no vulnerability identifier")
+    cvss_score, cvss_version = _first_cvss_score(
+        ("CVSSv3", vulnerability.get("cvssV3BaseScore")),
+        ("CVSSv4", vulnerability.get("cvssV4Score")),
+        ("CVSSv2", vulnerability.get("cvssV2BaseScore")),
+    )
 
     return DependencyTrackFinding(
         project_uuid=project.uuid,
@@ -99,14 +142,14 @@ def _finding_from_payload(
         component_version=component.get("version"),
         vulnerability_id=str(vulnerability_id),
         severity=str(vulnerability.get("severity") or "UNKNOWN").upper(),
-        cvss_score=_number(
-            vulnerability.get("cvssV3BaseScore")
-            or vulnerability.get("cvssV4BaseScore")
-            or vulnerability.get("cvssV2BaseScore")
-        ),
+        cvss_score=cvss_score,
         cwes=_cwes(vulnerability.get("cwes") or vulnerability.get("cweId")),
         description=vulnerability.get("description"),
-        epss_score=_number(vulnerability.get("epssScore") or payload.get("epssScore")),
+        epss_score=_first_score(
+            vulnerability.get("epssScore"),
+            payload.get("epssScore"),
+            maximum=1.0,
+        ),
         analysis_state=analysis.get("state"),
         is_suppressed=bool(analysis.get("isSuppressed", False)),
         analysis_detail=analysis.get("detail"),
@@ -115,6 +158,8 @@ def _finding_from_payload(
         vulnerability_source=vulnerability.get("source"),
         component_uuid=component.get("uuid"),
         component_purl=component.get("purl") or component.get("purlCoordinates"),
+        vulnerability_aliases=_vulnerability_aliases(aliases),
+        cvss_version=cvss_version,
     )
 
 
@@ -302,8 +347,8 @@ class DependencyTrackClient:
             ("vulnerabilities", "items"),
         )
         epss_by_vulnerability = {
-            str(item.get("vulnID") or item.get("vulnId")): _number(
-                item.get("epssScore")
+            str(item.get("vulnID") or item.get("vulnId")): _score(
+                item.get("epssScore"), maximum=1.0
             )
             for item in vulnerability_payload
             if item.get("vulnID") or item.get("vulnId")
@@ -337,14 +382,31 @@ class DependencyTrackClient:
             fingerprint = tuple(
                 sorted(
                     (
-                        f.finding_id,
-                        f.vulnerability_id,
-                        f.component_name,
-                        f.component_version,
-                        f.analysis_state,
-                        f.is_suppressed,
-                    )
-                    for f in findings
+                        (
+                            f.project_uuid,
+                            f.project_name,
+                            f.finding_id,
+                            f.vulnerability_uuid,
+                            f.vulnerability_id,
+                            f.vulnerability_aliases,
+                            f.vulnerability_source,
+                            f.component_uuid,
+                            f.component_purl,
+                            f.component_name,
+                            f.component_version,
+                            f.severity,
+                            f.cvss_score,
+                            f.cvss_version,
+                            f.epss_score,
+                            f.cwes,
+                            f.description,
+                            f.analysis_state,
+                            f.is_suppressed,
+                            f.analysis_detail,
+                        )
+                        for f in findings
+                    ),
+                    key=repr,
                 )
             )
             if previous == fingerprint:

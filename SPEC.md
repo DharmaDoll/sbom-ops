@@ -79,6 +79,16 @@ Typical execution modes:
 - project-scoped ad hoc run
 - dry-run for validation
 
+When `runtime.wait_for_analysis` is enabled, the Dependency-Track client waits
+for two consecutive project Finding snapshots with identical assessment- and
+workflow-relevant inputs, including Finding/Component identity, vulnerability
+source and ID, severity and scores, description, Analysis state/detail, and
+suppression. This is a stability heuristic, not a server-provided job completion
+token. A timeout fails the run and must not be interpreted as verified absence.
+The sync result reports `analysis_snapshot_status` as `not_requested`, `stable`,
+or `no_projects`; `stable` means only that the configured snapshot heuristic
+completed for every processed Project.
+
 The process flow is:
 
 1. Load configuration
@@ -241,7 +251,17 @@ Notes:
 
 - P0 remains rule-based from KEV or explicit active exploitation input.
 - `p1_epss_threshold` and `p2_cvss_threshold` must be configurable.
+- CVSS/EPSS observations and configured thresholds must be finite numbers;
+  booleans, NaN, and positive/negative infinity are invalid and must not enter
+  priority evaluation or machine-readable results.
+- CVSS scores and their threshold must be within 0–10; EPSS scores and their
+  threshold must be within 0–1. Out-of-range observations are unavailable, not
+  stronger evidence.
 - Project filtering is optional and defaults to all accessible projects.
+- Every explicitly selected project UUID must appear in the accessible
+  Dependency-Track project list. If any selected UUID is absent, the run fails
+  before enrichment or GitHub workflow actions rather than succeeding with an
+  empty or partial selection.
 - `routing.projects` is optional. When it is configured, every processed
   Dependency-Track Project must have exactly one route; an unknown Project is
   rejected rather than sent to the default repository.
@@ -282,13 +302,21 @@ Required fields:
 - `vulnerability_id: str`
 - `severity: Severity`
 - `cvss_score: float | None`
+- `cvss_version: str | None`, identifying the selected CVSS field (`CVSSv3`,
+  `CVSSv4`, or `CVSSv2`)
 - `cwes: tuple[int, ...]`
 - `description: str | None`
 - `dependency_track_finding_id: str | None`
 - `dependency_track_vulnerability_uuid: str | None`
 - `vulnerability_source: str | None`
+- `vulnerability_aliases: tuple[str, ...]`, containing CVE/GHSA identifiers
+  explicitly returned in Dependency-Track alias records
 - `dependency_track_component_uuid: str | None`
 - `component_purl: str | None`
+
+The primary `vulnerability_id` must come from Dependency-Track's primary
+identifier fields. If those are absent, reject the malformed Finding; do not
+promote an alias into the primary identifier or stable Finding identity.
 
 Finding lifecycle, Dependency-Track analysis, and remediation workflow are
 separate concepts. `FindingState` represents observations such as `ACTIVE`,
@@ -326,6 +354,12 @@ not independently decide that a finding is not affected or a false positive.
 For MVP, `has_known_active_exploitation` may map to `in_kev`.
 The field exists now to avoid rewriting the domain model later.
 
+KEV membership is checked against the primary identifier when it is a CVE and
+against explicit CVE identifiers returned in Dependency-Track alias records.
+Matching trims surrounding whitespace and is case-insensitive; malformed IDs
+and non-CVE aliases do not match. This does not replace the primary identifier,
+change the Finding key, or establish equivalence for other intelligence sources.
+
 ### Prioritized Finding
 
 Required fields:
@@ -342,18 +376,36 @@ priority without consulting an Issue body:
 
 - `project_uuid` and stable `finding_key`
 - `vulnerability_id` and `vulnerability_source`
+- `vulnerability_aliases`, preserved as review context and used for KEV matching
+  only when Dependency-Track explicitly supplies a syntactically valid CVE alias
+- nullable `component_uuid` and `component_purl`, plus `component_name` and
+  nullable `component_version`, so vulnerability-level enrichment remains
+  traceable to the affected inventory item
 - textual `severity`
 - nullable numeric `cvss_score` and `epss_score`
+- nullable `cvss_version`, so consumers can identify which CVSS scale supplied
+  the score used by the configured threshold
 - `priority`
+- `in_kev`, as an explicit per-Finding boolean rather than a value consumers
+  must parse from the rationale text
+- nullable `analysis_detail`, passed through from Dependency-Track unchanged as
+  the human analyst note; it is context, not a machine decision input
 - Dependency-Track `analysis_state` and `is_suppressed`
 - `rationale`
 
 A missing numeric score remains `null`; it must not be represented as zero or as
 evidence that the Finding is low risk.
+An explicit numeric score of `0.0` is a present value and must not be replaced
+by another score field or treated as missing during fallback selection.
 
 ## Priority Rules
 
 The priority engine must be deterministic and side-effect free.
+
+When Dependency-Track provides multiple valid CVSS scores, the MVP selects
+`cvssV3BaseScore`, then `cvssV4Score`, then `cvssV2BaseScore`. It must preserve
+the selected version in the assessment and rationale. Invalid or out-of-range
+values are skipped, allowing the next valid version to be used.
 
 Rules in order:
 
@@ -369,6 +421,10 @@ Notes:
 - Rule order matters.
 - The engine must return rationale strings for auditability.
 - Missing scores must not crash evaluation.
+- When the result is `P3`, the rationale must show unavailable or below-threshold
+  EPSS/CVSS inputs. If CVSS is unavailable, state that the severity label is not
+  substituted for a numeric score. This explains the configured rule result; it
+  must not describe `P3` as evidence of low risk or alter the priority policy.
 
 ## Workflow Rules
 
@@ -446,10 +502,16 @@ MVP must not mutate Dependency-Track analysis state automatically.
 The orchestrator reads analysis data and suppression state for workflow
 decisions, but Dependency-Track remains authoritative. Project Finding reads
 must request `suppressed=true`; omission from DT's default unsuppressed view is
-not Finding absence. Reconciliation compares a normalized semantic projection
-of stable Finding identity, state, justification, response, detail, and
-suppression. It must not depend on Project metrics, `ETag`, `Last-Modified`, or
-an Analysis update cursor that DT 4.14.3 does not expose.
+not Finding absence. On the tested DT 4.14.3 target, the Project Finding
+projection provides Analysis state, detail, and suppression, but not
+justification or response. Those fields are available from a per-Finding
+Analysis trail read; the current product client does not make those additional
+requests. Do not treat their absence from a Project Finding response as
+`NOT_SET` or as empty values. Any future semantic reconciliation that includes
+them must combine the Project snapshot and per-Finding trail reads, and validate
+the request cost before adoption. Reconciliation must not depend on Project
+metrics, `ETag`, `Last-Modified`, or an Analysis update cursor that DT 4.14.3
+does not expose.
 
 The minimum orchestrator state is the stable Finding key, last observed
 semantic digest, observation outcome and time, and external work-item
@@ -569,6 +631,10 @@ The CLI prints a run summary and can optionally append completed sync results
 to a JSONL file through `runtime.sync_log_file` or `--sync-log-file`.
 Failure of this optional sink must not replace the primary sync result, but must
 be reported on stderr without corrupting machine-readable stdout.
+
+The JSON result and optional JSONL sync log include Dependency-Track
+`analysis_detail` values verbatim. Treat these human-authored notes as
+operationally sensitive and apply appropriate access and retention controls.
 
 Each run should log:
 

@@ -1654,6 +1654,11 @@ was a point observation, not a peak measurement.
 - All 83 Finding projections had no aliases. EPSS appeared in seven Go Finding
   projections; n8n and Airflow had no populated numeric CVSS or EPSS fields in
   their recorded coverage. All had severity fields.
+- An offline review of the retained OTel OBI Finding projection found
+  `cvssV2BaseScore` on two of seven Findings, `cvssV3BaseScore` on all seven,
+  and `cvssV4Score` on two. The two Findings with both v3 and v4 scores had
+  different numeric values. No `cvssV4BaseScore` field appeared in this
+  Dependency-Track 4.14.3 response.
 - n8n had 19 HIGH, 22 MEDIUM, and one LOW Finding; Airflow had ten HIGH and nine
   MEDIUM Findings. Despite HIGH labels, all were P3 in the product dry-run.
 - Go had seven HIGH, three MEDIUM, and twelve UNASSIGNED Findings.
@@ -1663,6 +1668,12 @@ was a point observation, not a peak measurement.
 Source configuration materially changes the observed inventory of vulnerabilities
 for identical SBOM input. This supports using DT's existing ecosystem mirrors
 instead of adding parallel package-vulnerability matching to sbom-ops.
+
+The v4 score field name in the observed DT response is `cvssV4Score`. The
+product client now reads it and records which CVSS version it selected, while
+retaining its established v3 → v4 → v2 precedence. A CVSS threshold decision is
+therefore auditable without silently changing policy. The relative policy for
+choosing among multiple CVSS versions remains a future review topic.
 
 `vulnerability.source=GITHUB` does not prove that the GHSA mirror is enabled:
 these records appeared after OSV ingestion with GHSA disabled. Preserve source
@@ -2943,6 +2954,11 @@ reviewed cleanup.
   and omitted the exact target. The same request with `suppressed=true` returned
   all ten and projected the target as suppressed. After unsuppression, the
   target returned to the default view.
+- In the captured `suppressed=true` Project Finding projection, `analysis`
+  contained `state`, `isSuppressed`, and `detail`, but not justification or
+  response. The corresponding per-Finding Analysis trail response exposed
+  `analysisState`, `analysisJustification`, `analysisResponse`,
+  `analysisDetails`, and `isSuppressed`.
 - Neither Finding nor Analysis GET responses exposed `ETag` or `Last-Modified`.
   Their OpenAPI schemas expose no Analysis revision or update timestamp. Audit
   comments have timestamps, but only inside the per-Finding Analysis trail.
@@ -2962,9 +2978,13 @@ remediation task lifecycle.
 
 DT 4.14.3 does not provide an API-visible incremental cursor for Analysis
 changes. Reconciliation must read a complete Project Finding snapshot with
-`suppressed=true` and compare a normalized semantic digest over stable Finding
-identity, state, justification, response, detail, and suppression. Absence from
-the default view is not Finding resolution and must never drive Issue closure.
+`suppressed=true`. The snapshot exposes state, detail, and suppression, but not
+justification or response; those require per-Finding Analysis trail reads. Any
+future semantic digest that includes justification or response must combine
+those trail reads with the Project snapshot and account for their additional
+request cost. Missing fields in the Project Finding projection must not be
+interpreted as `NOT_SET` or as empty analyst decisions. Absence from the default
+view is not Finding resolution and must never drive Issue closure.
 
 The minimum sbom-ops reconciliation state is the stable Finding key, last
 observed semantic digest, observation outcome/time, and the external work-item
@@ -3333,3 +3353,51 @@ redaction; and behavior after a Dependency-Track upgrade remain unverified.
 
 - `var/dt-lab/runs/<run-id>/portfolio-tags-properties/` (ignored; local only)
 - [DT 4.14.3 `BomResource`](https://github.com/DependencyTrack/dependency-track/blob/4.14.3/src/main/java/org/dependencytrack/resources/v1/BomResource.java)
+
+## 2026-09-29 — Product Dry-Run Component Identity Projection
+
+- Status: completed
+- Target: local Dependency-Track instance; configured project selected by UUID
+- Scope: production CLI read-only verification, not a lab scenario or mutation
+
+### Purpose
+
+Verify that a real `sbom-ops sync --dry-run --no-github --output json` assessment
+retains the affected component identity needed to connect vulnerability evidence
+to a package in the SBOM.
+
+### Performed
+
+An initial CLI dry-run failed with a generic request error at `/api/v1/project`
+and no HTTP status. A separate authenticated, body-discarding project-list
+request then returned HTTP 200. The CLI dry-run was retried with GitHub disabled
+and no write operations enabled. Only assessment counts and five projected
+component identity samples were displayed; no raw API response or credential
+was persisted.
+
+### Observed Facts
+
+- The retry processed one project and returned 26 findings/assessments.
+- The JSON assessment projection included the component identity fields; the
+  five displayed samples had component name, version, PURL, and UUID values.
+- The initial failure was transient or otherwise unreproduced: the subsequent
+  direct request and CLI dry-run succeeded. Its cause is unknown.
+- `--dry-run --no-github` performed no GitHub or Dependency-Track mutations.
+
+### Interpretation and Product Decision
+
+The production output path carries useful component context on a real target,
+so an operator can inspect a finding alongside the package identity without
+manually resolving the Finding UUID first. This is context for human review,
+not proof that a CVE applies to a particular component. Priority and workflow
+decisions remain unchanged.
+
+### Unverified
+
+Per-field coverage across all findings; behavior when the target omits PURL or
+component UUID; and output compatibility for consumers of the JSON format.
+
+### Local Evidence
+
+- `var/dt-lab/runs/20260929-product-component-identity/summary.json` (sanitized
+  counts and sample, no UUIDs or raw API data)

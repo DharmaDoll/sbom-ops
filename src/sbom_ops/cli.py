@@ -105,10 +105,15 @@ def run_sync(config: AppConfig, output_format: str = "text") -> int:
         f"created={result.issues_created} "
         f"updated={result.issues_updated} "
         f"closed={result.issues_closed} "
+        f"kev_used_stale_cache={str(result.kev_used_stale_cache).lower()} "
+        f"analysis_snapshot_status={result.analysis_snapshot_status.value} "
         f"dry_run={result.dry_run}"
     )
     for assessment in result.assessments:
         rationale = ", ".join(assessment.rationale)
+        component = assessment.component_name or "unknown"
+        if assessment.component_version:
+            component = f"{component}@{assessment.component_version}"
         cvss = (
             f"{assessment.cvss_score:.1f}"
             if assessment.cvss_score is not None
@@ -121,8 +126,13 @@ def run_sync(config: AppConfig, output_format: str = "text") -> int:
         )
         print(
             f"finding {assessment.finding_key} priority={assessment.priority.value} "
+            f"component={component} "
+            f"purl={assessment.component_purl or 'unavailable'} "
             f"source={assessment.vulnerability_source or 'UNKNOWN'} "
-            f"severity={assessment.severity.value} cvss={cvss} epss={epss} "
+            f"dt_aliases={','.join(assessment.vulnerability_aliases) or 'none'} "
+            f"severity={assessment.severity.value} cvss={cvss} "
+            f"cvss_version={assessment.cvss_version or 'unavailable'} epss={epss} "
+            f"in_kev={str(assessment.in_kev).lower()} "
             f"analysis={assessment.analysis_state.value} "
             f"suppressed={str(assessment.is_suppressed).lower()} "
             f"rationale={rationale}"

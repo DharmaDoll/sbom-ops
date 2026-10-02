@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -35,13 +36,164 @@ def test_dependency_track_finding_is_normalized() -> None:
 
     assert findings[0].vulnerability_id == "CVE-2026-0001"
     assert findings[0].vulnerability_source == "NVD"
+    assert findings[0].cvss_score == 9.8
+    assert findings[0].cvss_version == "CVSSv3"
+    assert findings[0].vulnerability_aliases == (
+        "CVE-2026-1001",
+        "GHSA-abcd-efgh-ijkl",
+    )
     assert findings[0].component_uuid == "component-1"
     assert findings[0].component_purl == "pkg:generic/openssl@3.0.0"
     assert findings[0].epss_score == 0.91
     assert findings[0].analysis_state == "NOT_SET"
+    assert findings[0].analysis_detail == (
+        "Reviewed by AppSec.\nReachability is not yet confirmed."
+    )
     assert findings[0].cwes == (78,)
     assert findings[1].analysis_state == "NOT_AFFECTED"
     assert findings[1].epss_score == 0.82
+
+
+def test_dependency_track_preserves_zero_scores_before_fallbacks() -> None:
+    finding_payloads = load_fixture("dependency-track-findings.json")
+    assert isinstance(finding_payloads, list)
+    finding_payloads[0]["vulnerability"]["cvssV3BaseScore"] = 0.0
+    finding_payloads[0]["vulnerability"]["cvssV4Score"] = 8.8
+    finding_payloads[0]["vulnerability"]["epssScore"] = 0.0
+    finding_payloads[0]["epssScore"] = 0.7
+    payloads = {
+        "/api/v1/project/project-1": {"uuid": "project-1", "name": "service-a"},
+        "/api/v1/finding/project/project-1": finding_payloads,
+        "/api/v1/vulnerability/project/project-1": [],
+    }
+    client = DependencyTrackClient("https://dtrack.example", "api-key")
+    client._request_json = lambda path, params=None: payloads[path]  # type: ignore[method-assign]
+
+    finding = client.get_project_findings("project-1")[0]
+
+    assert finding.cvss_score == 0.0
+    assert finding.cvss_version == "CVSSv3"
+    assert finding.epss_score == 0.0
+
+
+def test_dependency_track_reads_cvss_v4_score_field() -> None:
+    finding_payloads = load_fixture("dependency-track-findings.json")
+    assert isinstance(finding_payloads, list)
+    vulnerability = finding_payloads[0]["vulnerability"]
+    vulnerability.pop("cvssV3BaseScore")
+    vulnerability["cvssV4Score"] = 8.8
+    payloads = {
+        "/api/v1/project/project-1": {"uuid": "project-1", "name": "service-a"},
+        "/api/v1/finding/project/project-1": finding_payloads,
+        "/api/v1/vulnerability/project/project-1": [],
+    }
+    client = DependencyTrackClient("https://dtrack.example", "api-key")
+    client._request_json = lambda path, params=None: payloads[path]  # type: ignore[method-assign]
+
+    finding = client.get_project_findings("project-1")[0]
+
+    assert finding.cvss_score == 8.8
+    assert finding.cvss_version == "CVSSv4"
+
+
+def test_dependency_track_does_not_promote_alias_to_primary_identifier() -> None:
+    finding_payloads = load_fixture("dependency-track-findings.json")
+    assert isinstance(finding_payloads, list)
+    finding_payloads[0]["vulnerability"].pop("vulnId")
+    finding_payloads[0]["vulnerability"].pop("id", None)
+    payloads = {
+        "/api/v1/project/project-1": {"uuid": "project-1", "name": "service-a"},
+        "/api/v1/finding/project/project-1": finding_payloads,
+        "/api/v1/vulnerability/project/project-1": [],
+    }
+    client = DependencyTrackClient("https://dtrack.example", "api-key")
+    client._request_json = lambda path, params=None: payloads[path]  # type: ignore[method-assign]
+
+    with pytest.raises(
+        DependencyTrackApiError, match="finding has no vulnerability identifier"
+    ):
+        client.get_project_findings("project-1")
+
+
+def test_dependency_track_treats_non_finite_scores_as_unavailable() -> None:
+    finding_payloads = load_fixture("dependency-track-findings.json")
+    assert isinstance(finding_payloads, list)
+    finding_payloads[0]["vulnerability"]["cvssV3BaseScore"] = float("nan")
+    finding_payloads[0]["vulnerability"].pop("cvssV4Score")
+    finding_payloads[0]["vulnerability"]["cvssV4BaseScore"] = True
+    finding_payloads[0]["vulnerability"]["epssScore"] = float("nan")
+    finding_payloads[0]["epssScore"] = float("inf")
+    payloads = {
+        "/api/v1/project/project-1": {"uuid": "project-1", "name": "service-a"},
+        "/api/v1/finding/project/project-1": finding_payloads,
+        "/api/v1/vulnerability/project/project-1": [],
+    }
+    client = DependencyTrackClient("https://dtrack.example", "api-key")
+    client._request_json = lambda path, params=None: payloads[path]  # type: ignore[method-assign]
+
+    finding = client.get_project_findings("project-1")[0]
+
+    assert finding.cvss_score is None
+    assert finding.epss_score is None
+
+
+def test_dependency_track_treats_out_of_range_scores_as_unavailable() -> None:
+    finding_payloads = load_fixture("dependency-track-findings.json")
+    assert isinstance(finding_payloads, list)
+    finding_payloads[0]["vulnerability"]["cvssV3BaseScore"] = 10.1
+    finding_payloads[0]["vulnerability"]["cvssV4Score"] = 10.1
+    finding_payloads[0]["vulnerability"]["epssScore"] = 1.01
+    payloads = {
+        "/api/v1/project/project-1": {"uuid": "project-1", "name": "service-a"},
+        "/api/v1/finding/project/project-1": finding_payloads,
+        "/api/v1/vulnerability/project/project-1": [],
+    }
+    client = DependencyTrackClient("https://dtrack.example", "api-key")
+    client._request_json = lambda path, params=None: payloads[path]  # type: ignore[method-assign]
+
+    finding = client.get_project_findings("project-1")[0]
+
+    assert finding.cvss_score is None
+    assert finding.epss_score is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"analysis_detail": "Updated human analysis note"},
+        {"component_purl": "pkg:generic/openssl@3.0.1"},
+    ],
+)
+def test_wait_for_analysis_rechecks_when_assessment_input_changes(
+    monkeypatch, change
+) -> None:
+    client = DependencyTrackClient("https://dtrack.example", "api-key")
+    payloads = {
+        "/api/v1/project/project-1": {"uuid": "project-1", "name": "service-a"},
+        "/api/v1/finding/project/project-1": load_fixture(
+            "dependency-track-findings.json"
+        ),
+        "/api/v1/vulnerability/project/project-1": [],
+    }
+    client._request_json = lambda path, params=None: payloads[path]  # type: ignore[method-assign]
+    original_finding = client.get_project_findings("project-1")[0]
+    changed_finding = replace(original_finding, **change)
+    snapshots = iter(([original_finding], [changed_finding], [changed_finding]))
+    poll_count = 0
+
+    def next_snapshot(project_uuid: str):
+        nonlocal poll_count
+        del project_uuid
+        poll_count += 1
+        return next(snapshots)
+
+    client.get_project_findings = next_snapshot  # type: ignore[method-assign]
+    monkeypatch.setattr(dependency_track_module.time, "sleep", lambda _: None)
+
+    findings = client.wait_for_analysis("project-1", timeout=10, poll_interval=0)
+
+    assert poll_count == 3
+    assert findings[0] == changed_finding
 
 
 def test_project_findings_include_suppressed_for_reconciliation() -> None:

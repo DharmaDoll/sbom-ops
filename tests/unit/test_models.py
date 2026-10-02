@@ -42,8 +42,11 @@ def test_finding_key_prefers_dependency_track_uuids() -> None:
         component_version="display-version",
         component_purl="pkg:generic/renamed@2",
     )
+    with_aliases = replace(base, vulnerability_aliases=("CVE-2026-9999",))
 
     assert base.finding_key() == renamed.finding_key()
+    assert base.finding_key() == with_aliases.finding_key()
+    assert base.legacy_finding_key() == with_aliases.legacy_finding_key()
     assert base.legacy_finding_key() != renamed.legacy_finding_key()
 
 

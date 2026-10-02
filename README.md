@@ -17,7 +17,15 @@ Dependency-Track analysis state automatically.
 - Reads projects, findings, EPSS, suppression, and analysis state from Dependency-Track
 - Uploads CycloneDX SBOMs to an existing Dependency-Track project as a CI helper
 - Enriches findings with the CISA KEV catalog
+- Retains per-Finding KEV matches in structured assessments
+- Reports when a stale KEV cache was used in the run summary
+- Reports whether the Finding snapshot stability check was not requested,
+  completed, or had no Projects to inspect
+- Includes Dependency-Track analyst notes in JSON assessments without treating
+  them as automated decisions
 - Calculates deterministic `P0` to `P3` priorities from configurable thresholds
+- Explains unavailable or below-threshold EPSS/CVSS inputs in `P3` rationale;
+  `P3` is the result of the configured rules, not a low-risk assertion
 - Produces action-neutral finding assessments before any GitHub write
 - Can run with GitHub Issue operations disabled via `--no-github`
 - Supports YAML config, environment overrides, project-to-repository routing, JSON output, and optional JSONL sync logs
@@ -122,7 +130,11 @@ sbom-ops sync \
 At this point you should be able to see the core idea without granting GitHub
 write access: Dependency-Track provides the inventory and analysis facts,
 sbom-ops calculates the operational priority, and the Issue step remains an
-explicit final action.
+explicit final action. JSON assessments include the Component UUID, PURL, name,
+and version where Dependency-Track provides them, alongside the vulnerability
+and priority fields. This preserves the inventory identity for downstream
+review; it does not claim that external CVE-level evidence applies to that
+Component.
 
 ## Enabling GitHub Issue Sync
 
