@@ -9,6 +9,11 @@ ADR status values:
 - `Accepted`: adopted as the current project direction
 - `Superseded`: replaced by a later ADR
 
+## Decisions
+
+- [0001: GCP Secure Delivery Runtime Selection](0001-gcp-secure-delivery-runtime.md) — Proposed
+- [0002: Advisory Evidence and Deployment Context Boundaries](0002-advisory-evidence-boundaries.md) — Accepted
+
 Infrastructure ADRs must include:
 
 - decision context

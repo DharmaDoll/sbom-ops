@@ -9,7 +9,7 @@ Concrete operational flows and acceptance conditions are defined in
 Dependency-Track is intentionally kept as an inventory platform.
 Workflow management belongs outside Dependency-Track.
 
-## External API Connections
+## Runtime Inputs and Connections
 
 ```text
 sbom-ops CLI
@@ -21,6 +21,11 @@ sbom-ops CLI
      │    └─ VEX / Analysis state
      │
      ├─ CISA KEV feed
+     │
+     ├─ reviewed asset inventory JSON (optional)
+     │    └─ Project → service / environment / owner / deployed version
+     │
+     ├─ advisory evidence JSON (optional)
      │
      └─ GitHub REST API
           └─ Issue作成・更新・クローズ
@@ -53,6 +58,16 @@ Stores
 - Vulnerabilities
 - Analysis
 - Policies
+
+---
+
+### Asset Context Layer
+
+A reviewed local snapshot connects a DT Project to its service, environment,
+owner, deployed version, exposure, and business criticality. It reports
+unmapped Projects and expired observations. These facts are scoped to a
+deployment and remain separate from per-Component Findings. The current
+priority engine and Issue routing do not consume them automatically.
 
 ---
 

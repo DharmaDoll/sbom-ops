@@ -44,6 +44,10 @@ Priority expresses work ordering; an SLA expresses a due date and escalation
 policy. They must remain separate domain concepts. Asset criticality, exposure,
 reachability, and compensating controls are future `PriorityContext` inputs and
 must not be inferred from CVSS alone.
+The optional reviewed asset inventory now displays criticality, deployment,
+owner, and exposure by Project and environment. It does not yet change P0–P3,
+Issue routing, or closure. The fictional scenario in the README makes this
+boundary visible before a real organizational policy is selected.
 
 The current P2 rule uses numeric CVSS, not the textual `HIGH` severity label.
 When Dependency-Track provides `HIGH` but no numeric CVSS, the current rule falls

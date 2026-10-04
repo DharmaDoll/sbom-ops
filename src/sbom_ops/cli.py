@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import replace
 from uuid import uuid4
 
 from sbom_ops.clients.dependency_track import (
@@ -13,6 +14,10 @@ from sbom_ops.clients.dependency_track import (
 from sbom_ops.clients.github import GitHubApiError
 from sbom_ops.clients.kev import KevApiError
 from sbom_ops.config import AppConfig, load_config
+from sbom_ops.domain.advisory import AdvisorySnapshotStatus
+from sbom_ops.domain.assets import AssetInventoryStatus
+from sbom_ops.services.advisory_snapshot import load_advisory_snapshot
+from sbom_ops.services.asset_inventory import load_asset_inventory
 from sbom_ops.services.orchestrator import Orchestrator
 from sbom_ops.services.sync_log import append_sync_event
 
@@ -27,6 +32,19 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument("--dry-run", action="store_true")
     sync_parser.add_argument("--log-level")
     sync_parser.add_argument("--wait-for-analysis", action="store_true")
+    sync_parser.add_argument(
+        "--refresh-kev",
+        action="store_true",
+        help="contact the CISA KEV feed even when the local cache is fresh",
+    )
+    sync_parser.add_argument(
+        "--advisory-snapshot",
+        help="attach a precomputed advisory evidence JSON snapshot (no fetching)",
+    )
+    sync_parser.add_argument(
+        "--asset-inventory",
+        help="attach a reviewed Project/service/environment inventory JSON file",
+    )
     sync_parser.add_argument(
         "--no-github", action="store_true", help="skip all GitHub Issue operations"
     )
@@ -88,9 +106,55 @@ def _append_sync_event_with_warning(path: str, payload: dict[str, object]) -> No
         )
 
 
-def run_sync(config: AppConfig, output_format: str = "text") -> int:
-    orchestrator = Orchestrator(config=config)
+def run_sync(
+    config: AppConfig,
+    output_format: str = "text",
+    *,
+    force_refresh_kev: bool = False,
+    advisory_snapshot_path: str | None = None,
+    asset_inventory_path: str | None = None,
+) -> int:
+    snapshot = None
+    snapshot_error = None
+    if advisory_snapshot_path:
+        try:
+            snapshot = load_advisory_snapshot(advisory_snapshot_path)
+        except (OSError, ValueError) as exc:
+            snapshot_error = str(exc)
+            print(
+                f"warning: advisory snapshot ignored: {snapshot_error}",
+                file=sys.stderr,
+            )
+    asset_inventory = None
+    asset_inventory_error = None
+    if asset_inventory_path:
+        try:
+            asset_inventory = load_asset_inventory(asset_inventory_path)
+        except (OSError, ValueError) as exc:
+            asset_inventory_error = str(exc)
+            print(
+                f"warning: asset inventory ignored: {asset_inventory_error}",
+                file=sys.stderr,
+            )
+    orchestrator_kwargs = {"force_refresh_kev": force_refresh_kev}
+    if snapshot is not None:
+        orchestrator_kwargs["advisory_snapshot"] = snapshot
+    if asset_inventory is not None:
+        orchestrator_kwargs["asset_inventory"] = asset_inventory
+    orchestrator = Orchestrator(config=config, **orchestrator_kwargs)
     result = orchestrator.run()
+    if snapshot_error is not None:
+        result = replace(
+            result,
+            advisory_snapshot_status=AdvisorySnapshotStatus.INVALID,
+            advisory_snapshot_error=snapshot_error,
+        )
+    if asset_inventory_error is not None:
+        result = replace(
+            result,
+            asset_inventory_status=AssetInventoryStatus.INVALID,
+            asset_inventory_error=asset_inventory_error,
+        )
     if config.runtime.sync_log_file:
         _append_sync_event_with_warning(config.runtime.sync_log_file, result.as_dict())
     if output_format == "json":
@@ -107,10 +171,19 @@ def run_sync(config: AppConfig, output_format: str = "text") -> int:
         f"closed={result.issues_closed} "
         f"kev_used_stale_cache={str(result.kev_used_stale_cache).lower()} "
         f"analysis_snapshot_status={result.analysis_snapshot_status.value} "
+        f"asset_inventory_status={result.asset_inventory_status.value} "
+        f"advisory_snapshot_status={result.advisory_snapshot_status.value} "
         f"dry_run={result.dry_run}"
     )
     for assessment in result.assessments:
         rationale = ", ".join(assessment.rationale)
+        advisory = (
+            ",".join(
+                f"{item.source}/{item.signal}:{item.outcome.value}"
+                for item in assessment.advisory_observations
+            )
+            or "none"
+        )
         component = assessment.component_name or "unknown"
         if assessment.component_version:
             component = f"{component}@{assessment.component_version}"
@@ -133,6 +206,7 @@ def run_sync(config: AppConfig, output_format: str = "text") -> int:
             f"severity={assessment.severity.value} cvss={cvss} "
             f"cvss_version={assessment.cvss_version or 'unavailable'} epss={epss} "
             f"in_kev={str(assessment.in_kev).lower()} "
+            f"advisory={advisory} "
             f"analysis={assessment.analysis_state.value} "
             f"suppressed={str(assessment.is_suppressed).lower()} "
             f"rationale={rationale}"
@@ -140,6 +214,30 @@ def run_sync(config: AppConfig, output_format: str = "text") -> int:
     for action in result.actions:
         prefix = "DRY-RUN " if config.runtime.dry_run else ""
         print(f"{prefix}{action}")
+    for exposure in result.project_exposure_observations:
+        print(
+            "project-exposure "
+            f"project={exposure.project_uuid} environment={exposure.environment} "
+            f"status={exposure.effective_status().value} source={exposure.source} "
+            f"expires_at={exposure.expires_at}"
+        )
+    for deployment in result.asset_deployments:
+        item = deployment.as_dict()
+        print(
+            "asset-deployment "
+            f"project={deployment.project_uuid} service={deployment.service_id} "
+            f"environment={deployment.environment} "
+            f"deployment={item['effective_deployment_status']} "
+            f"version={item['effective_deployed_version'] or 'unknown'} "
+            f"exposure={item['effective_exposure_status']} "
+            f"criticality={item['effective_criticality']} "
+            f"owner={item['effective_owner'] or 'unknown'} "
+            f"freshness={item['freshness']}"
+        )
+    for project_uuid in result.asset_unmapped_project_uuids:
+        print(f"asset-unmapped project={project_uuid}")
+    for project_uuid in result.asset_unmatched_project_uuids:
+        print(f"asset-unmatched project={project_uuid}")
     return 0
 
 
@@ -191,7 +289,13 @@ def main() -> int:
         if args.command == "plan":
             return run_plan(config)
         if args.command == "sync":
-            return run_sync(config, args.output)
+            return run_sync(
+                config,
+                args.output,
+                force_refresh_kev=args.refresh_kev,
+                advisory_snapshot_path=args.advisory_snapshot,
+                asset_inventory_path=args.asset_inventory,
+            )
         parser.error(f"unsupported command: {args.command}")
     except (
         DependencyTrackApiError,

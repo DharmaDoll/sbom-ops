@@ -11,7 +11,8 @@
 | --- | --- |
 | CI/CD | SBOM生成、SBOM更新、修正版の検証 |
 | Dependency-Track | SBOM、コンポーネント、脆弱性、EPSS、VEX/分析状態の管理 |
-| sbom-ops | Finding取得、KEV補完、優先度計算、Issue同期 |
+| 自社の資産台帳 | サービス、稼働環境、担当者、公開状況、事業上の重要度の根拠 |
+| sbom-ops | Finding取得、KEV補完、優先度計算、資産情報の照合、Issue同期 |
 | GitHub Issues | 開発タスク、担当者、対応状況、クローズ状態の管理 |
 | Security team | 優先度ポリシー、VEX/分析判断、例外承認 |
 | Developer | 修正、依存関係更新、CI通過 |
@@ -34,6 +35,30 @@ Dependency-Trackを横断してリスクを把握し、GitHub Issuesを対応状
 Dependency-Trackは技術的なインベントリとFindingの一元管理を担い、
 sbom-opsは複数プロジェクトのFindingを同じルールで処理する。GitHubは
 Security teamと開発チームが対応を追跡するための作業管理面とする。
+
+## フロー0: Findingを自社の仕事に結び付ける
+
+### 起点
+
+SBOMからFindingが出ても、それだけでは「どのサービスの、どの環境で、
+誰が対応するか」は分からない。まずDT Project UUIDを、確認済みの
+サービス・環境・担当者の情報と照合する。
+
+### 現在の手順
+
+1. 資産台帳または担当者が確認した内容から、版付きの資産JSONを用意する。
+2. `sync --asset-inventory PATH --dry-run --no-github`でDTのProjectと照合する。
+3. 対応付けのないProject、DTに見つからない資産記録、期限切れの記録を確認する。
+4. 同じCVEが複数環境に存在する場合も、環境ごとの稼働・公開状況を別に表示する。
+5. Security teamが実際の担当者、稼働版、情報源と更新期限を確認する。
+
+架空の一連の動作は、`examples/asset-scenario-dt.example.json`と
+`examples/asset-inventory.example.json`を入力にして、認証情報なしで
+`python examples/asset_scenario.py`を実行すると確認できる。前者は実際のDT API応答ではなく、
+オフライン検証用に整えた架空データである。本番公開、
+開発環境、期限切れ、対応付けなしの4ケースを扱う。現時点で資産情報は
+優先度やIssueの宛先を自動変更しない。架空テストは照合ロジックを
+確認するものであり、自社の台帳が正しいことの証明にはならない。
 
 ## フロー1: 通常の定期同期
 

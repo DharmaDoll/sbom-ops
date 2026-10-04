@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import sqlite3
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from email.utils import format_datetime
 from io import BytesIO
@@ -44,6 +49,17 @@ class FakeEmptyResponse(FakeResponse):
 
     def read(self) -> bytes:
         return b""
+
+
+def _hold_kev_sqlite_lock(lock_path: str, ready, release) -> None:
+    connection = sqlite3.connect(lock_path, timeout=5, isolation_level=None)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        ready.set()
+        release.wait(timeout=5)
+        connection.execute("ROLLBACK")
+    finally:
+        connection.close()
 
 
 def test_http_json_response_includes_status_headers_and_duration() -> None:
@@ -333,6 +349,169 @@ def test_kev_client_uses_fresh_cache_without_fetching(monkeypatch, tmp_path) -> 
     ).get_known_exploited_vulnerabilities()
 
     assert result == {"CVE-CACHED"}
+
+
+def test_kev_client_writes_versioned_integrity_metadata(monkeypatch, tmp_path) -> None:
+    cache = tmp_path / "kev.json"
+    calls = 0
+    monkeypatch.setattr(kev_module.time, "time", lambda: 4_000_000_000)
+
+    def feed(request, timeout):
+        nonlocal calls
+        calls += 1
+        return FakeResponse(
+            {"vulnerabilities": [{"cveID": "CVE-2026-0001"}]},
+            headers={"ETag": "etag-1"},
+        )
+
+    monkeypatch.setattr(kev_module, "urlopen", feed)
+
+    result = KevClient(
+        "https://cisa.example/feed",
+        cache_path=str(cache),
+    ).get_known_exploited_vulnerabilities()
+    record = json.loads(cache.read_text(encoding="utf-8"))
+
+    assert result == {"CVE-2026-0001"}
+    assert record["schema_version"] == 1
+    assert len(record["sha256"]) == 64
+    assert record["metadata"] == {"etag": "etag-1"}
+    assert (
+        KevClient(
+            "https://cisa.example/feed",
+            cache_path=str(cache),
+        ).get_known_exploited_vulnerabilities()
+        == result
+    )
+    assert calls == 1
+
+
+def test_kev_client_rejects_cache_with_invalid_integrity_digest(
+    monkeypatch, tmp_path
+) -> None:
+    cache = tmp_path / "kev.json"
+    client = KevClient(
+        "https://cisa.example/feed",
+        cache_path=str(cache),
+        cache_ttl_seconds=60,
+        allow_stale_cache=True,
+    )
+    monkeypatch.setattr(kev_module.time, "time", lambda: 4_000_000_000)
+    client._write_cache({"CVE-ORIGINAL"})
+    record = json.loads(cache.read_text(encoding="utf-8"))
+    record["cve_ids"] = ["CVE-TAMPERED"]
+    cache.write_text(json.dumps(record), encoding="utf-8")
+    monkeypatch.setattr(kev_module.time, "time", lambda: 4_000_000_001)
+    monkeypatch.setattr(
+        kev_module,
+        "request_json",
+        lambda *args, **kwargs: (_ for _ in ()).throw(HttpApiError("down")),
+    )
+
+    with pytest.raises(kev_module.KevApiError):
+        client.get_known_exploited_vulnerabilities()
+
+    assert client.used_stale_cache is False
+
+
+def test_concurrent_kev_clients_share_one_refresh(monkeypatch, tmp_path) -> None:
+    cache = tmp_path / "kev.json"
+    barrier = threading.Barrier(3)
+    calls = 0
+
+    def fetch(request, **kwargs):
+        nonlocal calls
+        calls += 1
+        time.sleep(0.05)
+        return {"vulnerabilities": [{"cveID": "CVE-REFRESHED"}]}, {"ETag": "v1"}
+
+    monkeypatch.setattr(kev_module, "request_json", fetch)
+
+    def run_client() -> set[str]:
+        client = KevClient(
+            "https://cisa.example/feed",
+            cache_path=str(cache),
+            cache_ttl_seconds=60,
+        )
+        barrier.wait(timeout=5)
+        return client.get_known_exploited_vulnerabilities()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(run_client)
+        second = executor.submit(run_client)
+        barrier.wait(timeout=5)
+        assert first.result(timeout=5) == {"CVE-REFRESHED"}
+        assert second.result(timeout=5) == {"CVE-REFRESHED"}
+
+    assert calls == 1
+
+
+def test_kev_cache_lock_timeout_fails_closed(monkeypatch, tmp_path) -> None:
+    cache = tmp_path / "kev.json"
+    lock_path = tmp_path / "kev.json.lock.sqlite3"
+    monkeypatch.setattr(kev_module, "request_json", lambda *args, **kwargs: None)
+    client = KevClient(
+        "https://cisa.example/feed",
+        cache_path=str(cache),
+        cache_lock_timeout_seconds=0.01,
+    )
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    release = context.Event()
+    process = context.Process(
+        target=_hold_kev_sqlite_lock,
+        args=(str(lock_path), ready, release),
+    )
+    process.start()
+    try:
+        assert ready.wait(timeout=5)
+        with pytest.raises(kev_module.KevApiError, match="cache lock timed out"):
+            client.get_known_exploited_vulnerabilities()
+    finally:
+        release.set()
+        process.join(timeout=5)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+    assert process.exitcode == 0
+
+
+def test_kev_client_force_refresh_checks_feed_even_with_fresh_cache(
+    monkeypatch, tmp_path
+) -> None:
+    cache = tmp_path / "kev.json"
+    cache.write_text(
+        json.dumps(
+            {
+                "fetched_at": 4_000_000_000,
+                "cve_ids": ["CVE-CACHED"],
+                "metadata": {"etag": "etag-cached"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(kev_module.time, "time", lambda: 4_000_000_001)
+    captured = {}
+
+    def fetch(request, **kwargs):
+        captured["request"] = request
+        captured["kwargs"] = kwargs
+        return {"vulnerabilities": [{"cveID": "CVE-REFRESHED"}]}, {
+            "ETag": "etag-refreshed"
+        }
+
+    monkeypatch.setattr(kev_module, "request_json", fetch)
+
+    result = KevClient(
+        "https://cisa.example/feed",
+        cache_path=str(cache),
+        cache_ttl_seconds=60,
+    ).get_known_exploited_vulnerabilities(force_refresh=True)
+
+    request = captured["request"]
+    assert result == {"CVE-REFRESHED"}
+    assert request.get_header("If-none-match") == "etag-cached"
+    assert captured["kwargs"]["allow_not_modified"] is True
 
 
 def test_kev_client_can_use_stale_cache_only_when_enabled(

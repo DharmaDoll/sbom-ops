@@ -269,6 +269,22 @@ Notes:
   variables override file values, and CLI flags override both.
 - `SBOM_OPS_CONFIG_FILE` selects the YAML file when `--config` is not provided.
 - Unknown sections and keys are rejected to prevent silent configuration typos.
+- `sync --refresh-kev` must contact the configured KEV feed even when the local
+  cache is within its TTL. Existing ETag/Last-Modified validators may confirm
+  that cached content is unchanged. If refresh fails, stale-cache use remains
+  opt-in and must be disclosed by `kev_used_stale_cache` in the result.
+- New KEV cache records use schema version 1 and a SHA-256 checksum over the
+  timestamp, sorted CVE identifiers, and HTTP validators. Invalid checksums or
+  malformed versioned records are cache misses and must never be used as stale
+  fallback. Structurally valid legacy records without a version/checksum remain
+  readable for compatibility and are replaced by the versioned format after a
+  successful refresh. This checksum detects accidental corruption; it is not an
+  authenticity mechanism against an actor able to rewrite the cache.
+- Cache reads and refreshes sharing a cache path are serialized across processes
+  with a local SQLite lock file. The lock is released by the operating system if
+  the process exits; lock acquisition is bounded based on configured request
+  timeout/retry limits. Lock errors fail the sync rather than permit concurrent
+  access to a potentially partial cache. Use a local filesystem for this cache.
 
 ## Domain Model
 
@@ -426,6 +442,93 @@ Notes:
   substituted for a numeric score. This explains the configured rule result; it
   must not describe `P3` as evidence of low risk or alter the priority policy.
 
+## Asset Inventory Context
+
+`sync --asset-inventory PATH` accepts a reviewed, precomputed JSON file. DT
+remains authoritative for SBOM inventory; the file supplies organizational
+deployment facts that DT cannot infer from packages. The product does not
+contact a CMDB or deployment platform for this input.
+
+The v1 file has integer `schema_version: 1`, `snapshot_id`, timezone-aware
+`generated_at`, and a `deployments` array. It is limited to 1 MiB and 2,000
+deployments. Each deployment has:
+
+- exact DT `project_uuid`, `service_id`, and `environment`
+- nullable `owner` and `deployed_version`; required `deployment_status`
+  (`deployed`, `not_deployed`, `unknown`), `exposure_status` (`confirmed`,
+  `rejected`, `unknown`, `conflict`), and `criticality` (`critical`, `high`,
+  `standard`, `unknown`)
+- `source`, timezone-aware `observed_at` and `expires_at`, and optional
+  `reviewer`; expiry must be after observation
+
+The same Project may have multiple services or environments. A duplicate
+Project/service/environment entry and unknown fields are rejected. The run
+result reports the file's declared timestamp and SHA-256 digest, selected
+Project deployments, selected DT Projects without a mapping, and inventory
+Project UUIDs not returned by DT. The digest identifies the input bytes, not
+their trustworthiness. An invalid optional file emits a warning and the core
+sync continues with `asset_inventory_status=invalid`.
+
+Expired entries retain their reported values for audit but have effective
+owner and deployed version `null`, and effective deployment, exposure, and
+criticality `unknown`. A `not_deployed` record cannot claim a deployed version.
+The declared version is not yet checked against DT Project version or CI
+deployment evidence; the Project UUID join only checks that DT returned it.
+These facts are scoped to Project/service/environment, not to a particular
+Component or Finding. They do not automatically change priority, DT Analysis,
+Issue routing, or Issue state. If an advisory snapshot also supplies Project
+exposure, both observations remain separate; the product does not silently
+choose one. Real asset mappings and owner assignments need review before any
+policy or workflow change.
+
+## Advisory Evidence and Deployment Context
+
+The accepted boundary is recorded in
+[`ADR 0002`](docs/adr/0002-advisory-evidence-boundaries.md). Product sync now
+accepts a bounded, precomputed v1 JSON snapshot via `--advisory-snapshot`; it
+does not acquire provider data itself. See
+[`examples/advisory-snapshot.example.json`](examples/advisory-snapshot.example.json)
+for the full shape.
+
+- Exploit/public-reference observations remain source-attributed and preserve
+  `available`, `not_observed`, and `unknown`, source time/revision/freshness,
+  total and retained counts, completeness, and upstream record metadata.
+- Published PoC references, exploitation reports, scanner templates, Component
+  applicability, vulnerable-code reachability, and internet exposure are
+  separate dimensions. No source-native flag becomes an sbom-ops verdict.
+- Internet exposure is scoped to a Project/deployment environment and requires
+  provenance, observation time, and expiry. Missing or stale context is
+  `unknown`; contradictory current observations are `conflict`.
+- A CVE-level record may be shown beside a Finding only through its primary CVE
+  ID or an explicit Dependency-Track alias. It does not prove that the Component
+  is affected or deployed in the exposed environment.
+- Evidence remains advisory: it cannot alter priority, Dependency-Track
+  Analysis/VEX, suppression, Issue state, or remediation workflow.
+- Optional acquisition failure must not block the core Dependency-Track sync.
+  Product code must not import or execute the lab package.
+- `schema_version` must be integer `1`; the document has `snapshot_id`,
+  timezone-aware `generated_at`, `vulnerability_observations`, and
+  `project_exposure` arrays. The file is limited to 5 MiB, each top-level
+  observation array to 10,000 records, and each vulnerability record retains
+  at most 20 references. Each vulnerability observation identifies a
+  vulnerability, source, signal, outcome (`available`, `not_observed`, or
+  `unknown`), timezone-aware observation time, freshness, nullable total count,
+  completeness, and at most 20 HTTP(S) references. `not_observed` is valid only
+  for complete observations with zero records and no references; partial or
+  failed lookups must remain `unknown`. Duplicate source/signal observations
+  for one vulnerability are rejected.
+- Exposure records require Project UUID, environment, status, source,
+  timezone-aware observation and expiry times; expiry must follow observation.
+  Expired records retain reported status but have effective status `unknown`.
+- Invalid or unreadable optional snapshots emit a warning and sync continues;
+  the result reports `advisory_snapshot_status=invalid`. The loader never
+  dereferences reference URLs. Evidence is attached only by exact,
+  case-insensitive primary ID/explicit alias matching. Project exposure is
+  displayed separately and is not inferred to apply to individual Components.
+- When a snapshot loads, the run result records its declared `generated_at` and
+  SHA-256 of the exact input bytes, alongside `snapshot_id`, for later review.
+  The digest identifies bytes; it does not prove who created or approved them.
+
 ## Workflow Rules
 
 ### Dependency-Track analysis and VEX
@@ -495,6 +598,11 @@ is explicitly enabled, the orchestrator may close an issue only when:
 
 The first verified absence records `MISSING` in issue metadata and keeps the
 issue open. An unverified or failed read is `UNKNOWN`, not `RESOLVED`.
+Only a prior issue observation with exactly one `MISSING` state marker and one
+valid missing counter below the configured threshold can advance the counter.
+A counter without that state, conflicting markers, or an out-of-range counter
+starts a new confirmation sequence. When a Finding reappears, the issue's
+observation returns to `ACTIVE` and its missing counter is removed.
 
 ### Analysis state
 
@@ -633,8 +741,9 @@ Failure of this optional sink must not replace the primary sync result, but must
 be reported on stderr without corrupting machine-readable stdout.
 
 The JSON result and optional JSONL sync log include Dependency-Track
-`analysis_detail` values verbatim. Treat these human-authored notes as
-operationally sensitive and apply appropriate access and retention controls.
+`analysis_detail` values and supplied asset owners verbatim. Treat these
+human-authored and organizational details as operationally sensitive and apply
+appropriate access and retention controls.
 
 Each run should log:
 

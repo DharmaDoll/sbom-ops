@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "reviewed-capture-2026-10-03",
+  "generated_at": "2026-10-03T00:00:00Z",
+  "vulnerability_observations": [
+    {
+      "vulnerability_id": "CVE-2026-1234",
+      "source": "vulnerability-lookup",
+      "signal": "exploit_reference",
+      "outcome": "available",
+      "observed_at": "2026-10-03T00:00:00Z",
+      "source_revision": "provider-revision-or-null",
+      "freshness": "fresh",
+      "record_count": 1,
+      "complete": true,
+      "references": [
+        {
+          "record_id": "provider-record-id",
+          "url": "https://example.invalid/advisory",
+          "provider": "Example Provider",
+          "kind": "poc_reference",
+          "upstream_type": "proof-of-concept",
+          "upstream_assertions": ["public"]
+        }
+      ]
+    },
+    {
+      "vulnerability_id": "CVE-2026-1234",
+      "source": "scanner-x",
+      "signal": "reachability",
+      "outcome": "unknown",
+      "observed_at": "2026-10-03T00:00:00Z",
+      "source_revision": null,
+      "freshness": "unknown",
+      "record_count": null,
+      "complete": false,
+      "references": []
+    }
+  ],
+  "project_exposure": [
+    {
+      "project_uuid": "replace-with-accessible-dt-project-uuid",
+      "environment": "production",
+      "status": "confirmed",
+      "source": "reviewed-deployment-inventory",
+      "observed_at": "2026-10-03T00:00:00Z",
+      "expires_at": "2026-10-10T00:00:00Z",
+      "reviewer": "security@example.invalid"
+    }
+  ]
+}

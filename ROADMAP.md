@@ -17,6 +17,10 @@ The repository has a working MVP with:
 
 - Dependency-Track project, Finding, EPSS, Analysis state, and SBOM upload clients
 - deterministic KEV/EPSS/CVSS priority calculation
+- `sync --refresh-kev` bypasses a fresh local KEV cache and conditionally checks
+  CISA; stale fallback remains opt-in and visible in the result
+- KEV cache reads/refreshes are serialized across processes by a bounded local
+  SQLite lock; lock contention fails closed after a timeout
 - action-neutral assessments before optional GitHub Issue synchronization
 - assessments and priority rationale identify which CVSS version supplied the
   selected score; the DT 4.14.3 `cvssV4Score` response field is now consumed
@@ -96,6 +100,13 @@ The repository has a working MVP with:
   once, caps retained examples without losing counts, and measured 55 of 151
   CVEs with public references while leaving applicability explicitly unreviewed
 - a proposed GCP runtime ADR and static Terraform evaluation harness
+- an accepted, source-neutral advisory-evidence boundary in
+  [`ADR 0002`](docs/adr/0002-advisory-evidence-boundaries.md); the production
+  sync handoff now accepts bounded precomputed v1 JSON with explicit-ID
+  joining, separately scoped expiring Project/environment exposure, and
+  snapshot timestamp/digest in results; live source acquisition,
+  schema-version evolution, and deployment-inventory integration remain
+  deferred
 
 ## Work tracking and decision records
 
@@ -123,10 +134,42 @@ They apply to the tested DT environment; upgrades require revalidation.
 | DT ledger, 2026-08-27: NVD Findings exposed EPSS; GitHub/OSV records were absent | Reuse DT EPSS. Missing Findings do not establish source coverage or absence of vulnerabilities. | Verify enabled datasource coverage before comparing ecosystems. |
 | DT ledger, 2026-09-03: creation-only upload did not update existing tags; properties returned 403 to the read key | Retain YAML routing; defer migration to DT metadata. | Validate real Project-to-repository mappings without expanding upload permissions. |
 | DT ledger, 2026-09-25/26: Component-scoped VEX affected one Component; Project scope affected matching Findings within that Project, while identical Findings in a second Project stayed unchanged | Keep DT as VEX/Analysis authority; bind approval to target Project and scope. Never widen a Component review to Project scope. | Phase 2 must present the complete target-Project Finding diff and require explicit approval when VEX scope is Project-wide. |
-| Exploit ledger, 2026-09-06 and 2026-09-27/28: 25-CVE comparison had no unique Sighting-covered CVE; Trickest references include duplicates/incidental matches. In the refreshed snapshot, one new GitHub record explicitly reports a negative research result. Vuls's latest GHCR inTheWild raw artifact was republished Sep 28 but still points to its Apr 21 commit; the extracted commit remains Apr 23. One Log4Shell sample has source-native labels `exploit` (213) and `exploitation` (3); five Metasploit modules split into four `exploit` and one `auxiliary`. The lab preserves these provider fields, the inTheWild source label, and Nuclei's template ID plus nullable `verified` assertion (23 true, 21 missing in this sample). Its Vuls runner also emits per-source `available`/`not_observed`/`unknown` status and total/retained counts. Four GitHub associations were added and one removed since Sep 4; bounded page review found a self-described controlled reproduction lab, advisory-triage documentation, and two inaccessible pages. The upstream README claims hourly updates, but a fresh export request also timed out after 20 seconds; raw GitHub API returned 404. | Defer a production PoC flag and automatic source confidence. Keep source provenance, URL identity, provider classification, content type, per-datasource artifact revision, applicability, and exploitation separate; provider labels and controlled reproduction claims are not independent verification. AI-assisted inspection remains provisional and never a human review label. | Keep `unreviewed` labels and retry a small upstream comparison only when its export is reachable. Extend metadata only for schema-demonstrated fields. A lab-only advisory presentation contract is documented in `lab/exploit_intelligence/README.md`; obtain a product ADR/SPEC decision before adopting a production DTO, display rule, or priority behavior. |
+| Exploit ledger, 2026-09-06 and 2026-09-27/28: CVE-level public references are noisy, source-specific, sometimes stale, and often unrelated to an executable PoC; provider flags are assertions, not sbom-ops verdicts. | Keep source provenance, reference kind, freshness, applicability, exploitation, and exposure separate. No `has_poc` or source-confidence score; no automatic priority or Analysis change. | [ADR 0002](docs/adr/0002-advisory-evidence-boundaries.md), the product's optional snapshot input, and a lab-only offline exporter implement the bounded handoff. A 25-CVE/149-record retained real-SBOM sample passed product snapshot loading with 19 `available`, 6 `not_observed`, and explicit `unknown` freshness because no source-age rule is established. The product dry-run below verified the Finding join; live acquisition and deployment-inventory integration remain deferred. |
 
-Prioritize the closure/inventory boundary and datasource coverage over additional
-lab workflow machinery. Human-review tooling is sufficient for an initial
+Current execution focus (2026-10-04): exploratory lab work is paused. A
+read-only product dry-run against the current local DT inventory processed 27
+Projects and 1,750 Findings both with and without the retained advisory
+snapshot. The snapshot attached to 49 Findings (25 vulnerability IDs across
+three Projects); all 1,750 non-advisory assessments, priorities, and action
+counts were identical. Both runs used `--dry-run --no-github` and produced zero
+Issue actions. A separate `--wait-for-analysis` run reached `stable` for one
+Project with 644 Findings and 21 advisory matches. The original sample's
+Project UUIDs are no longer accessible, so this validates the current product
+join, not a rerun of those exact Project snapshots. Local output remains under
+ignored `var/product-validation-20261004/`. The product closure rule now
+requires a consistent prior `MISSING` state and count; a counter alone or
+conflicting markers restart confirmation, and reappearing Findings clear stale
+missing state. Issue-enabled dry-run and live GitHub closure remain the final integration
+validation. Resume a targeted lab experiment only when a concrete product
+decision cannot be made from recorded evidence.
+
+Asset context is now the first product workstream (user direction,
+2026-10-04). The optional v1 `--asset-inventory` input and offline fictional
+scenario show Project/service/environment, owner, deployment, exposure,
+deployed version, criticality, expiry, and mapping gaps without changing
+priority or Issues.
+An additional read-only product run attached a clearly fictional asset record
+to one existing DT Project with 644 Findings; the record matched, all 644
+non-advisory Finding assessments matched the earlier run, and Issue actions
+remained zero. The synthetic input and result are ignored under
+`var/product-validation-20261004/`; they establish join behavior, not real
+ownership or exposure.
+Next validate a small reviewed mapping from real organizational inventory,
+including deployed version and ownership, then design any priority or routing
+policy with human review. Missing datasource visibility follows this work.
+
+Prioritize asset mapping and datasource coverage over additional lab workflow
+machinery. Human-review tooling is sufficient for an initial
 sample; escalation, additional adjudication machinery, NFS testing, and power
 loss experiments are deferred until an actual deployment or review need exists.
 Do not require those storage experiments before a bounded local enrichment run.
@@ -134,8 +177,9 @@ A larger public sample needs a stated coverage/freshness question and request
 budget, rather than a goal of completing all 151 CVEs.
 
 GitHub synchronization is the final, low-priority validation step (user direction,
-2026-09-11). First complete datasource visibility, representative real-SBOM
-assessment, inventory/closure boundary tests, and bounded enrichment evaluation.
+2026-09-11). First complete reviewed asset mapping, datasource visibility,
+representative real-SBOM assessment, inventory/closure boundary tests, and
+bounded enrichment evaluation.
 Keep GitHub disabled during these runs. Validate Issue routing, GitHub-enabled
 dry-run, and live create/update/closure only after those product decisions are
 reviewed; GitHub integration is not a prerequisite for lab progress.
@@ -290,10 +334,18 @@ The runtime decision and PoC gates are in
 
 ## Phase 1: Operations Foundation (P1)
 
+- Validate the Project/service/environment/owner/deployment join using a small
+  reviewed organizational inventory. The optional v1 asset input and fictional
+  offline scenario are implemented; real mappings, deployed-version evidence,
+  source update cadence, and review ownership remain to be established. Keep
+  asset criticality and exposure visible without changing priority or Issues
+  until a separate policy decision is reviewed.
 - Move local JSONL sync records to a queryable operational store.
 - Record an audit history for Finding, priority, Analysis, and Issue changes.
-- Add KEV forced refresh, cache integrity metadata, concurrent refresh locking,
-  freshness monitoring, and synchronization failure alerts.
+- Add freshness monitoring and synchronization failure alerts. Explicit
+  `--refresh-kev`, schema-v1 SHA-256 cache integrity, and bounded cross-process
+  refresh locking are implemented; valid legacy caches remain readable and are
+  upgraded on the next successful refresh.
 - Add a remediation policy model that keeps priority separate from SLA dates.
 - Extend `PriorityContext` with asset criticality, exposure, reachability, and
   compensating controls without allowing them to mutate priority implicitly.

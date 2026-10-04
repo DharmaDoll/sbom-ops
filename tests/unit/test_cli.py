@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 from sbom_ops import cli
@@ -16,8 +17,18 @@ from sbom_ops.services.orchestrator import RunResult
 
 
 class FakeOrchestrator:
-    def __init__(self, config):
+    def __init__(
+        self,
+        config,
+        *,
+        force_refresh_kev=False,
+        advisory_snapshot=None,
+        asset_inventory=None,
+    ):
         self.config = config
+        self.force_refresh_kev = force_refresh_kev
+        self.advisory_snapshot = advisory_snapshot
+        self.asset_inventory = asset_inventory
 
     def run(self) -> RunResult:
         return RunResult(
@@ -90,6 +101,97 @@ def test_sync_log_success_does_not_emit_warning(monkeypatch, capsys) -> None:
     assert captured.err == ""
 
 
+def test_sync_passes_force_kev_refresh_to_orchestrator(monkeypatch, capsys) -> None:
+    captured = {}
+
+    class CapturingOrchestrator(FakeOrchestrator):
+        def __init__(self, config, *, force_refresh_kev=False):
+            super().__init__(config, force_refresh_kev=force_refresh_kev)
+            captured["force_refresh_kev"] = self.force_refresh_kev
+
+    config = SimpleNamespace(runtime=SimpleNamespace(sync_log_file=None))
+    monkeypatch.setattr(cli, "Orchestrator", CapturingOrchestrator)
+
+    assert cli.run_sync(config, "json", force_refresh_kev=True) == 0
+
+    assert captured["force_refresh_kev"] is True
+    assert json.loads(capsys.readouterr().out)["status"] == "succeeded"
+
+
+def test_sync_parser_exposes_force_kev_refresh_flag() -> None:
+    args = cli.build_parser().parse_args(["sync", "--refresh-kev"])
+
+    assert args.refresh_kev is True
+
+
+def test_sync_parser_exposes_advisory_snapshot_input() -> None:
+    args = cli.build_parser().parse_args(
+        ["sync", "--advisory-snapshot", "snapshot.json"]
+    )
+
+    assert args.advisory_snapshot == "snapshot.json"
+
+
+def test_sync_parser_exposes_asset_inventory_input() -> None:
+    args = cli.build_parser().parse_args(["sync", "--asset-inventory", "assets.json"])
+
+    assert args.asset_inventory == "assets.json"
+
+
+def test_sync_passes_asset_inventory_to_orchestrator(monkeypatch, capsys) -> None:
+    captured = {}
+
+    class CapturingOrchestrator(FakeOrchestrator):
+        def __init__(self, config, *, force_refresh_kev=False, asset_inventory=None):
+            super().__init__(
+                config,
+                force_refresh_kev=force_refresh_kev,
+                asset_inventory=asset_inventory,
+            )
+            captured["inventory"] = asset_inventory
+
+    config = SimpleNamespace(runtime=SimpleNamespace(sync_log_file=None))
+    path = Path(__file__).parents[2] / "examples" / "asset-inventory.example.json"
+    monkeypatch.setattr(cli, "Orchestrator", CapturingOrchestrator)
+
+    assert cli.run_sync(config, "json", asset_inventory_path=str(path)) == 0
+
+    assert captured["inventory"].snapshot_id == "synthetic-asset-scenario-v1"
+    assert json.loads(capsys.readouterr().out)["status"] == "succeeded"
+
+
+def test_invalid_asset_inventory_does_not_block_sync(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "invalid.json"
+    path.write_text("not-json", encoding="utf-8")
+    config = SimpleNamespace(runtime=SimpleNamespace(sync_log_file=None))
+    monkeypatch.setattr(cli, "Orchestrator", FakeOrchestrator)
+
+    assert cli.run_sync(config, "json", asset_inventory_path=str(path)) == 0
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["status"] == "succeeded"
+    assert payload["asset_inventory_status"] == "invalid"
+    assert "invalid asset inventory JSON" in payload["asset_inventory_error"]
+    assert "warning: asset inventory ignored" in captured.err
+
+
+def test_invalid_advisory_snapshot_does_not_block_sync(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "invalid.json"
+    path.write_text("not-json", encoding="utf-8")
+    config = SimpleNamespace(runtime=SimpleNamespace(sync_log_file=None))
+    monkeypatch.setattr(cli, "Orchestrator", FakeOrchestrator)
+
+    assert cli.run_sync(config, "json", advisory_snapshot_path=str(path)) == 0
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["status"] == "succeeded"
+    assert payload["advisory_snapshot_status"] == "invalid"
+    assert "invalid advisory snapshot JSON" in payload["advisory_snapshot_error"]
+    assert "warning: advisory snapshot ignored" in captured.err
+
+
 def test_text_result_makes_missing_scores_explicit(monkeypatch, capsys) -> None:
     config = SimpleNamespace(runtime=SimpleNamespace(sync_log_file=None))
     monkeypatch.setattr(cli, "Orchestrator", FakeOrchestrator)
@@ -102,7 +204,7 @@ def test_text_result_makes_missing_scores_explicit(monkeypatch, capsys) -> None:
         "component=example@1.2.3 purl=pkg:pypi/example@1.2.3 "
         "source=GITHUB dt_aliases=CVE-2026-1001 severity=HIGH "
         "cvss=unavailable cvss_version=unavailable epss=unavailable "
-        "in_kev=false analysis=NOT_SET suppressed=false "
+        "in_kev=false advisory=none analysis=NOT_SET suppressed=false "
         "rationale=Default monitoring priority" in captured.out
     )
 

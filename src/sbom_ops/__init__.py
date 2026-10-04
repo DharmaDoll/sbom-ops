@@ -1,2 +1,1 @@
 """sbom_ops package."""
-

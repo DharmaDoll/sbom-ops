@@ -14,6 +14,16 @@ from sbom_ops.clients.dependency_track import (
 from sbom_ops.clients.github import GitHubIssuesClient
 from sbom_ops.clients.kev import KevClient
 from sbom_ops.config import AppConfig
+from sbom_ops.domain.advisory import (
+    AdvisorySnapshot,
+    AdvisorySnapshotStatus,
+    ProjectExposureObservation,
+)
+from sbom_ops.domain.assets import (
+    AssetDeployment,
+    AssetInventorySnapshot,
+    AssetInventoryStatus,
+)
 from sbom_ops.domain.models import (
     AnalysisSnapshotStatus,
     AnalysisState,
@@ -42,7 +52,9 @@ class DependencyTrackClientProtocol(Protocol):
 
 
 class KevClientProtocol(Protocol):
-    def get_known_exploited_vulnerabilities(self) -> set[str]: ...
+    def get_known_exploited_vulnerabilities(
+        self, *, force_refresh: bool = False
+    ) -> set[str]: ...
 
 
 class ProjectSelectionError(ValueError):
@@ -91,6 +103,22 @@ class RunResult:
     analysis_snapshot_status: AnalysisSnapshotStatus = (
         AnalysisSnapshotStatus.NOT_REQUESTED
     )
+    asset_inventory_status: AssetInventoryStatus = AssetInventoryStatus.NOT_REQUESTED
+    asset_inventory_id: str | None = None
+    asset_inventory_generated_at: str | None = None
+    asset_inventory_sha256: str | None = None
+    asset_inventory_error: str | None = None
+    asset_deployments: tuple[AssetDeployment, ...] = ()
+    asset_unmapped_project_uuids: tuple[str, ...] = ()
+    asset_unmatched_project_uuids: tuple[str, ...] = ()
+    advisory_snapshot_status: AdvisorySnapshotStatus = (
+        AdvisorySnapshotStatus.NOT_REQUESTED
+    )
+    advisory_snapshot_id: str | None = None
+    advisory_snapshot_generated_at: str | None = None
+    advisory_snapshot_sha256: str | None = None
+    advisory_snapshot_error: str | None = None
+    project_exposure_observations: tuple[ProjectExposureObservation, ...] = ()
     actions: tuple[str, ...] = ()
     assessments: tuple[FindingAssessment, ...] = ()
 
@@ -108,6 +136,23 @@ class RunResult:
             "issues_closed": self.issues_closed,
             "dry_run": self.dry_run,
             "analysis_snapshot_status": self.analysis_snapshot_status.value,
+            "asset_inventory_status": self.asset_inventory_status.value,
+            "asset_inventory_id": self.asset_inventory_id,
+            "asset_inventory_generated_at": self.asset_inventory_generated_at,
+            "asset_inventory_sha256": self.asset_inventory_sha256,
+            "asset_inventory_error": self.asset_inventory_error,
+            "asset_deployments": [item.as_dict() for item in self.asset_deployments],
+            "asset_unmapped_project_uuids": list(self.asset_unmapped_project_uuids),
+            "asset_unmatched_project_uuids": list(self.asset_unmatched_project_uuids),
+            "advisory_snapshot_status": self.advisory_snapshot_status.value,
+            "advisory_snapshot_id": self.advisory_snapshot_id,
+            "advisory_snapshot_generated_at": self.advisory_snapshot_generated_at,
+            "advisory_snapshot_sha256": self.advisory_snapshot_sha256,
+            "advisory_snapshot_error": self.advisory_snapshot_error,
+            "project_exposure_observations": [
+                observation.as_dict()
+                for observation in self.project_exposure_observations
+            ],
             "actions": list(self.actions),
             "assessments": [
                 {
@@ -129,6 +174,10 @@ class RunResult:
                     "is_suppressed": item.is_suppressed,
                     "analysis_detail": item.analysis_detail,
                     "in_kev": item.in_kev,
+                    "advisory_observations": [
+                        observation.as_dict()
+                        for observation in item.advisory_observations
+                    ],
                     "rationale": list(item.rationale),
                 }
                 for item in self.assessments
@@ -137,8 +186,8 @@ class RunResult:
 
 
 _FINDING_KEY_PATTERN = re.compile(r"<!-- sbom-ops:finding-key=(.*?) -->")
-_MISSING_COUNT_PATTERN = re.compile(r"<!-- sbom-ops:missing-count=(\d+) -->")
-_FINDING_STATE_PATTERN = re.compile(r"<!-- sbom-ops:finding-state=(\w+) -->")
+_MISSING_COUNT_PATTERN = re.compile(r"<!-- sbom-ops:missing-count=([^<>\n]*) -->")
+_FINDING_STATE_PATTERN = re.compile(r"<!-- sbom-ops:finding-state=([^<>\n]*) -->")
 
 
 class Orchestrator:
@@ -148,6 +197,10 @@ class Orchestrator:
         dependency_track: DependencyTrackClientProtocol | None = None,
         kev: KevClientProtocol | None = None,
         github: GitHubIssuesClientProtocol | None = None,
+        *,
+        force_refresh_kev: bool = False,
+        advisory_snapshot: AdvisorySnapshot | None = None,
+        asset_inventory: AssetInventorySnapshot | None = None,
     ) -> None:
         self._config = config
         self._dependency_track = dependency_track or DependencyTrackClient(
@@ -168,6 +221,9 @@ class Orchestrator:
             allow_stale_cache=config.intelligence.kev_cache_allow_stale,
         )
         self._github = github
+        self._force_refresh_kev = force_refresh_kev
+        self._advisory_snapshot = advisory_snapshot
+        self._asset_inventory = asset_inventory
         if config.github.enabled and self._github is None:
             self._github = GitHubIssuesClient(
                 config.github.token,
@@ -213,9 +269,9 @@ class Orchestrator:
         run_id = str(uuid4())
         started_at = time.monotonic()
         projects = self._dependency_track.list_projects()
+        available_project_uuids = {project.uuid for project in projects}
         project_filter = set(self._config.runtime.project_uuids)
         if project_filter:
-            available_project_uuids = {project.uuid for project in projects}
             unavailable = sorted(project_filter - available_project_uuids)
             if unavailable:
                 raise ProjectSelectionError(
@@ -236,7 +292,9 @@ class Orchestrator:
 
         kev_ids = {
             identifier.strip().upper()
-            for identifier in self._kev.get_known_exploited_vulnerabilities()
+            for identifier in self._kev.get_known_exploited_vulnerabilities(
+                force_refresh=self._force_refresh_kev
+            )
             if isinstance(identifier, str) and identifier.strip()
         }
         kev_used_stale_cache = bool(getattr(self._kev, "used_stale_cache", False))
@@ -299,6 +357,14 @@ class Orchestrator:
                             prioritized_finding.finding.vulnerability_aliases
                         ),
                         cvss_version=prioritized_finding.finding.cvss_version,
+                        advisory_observations=(
+                            self._advisory_snapshot.observations_for(
+                                prioritized_finding.finding.vulnerability_id,
+                                prioritized_finding.finding.vulnerability_aliases,
+                            )
+                            if self._advisory_snapshot
+                            else ()
+                        ),
                     )
                 )
 
@@ -356,7 +422,15 @@ class Orchestrator:
                     if (
                         number is not None
                         and int(number) not in touched_for_target
-                        and self._missing_count_from_issue(issue) > 0
+                        and (
+                            self._missing_count_from_issue(issue) > 0
+                            or self._finding_state_from_issue(issue)
+                            in {
+                                FindingState.MISSING,
+                                FindingState.RESOLVED,
+                                FindingState.UNKNOWN,
+                            }
+                        )
                     ):
                         actions.append(
                             f"mark-active {key} issue=#{number} reason=reappeared"
@@ -376,6 +450,7 @@ class Orchestrator:
                 body = issue.get("body") or ""
                 decision = decide_missing_finding(
                     self._missing_count_from_issue(issue),
+                    previous_finding_state=self._finding_state_from_issue(issue),
                     automatic_closure_enabled=(
                         self._config.workflow.close_missing_findings
                     ),
@@ -435,6 +510,80 @@ class Orchestrator:
             issues_closed=closed,
             dry_run=self._config.runtime.dry_run,
             analysis_snapshot_status=snapshot_status,
+            asset_inventory_status=(
+                AssetInventoryStatus.LOADED
+                if self._asset_inventory
+                else AssetInventoryStatus.NOT_REQUESTED
+            ),
+            asset_inventory_id=(
+                self._asset_inventory.snapshot_id if self._asset_inventory else None
+            ),
+            asset_inventory_generated_at=(
+                self._asset_inventory.generated_at if self._asset_inventory else None
+            ),
+            asset_inventory_sha256=(
+                self._asset_inventory.sha256 if self._asset_inventory else None
+            ),
+            asset_deployments=(
+                tuple(
+                    deployment
+                    for project in projects
+                    for deployment in self._asset_inventory.for_project(project.uuid)
+                )
+                if self._asset_inventory
+                else ()
+            ),
+            asset_unmapped_project_uuids=(
+                tuple(
+                    sorted(
+                        project.uuid
+                        for project in projects
+                        if not self._asset_inventory.for_project(project.uuid)
+                    )
+                )
+                if self._asset_inventory
+                else ()
+            ),
+            asset_unmatched_project_uuids=(
+                tuple(
+                    sorted(
+                        {
+                            item.project_uuid
+                            for item in self._asset_inventory.deployments
+                            if item.project_uuid not in available_project_uuids
+                        }
+                    )
+                )
+                if self._asset_inventory
+                else ()
+            ),
+            advisory_snapshot_status=(
+                AdvisorySnapshotStatus.LOADED
+                if self._advisory_snapshot
+                else AdvisorySnapshotStatus.NOT_REQUESTED
+            ),
+            advisory_snapshot_id=(
+                self._advisory_snapshot.snapshot_id if self._advisory_snapshot else None
+            ),
+            advisory_snapshot_generated_at=(
+                self._advisory_snapshot.generated_at
+                if self._advisory_snapshot
+                else None
+            ),
+            advisory_snapshot_sha256=(
+                self._advisory_snapshot.sha256 if self._advisory_snapshot else None
+            ),
+            project_exposure_observations=(
+                tuple(
+                    observation
+                    for project in projects
+                    for observation in self._advisory_snapshot.exposure_for_project(
+                        project.uuid
+                    )
+                )
+                if self._advisory_snapshot
+                else ()
+            ),
             actions=tuple(actions),
             assessments=tuple(assessments),
         )
@@ -510,8 +659,21 @@ class Orchestrator:
     @staticmethod
     def _missing_count_from_issue(issue: dict) -> int:
         body = issue.get("body") or ""
-        match = _MISSING_COUNT_PATTERN.search(body)
-        return int(match.group(1)) if match else 0
+        matches = _MISSING_COUNT_PATTERN.findall(body)
+        if len(matches) != 1 or re.fullmatch(r"[0-9]{1,9}", matches[0]) is None:
+            return 0
+        return int(matches[0])
+
+    @staticmethod
+    def _finding_state_from_issue(issue: dict) -> FindingState | None:
+        body = issue.get("body") or ""
+        matches = _FINDING_STATE_PATTERN.findall(body)
+        if len(matches) != 1:
+            return None
+        try:
+            return FindingState(matches[0])
+        except ValueError:
+            return None
 
     @staticmethod
     def _with_finding_observation(
@@ -519,22 +681,16 @@ class Orchestrator:
     ) -> str:
         state_marker = f"<!-- sbom-ops:finding-state={finding_state.value} -->"
         count_marker = f"<!-- sbom-ops:missing-count={missing_count} -->"
-        if _FINDING_STATE_PATTERN.search(body):
-            body = _FINDING_STATE_PATTERN.sub(state_marker, body, count=1)
-        else:
-            body = f"{body.rstrip()}\n\n{state_marker}\n"
-        if _MISSING_COUNT_PATTERN.search(body):
-            return _MISSING_COUNT_PATTERN.sub(count_marker, body, count=1)
-        return f"{body.rstrip()}\n{count_marker}\n"
+        body = _FINDING_STATE_PATTERN.sub("", body)
+        body = _MISSING_COUNT_PATTERN.sub("", body)
+        return f"{body.rstrip()}\n\n{state_marker}\n{count_marker}\n"
 
     @staticmethod
     def _with_active_observation(body: str) -> str:
         state_marker = f"<!-- sbom-ops:finding-state={FindingState.ACTIVE.value} -->"
-        if _FINDING_STATE_PATTERN.search(body):
-            body = _FINDING_STATE_PATTERN.sub(state_marker, body, count=1)
-        else:
-            body = f"{body.rstrip()}\n\n{state_marker}\n"
-        return _MISSING_COUNT_PATTERN.sub("", body, count=1).rstrip() + "\n"
+        body = _FINDING_STATE_PATTERN.sub("", body)
+        body = _MISSING_COUNT_PATTERN.sub("", body)
+        return f"{body.rstrip()}\n\n{state_marker}\n"
 
     @staticmethod
     def _issue_content(item: PrioritizedFinding) -> tuple[str, str]:

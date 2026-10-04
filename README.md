@@ -6,7 +6,10 @@ Dependency-Track owns inventory, vulnerability correlation, EPSS, and
 VEX-derived analysis state. GitHub Issues own remediation workflow. `sbom-ops`
 connects the two: it reads Dependency-Track findings, enriches them with CISA
 KEV, calculates an operational priority, and optionally creates or updates
-remediation issues.
+remediation issues. A reviewed asset inventory can show which service and
+environment a Project belongs to, who owns it, which version is deployed, and
+whether it is internet-facing. This is the missing business context around an
+SBOM Finding.
 
 The important boundary is intentional: sbom-ops can recommend and synchronize
 work, but it must not approve exceptions, suppress findings, or overwrite
@@ -27,6 +30,8 @@ Dependency-Track analysis state automatically.
 - Explains unavailable or below-threshold EPSS/CVSS inputs in `P3` rationale;
   `P3` is the result of the configured rules, not a low-risk assertion
 - Produces action-neutral finding assessments before any GitHub write
+- Accepts an optional, reviewed Project/service/environment asset inventory;
+  reports missing mappings and expired facts without changing priority
 - Can run with GitHub Issue operations disabled via `--no-github`
 - Supports YAML config, environment overrides, project-to-repository routing, JSON output, and optional JSONL sync logs
 - Uses safe, opt-in issue closure after verified consecutive absence observations
@@ -46,6 +51,25 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
 ```
+
+See the central use case immediately, without credentials or network access:
+
+```bash
+python examples/asset_scenario.py
+```
+
+The fictional scenario runs the real orchestrator against four fake DT
+Projects with the same CVE. Its two inspectable inputs are the
+[DT Project/Finding sample](examples/asset-scenario-dt.example.json) and
+[asset inventory sample](examples/asset-inventory.example.json). The DT file
+contains normalized offline test data, not a raw DT API response. The scenario
+shows an internet-facing production service, an internal development
+environment, an expired asset record, and a Project without a mapping. The
+priority stays `P2` for all four because asset context is currently review
+information, not an approved automatic priority rule. GitHub is disabled.
+
+To use the asset JSON with a real DT instance, replace its fictional Project
+UUIDs and verify the owner, deployment, exposure, source, and expiry values.
 
 Run the local test suite:
 
@@ -115,6 +139,16 @@ sbom-ops sync \
   --no-github
 ```
 
+To check the CISA KEV feed on every run instead of accepting a still-fresh local
+cache, add `--refresh-kev`. Conditional HTTP validation may still reuse an
+unchanged cached feed. If refresh fails, stale-cache fallback remains controlled
+by `intelligence.kev_cache_allow_stale`; the result reports when stale data was
+used. New cache files carry a versioned SHA-256 checksum; malformed or altered
+versioned caches are ignored. The checksum detects accidental corruption, not
+malicious rewriting of the local cache. Refreshes use an adjacent SQLite lock
+file and require a local filesystem; lock wait is bounded, and lock errors fail
+the sync rather than risk concurrent cache access.
+
 For machine-readable output:
 
 ```bash
@@ -135,6 +169,48 @@ and version where Dependency-Track provides them, alongside the vulnerability
 and priority fields. This preserves the inventory identity for downstream
 review; it does not claim that external CVE-level evidence applies to that
 Component.
+
+An optional, precomputed advisory snapshot can be attached to a sync for review:
+
+```bash
+sbom-ops sync \
+  --config examples/config.yaml \
+  --project "$SBOM_OPS_DT_PROJECT_UUID" \
+  --dry-run --no-github --output json \
+  --advisory-snapshot examples/advisory-snapshot.example.json
+```
+
+The example is synthetic. The snapshot loader performs no network requests;
+records are joined only by the Finding's primary vulnerability ID or explicit
+Dependency-Track aliases. JSON output retains source, signal, freshness,
+completeness, record counts, and references per Finding, plus matching
+Project/environment exposure observations at the run level. Expired exposure
+is reported as effectively `unknown`. An invalid optional snapshot emits a
+warning and the Dependency-Track sync continues without it. These observations
+do not change priority, Dependency-Track analysis, or GitHub actions. The result
+also records the snapshot's declared creation time and SHA-256 digest so the
+exact input can be identified later. See
+[`SPEC.md`](SPEC.md#advisory-evidence-and-deployment-context) for the v1 schema
+and semantics. The isolated Exploit Intelligence lab can export a Vuls sample
+to this format; see its [handoff instructions](lab/exploit_intelligence/README.md#product-snapshot-handoff).
+
+To use your own reviewed asset inventory, copy the example to a local file,
+replace the fictional Project UUIDs with accessible DT Project UUIDs, and run:
+
+```bash
+sbom-ops sync \
+  --config examples/config.yaml \
+  --dry-run --no-github --output json \
+  --asset-inventory path/to/reviewed-assets.json
+```
+
+The JSON result keeps asset deployments separate from individual Findings.
+It lists selected DT Projects without a mapping and inventory Project UUIDs
+that DT did not return. Each deployment has a source, observation time, and
+expiry; after expiry, its effective owner, deployed version, deployment,
+exposure, and criticality become unknown. The inventory is never used to
+change priority or Issue state automatically. See the
+[asset inventory contract](SPEC.md#asset-inventory-context).
 
 ## Enabling GitHub Issue Sync
 

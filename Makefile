@@ -121,6 +121,10 @@ exploit-lab-dt-sample:
 	$(if $(strip $(DT_FINDINGS)),,$(error DT_FINDINGS is required and may contain multiple findings.json paths))
 	PYTHONPATH=$(EXPLOIT_LAB_PYTHONPATH) $(PYTHON) -m exploit_lab.cli sample-dt-findings --manifest "$(EXPLOIT_LAB_MANIFEST)" --binary "$(VULS_DB_CLI)" --db-path "$(VULS_DB_PATH)" --output-dir "$(EXPLOIT_LAB_DIR)/runs" $(if $(strip $(VULS_DB_SAMPLE_CVES)),--sample-cves "$(VULS_DB_SAMPLE_CVES)",) $(foreach path,$(DT_FINDINGS),--findings "$(path)")
 
+exploit-lab-export-product-snapshot:
+	$(if $(strip $(VULS_RESULT)),,$(error VULS_RESULT is required))
+	PYTHONPATH=$(EXPLOIT_LAB_PYTHONPATH) $(PYTHON) -m exploit_lab.cli export-product-advisory-snapshot --manifest "$(EXPLOIT_LAB_MANIFEST)" --vuls-result "$(VULS_RESULT)" --freshness "$(or $(VULS_RESULT_FRESHNESS),unknown)" --output-dir "$(EXPLOIT_LAB_DIR)/product-snapshots"
+
 exploit-lab-identifier-resolution:
 	$(if $(strip $(DT_FINDINGS)),,$(error DT_FINDINGS is required and may contain multiple findings.json paths))
 	PYTHONPATH=$(EXPLOIT_LAB_PYTHONPATH) $(PYTHON) -m exploit_lab.cli resolve-dt-identifiers --manifest "$(EXPLOIT_LAB_MANIFEST)" --max-identifiers "$(or $(IDENTIFIER_SAMPLE_SIZE),5)" --base-url "$(VULNERABILITY_LOOKUP_BASE_URL)" --output-dir "$(EXPLOIT_LAB_DIR)/runs" $(foreach path,$(DT_FINDINGS),--findings "$(path)")

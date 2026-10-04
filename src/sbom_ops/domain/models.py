@@ -5,6 +5,8 @@ import json
 from dataclasses import dataclass
 from enum import StrEnum
 
+from sbom_ops.domain.advisory import VulnerabilityEvidenceObservation
+
 
 class Severity(StrEnum):
     CRITICAL = "CRITICAL"
@@ -150,3 +152,4 @@ class FindingAssessment:
     component_version: str | None = None
     vulnerability_aliases: tuple[str, ...] = ()
     cvss_version: str | None = None
+    advisory_observations: tuple[VulnerabilityEvidenceObservation, ...] = ()
