@@ -32,16 +32,25 @@ Dependency-Track analysis state automatically.
 - Produces action-neutral finding assessments before any GitHub write
 - Accepts an optional, reviewed Project/service/environment asset inventory;
   reports missing mappings and expired facts without changing priority
+- Stores human-registered services and deployables in a local SQLite DB; reads
+  DT Projects as association candidates and records explicit human approval
 - Can run with GitHub Issue operations disabled via `--no-github`
 - Supports YAML config, environment overrides, project-to-repository routing, JSON output, and optional JSONL sync logs
 - Uses safe, opt-in issue closure after verified consecutive absence observations
 
 ## Quick Start
 
+This is a local, operator-led rehearsal of the production shape:
+register a service in sbom-ops, upload its SBOM **directly to DT**, inspect the
+Project in DT, review the association, and compare one Finding with a dry-run.
+No GitHub Issue or DT Analysis decision is changed. The companion
+[operator exercise](docs/operations.md#運用担当者向けの初回演習) includes pause points and
+questions to discuss after each step.
+
 Prerequisites:
 
 - Python 3.12 or newer
-- Docker Engine and the Docker Compose plugin
+- Docker Engine and the Docker Compose plugin (only for the live DT steps)
 - GitHub CLI only if you want to exercise GitHub Issue synchronization
 
 Install locally:
@@ -52,7 +61,7 @@ source .venv/bin/activate
 python -m pip install -e ".[dev]"
 ```
 
-See the central use case immediately, without credentials or network access:
+First, see the central use case without credentials or network access:
 
 ```bash
 python examples/asset_scenario.py
@@ -68,8 +77,9 @@ environment, an expired asset record, and a Project without a mapping. The
 priority stays `P2` for all four because asset context is currently review
 information, not an approved automatic priority rule. GitHub is disabled.
 
-To use the asset JSON with a real DT instance, replace its fictional Project
-UUIDs and verify the owner, deployment, exposure, source, and expiry values.
+This JSON is an older evaluation input for deployment context. It is **not**
+the SQLite registry used in the live exercise below, and its fictional UUIDs
+must not be copied into a real DT Project.
 
 Run the local test suite:
 
@@ -85,19 +95,20 @@ docker compose -f examples/dependency-track/docker-compose.yml up -d
 curl -fsS -o /dev/null http://localhost:8080/api/openapi.json
 ```
 
-Open `http://localhost:8080`, sign in with the initial local credentials, and
-change the password immediately:
+Open `http://localhost:8080`. For a newly created local stack, sign in with
+the initial credentials below and change the password immediately. If you are
+reusing an existing DT instance, use its current credentials instead:
 
 ```text
 admin / admin
 ```
 
-Create two local API keys in Dependency-Track:
+Create two local API keys in Dependency-Track (separate teams are preferable):
 
 - SBOM upload key: `BOM_UPLOAD`, plus `PROJECT_CREATION_UPLOAD` if you use demo auto-create
 - Orchestrator read key: `VIEW_PORTFOLIO` and `VIEW_VULNERABILITY`
 
-Keep the keys in your shell or a local uncommitted `.env` file:
+Set the keys in your shell. An uncommitted `.env` is not loaded automatically:
 
 ```bash
 export SBOM_OPS_DT_BASE_URL=http://localhost:8080
@@ -105,39 +116,118 @@ export SBOM_OPS_DT_API_KEY=replace-with-orchestrator-read-key
 export SBOM_OPS_SBOM_UPLOAD_API_KEY=replace-with-upload-key
 ```
 
-The repository-only DT lab can additionally use a dedicated cleanup key with
-`VIEW_PORTFOLIO` and `PORTFOLIO_MANAGEMENT`. It is not needed for the product
-Quick Start. Its opt-in Analysis experiment requires `VULNERABILITY_ANALYSIS`;
-for local evaluation, that permission may be added to the orchestrator read
-team and the existing `SBOM_OPS_DT_API_KEY` reused. A separate
-`SBOM_OPS_DT_ANALYSIS_API_KEY` remains an optional least-privilege override.
-
-Upload the demo SBOM:
+Register one disposable demo service in the local SQLite registry. The
+timestamp makes the Project name unique; use the **same shell** for later
+commands. The training version is only an exercise identifier. In CI, use an
+immutable build or image identity instead.
 
 ```bash
-SBOM_OPS_DT_PROJECT_NAME=sbom-ops-vulnerable-demo \
-SBOM_OPS_DT_PROJECT_VERSION=0.1.0 \
+mkdir -p var
+export DEMO_SERVICE_ID="operator-demo-$(date +%s)"
+export DEMO_PROJECT_NAME="$DEMO_SERVICE_ID/web"
+export DEMO_PROJECT_VERSION="training-$(date +%s)"
+sbom-ops assets --db var/assets.sqlite3 register-service \
+  --service "$DEMO_SERVICE_ID" --owner training-team --criticality standard \
+  --reason 'Local operator exercise; not a production deployment'
+sbom-ops assets --db var/assets.sqlite3 register-deployable \
+  --service "$DEMO_SERVICE_ID" --deployable web
+sbom-ops assets --db var/assets.sqlite3 list
+```
+
+The first two lines in the list are your human-registered asset. There is no
+DT UUID yet. Now simulate CI by uploading the bundled CycloneDX example
+**directly to DT**, not through sbom-ops:
+
+```bash
+env -u SBOM_OPS_DT_PROJECT_UUID \
+SBOM_OPS_DT_PROJECT_NAME="$DEMO_PROJECT_NAME" \
+SBOM_OPS_DT_PROJECT_VERSION="$DEMO_PROJECT_VERSION" \
 scripts/upload_bom.sh examples/sboms/vulnerable-demo.cdx.json
 ```
 
-Copy the created project UUID from the Dependency-Track UI, then preview the
-runtime plan without enabling GitHub writes:
+`env -u` prevents a previously exported Project UUID from redirecting this
+upload. The script calls DT's BOM API; it is only a local stand-in for CI.
+An accepted upload is not proof that DT analysis has finished.
+
+In the DT UI, find the Project whose name and version match the two exported
+values. Inspect its Components and one vulnerability Finding; note the Project
+UUID, Component, vulnerability ID, score, and Analysis state. If there is no
+Finding yet, check processing and data-source status instead of concluding
+that the service is safe.
+
+Read the DT Project back as an **untrusted association candidate**:
 
 ```bash
-export SBOM_OPS_DT_PROJECT_UUID=replace-with-project-uuid
-sbom-ops plan --config examples/config.yaml --project "$SBOM_OPS_DT_PROJECT_UUID" --no-github
+sbom-ops assets --db var/assets.sqlite3 candidates
 ```
 
-Run the first synchronization as a safe local preview:
+Find the line with `name=$DEMO_PROJECT_NAME` and `status=candidate`. Compare
+its UUID, name, and version with the UI and the upload command. Only after
+that review, copy the UUID from the UI or candidate output and approve it:
 
 ```bash
+export SBOM_OPS_DT_PROJECT_UUID=replace-with-reviewed-project-uuid
+sbom-ops assets --db var/assets.sqlite3 approve \
+  --service "$DEMO_SERVICE_ID" --deployable web \
+  --project "$SBOM_OPS_DT_PROJECT_UUID" --reviewer your-name
+sbom-ops assets --db var/assets.sqlite3 candidates
+sbom-ops assets --db var/assets.sqlite3 audit-links
+```
+
+The candidate should now say `status=reviewed`. This approves only the
+Project-to-service association—not CI provenance, deployed version, exposure,
+or vulnerability treatment. Do not approve a missing version or conflict.
+The link audit should say `status=matched`; it reads DT again without changing
+DT or the registry. `not_visible` means the read key did not return the
+Project—it does **not** prove deletion. `identity_changed` and `ambiguous`
+also need human review. The audit exits nonzero when there are no reviewed
+links or any link is not matched.
+For a persistent registry, check it and take a non-overwriting online backup
+before making further changes:
+
+```bash
+sbom-ops assets --db var/assets.sqlite3 check
+mkdir -p var/backups
+sbom-ops assets --db var/assets.sqlite3 backup \
+  --output "var/backups/assets-$(date +%Y%m%d-%H%M%S).sqlite3"
+```
+
+Keep backups out of Git, copy them to separate persistent storage, and test
+opening a backup with
+`sbom-ops assets --db BACKUP_PATH check`. A typo in `--db` now fails for
+read/approval/backup commands instead of silently creating an empty DB.
+
+Preview the runtime plan, then compare one DT Finding with sbom-ops. Both
+commands are read-only with respect to DT Analysis and GitHub Issues:
+
+```bash
+sbom-ops plan --config examples/config.yaml \
+  --project "$SBOM_OPS_DT_PROJECT_UUID" --dry-run --no-github
 sbom-ops sync \
   --config examples/config.yaml \
   --project "$SBOM_OPS_DT_PROJECT_UUID" \
   --wait-for-analysis \
+  --asset-db var/assets.sqlite3 \
   --dry-run \
   --no-github
 ```
+
+Check the vulnerability ID, Component, CVSS/EPSS, DT Analysis state, calculated
+priority, and the reason for that priority. If they differ from the UI, record
+the Project UUID, filters, suppression state, and observation time before
+changing anything. A stable Finding snapshot is not proof that all DT
+background analysis has finished. With `--asset-db`, `sync` opens the existing
+SQLite registry read-only and shows `registry-project status=matched` only when
+the reviewed Project UUID, name, and version still agree with DT. An unlinked,
+changed, or ambiguous Project does not inherit the registered owner or
+criticality. This context does not alter priority or GitHub Issue actions.
+Deployment and exposure remain unknown; the older `--asset-inventory` JSON is
+a separate evaluation input, not the SQLite registry.
+The sample BOM can produce many Findings. Choose **one** in DT and search the
+CLI output for its `vulnerability=` ID; do not review every row in the first
+session.
+
+## Optional Evaluation Inputs
 
 To check the CISA KEV feed on every run instead of accepting a still-fresh local
 cache, add `--refresh-kev`. Conditional HTTP validation may still reuse an
@@ -211,6 +301,20 @@ expiry; after expiry, its effective owner, deployed version, deployment,
 exposure, and criticality become unknown. The inventory is never used to
 change priority or Issue state automatically. See the
 [asset inventory contract](SPEC.md#asset-inventory-context).
+This manual UUID join is for evaluation; it does not verify that the deployed
+build matches the Project's SBOM. The proposed production identity flow is in
+the [operator guide](docs/operations.md#sbomと稼働資産を結ぶ運用フロー一部実装).
+No external asset register is assumed. The first SQLite-backed registry stores
+services, deployables, and reviewed DT Project links; it does **not** yet prove
+that an SBOM belongs to a deployed build or replace the optional JSON input.
+Read-only EKS/ECS discovery can later add separate runtime observations; it
+cannot replace human ownership or business-criticality decisions. SQLite on
+local persistent storage is the first, single-host backend.
+
+In a real pipeline, use the same `projectName=service_id/deployable_id` rule
+and an immutable artifact-derived `projectVersion`. The CI credential needs
+`BOM_UPLOAD` and, if it creates Projects, `PROJECT_CREATION_UPLOAD`. CI never
+writes the SQLite DB. See the [operator guide](docs/operations.md#sbomと稼働資産を結ぶ運用フロー一部実装).
 
 ## Enabling GitHub Issue Sync
 
@@ -271,6 +375,10 @@ sbom-ops plan --config examples/config.yaml --no-github
 sbom-ops sync --config examples/config.yaml --dry-run --no-github
 sbom-ops sync --config examples/config.yaml --dry-run --no-github --output json
 sbom-ops upload path/to/bom.cdx.json --project "$SBOM_OPS_DT_PROJECT_UUID"
+sbom-ops assets --db var/assets.sqlite3 audit-links
+sbom-ops assets --db var/assets.sqlite3 check
+mkdir -p var/backups
+sbom-ops assets --db var/assets.sqlite3 backup --output var/backups/assets.sqlite3
 make dt-lab-validate
 make dt-lab-test
 make dt-lab-openapi

@@ -5,7 +5,16 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from sbom_ops import cli
+from sbom_ops.domain.asset_registry import (
+    RegisteredService,
+    RegistryProjectObservation,
+    RegistryProjectStatus,
+    RegistrySnapshotStatus,
+)
+from sbom_ops.domain.assets import BusinessCriticality
 from sbom_ops.domain.models import (
     AnalysisSnapshotStatus,
     AnalysisState,
@@ -14,6 +23,7 @@ from sbom_ops.domain.models import (
     Severity,
 )
 from sbom_ops.services.orchestrator import RunResult
+from sbom_ops.storage.asset_registry import AssetRegistry
 
 
 class FakeOrchestrator:
@@ -138,6 +148,51 @@ def test_sync_parser_exposes_asset_inventory_input() -> None:
     assert args.asset_inventory == "assets.json"
 
 
+def test_sync_parser_exposes_asset_db_input() -> None:
+    args = cli.build_parser().parse_args(["sync", "--asset-db", "assets.sqlite3"])
+
+    assert args.asset_db == "assets.sqlite3"
+
+
+def test_sync_reads_asset_db_before_running_orchestrator(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    path = tmp_path / "assets.sqlite3"
+    with AssetRegistry(path, create_if_missing=True) as registry:
+        registry.register_service(
+            RegisteredService(
+                "checkout-api", "team-checkout", BusinessCriticality.HIGH, "payments"
+            )
+        )
+    captured = {}
+
+    class CapturingOrchestrator(FakeOrchestrator):
+        def __init__(self, config, *, force_refresh_kev=False, asset_registry=None):
+            super().__init__(config, force_refresh_kev=force_refresh_kev)
+            captured["registry"] = asset_registry
+
+    config = SimpleNamespace(runtime=SimpleNamespace(sync_log_file=None))
+    monkeypatch.setattr(cli, "Orchestrator", CapturingOrchestrator)
+
+    assert cli.run_sync(config, "json", asset_db_path=str(path)) == 0
+    assert captured["registry"].services[0].owner == "team-checkout"
+    assert captured["registry"].links == ()
+    assert json.loads(capsys.readouterr().out)["status"] == "succeeded"
+
+
+def test_sync_rejects_missing_asset_db_before_running_orchestrator(
+    tmp_path, monkeypatch
+) -> None:
+    def unexpected_orchestrator(*args, **kwargs):
+        raise AssertionError("sync must not begin after asset DB read failure")
+
+    monkeypatch.setattr(cli, "Orchestrator", unexpected_orchestrator)
+    config = SimpleNamespace(runtime=SimpleNamespace(sync_log_file=None))
+
+    with pytest.raises(ValueError, match="does not exist"):
+        cli.run_sync(config, "json", asset_db_path=str(tmp_path / "missing.sqlite3"))
+
+
 def test_sync_passes_asset_inventory_to_orchestrator(monkeypatch, capsys) -> None:
     captured = {}
 
@@ -202,11 +257,50 @@ def test_text_result_makes_missing_scores_explicit(monkeypatch, capsys) -> None:
     assert "analysis_snapshot_status=not_requested" in captured.out.splitlines()[0]
     assert (
         "component=example@1.2.3 purl=pkg:pypi/example@1.2.3 "
+        "vulnerability=GHSA-ABCD-1234-5678 "
         "source=GITHUB dt_aliases=CVE-2026-1001 severity=HIGH "
         "cvss=unavailable cvss_version=unavailable epss=unavailable "
         "in_kev=false advisory=none analysis=NOT_SET suppressed=false "
         "rationale=Default monitoring priority" in captured.out
     )
+
+
+def test_text_result_shows_reviewed_registry_link(monkeypatch, capsys) -> None:
+    class RegistryOrchestrator(FakeOrchestrator):
+        def run(self) -> RunResult:
+            return replace(
+                super().run(),
+                registry_snapshot_status=RegistrySnapshotStatus.LOADED,
+                registry_projects=(
+                    RegistryProjectObservation(
+                        project_uuid="project-1",
+                        dt_name="checkout-api/web",
+                        dt_version="v1",
+                        status=RegistryProjectStatus.MATCHED,
+                        reviewed_name="checkout-api/web",
+                        reviewed_version="v1",
+                        service_id="checkout-api",
+                        deployable_id="web",
+                        owner="team-checkout",
+                        criticality=BusinessCriticality.HIGH,
+                        reviewer="alice",
+                    ),
+                ),
+            )
+
+    config = SimpleNamespace(runtime=SimpleNamespace(sync_log_file=None))
+    monkeypatch.setattr(cli, "Orchestrator", RegistryOrchestrator)
+
+    assert cli.run_sync(config, "text") == 0
+
+    output = capsys.readouterr().out
+    assert "registry_snapshot_status=loaded" in output
+    assert (
+        "registry-project project=project-1 status=matched "
+        "dt_name=checkout-api/web dt_version=v1 "
+        "reviewed_name=checkout-api/web reviewed_version=v1 "
+        "service=checkout-api/web owner=team-checkout criticality=high reviewer=alice"
+    ) in output
 
 
 def test_text_result_discloses_stale_kev_cache(monkeypatch, capsys) -> None:

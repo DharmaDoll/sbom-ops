@@ -73,6 +73,21 @@ tests/
 ## Execution Model
 
 The orchestrator runs as a stateless CLI job.
+This describes the process, not a guarantee that all future workflows can be
+implemented without durable shared state. The optional asset registry is a
+single-host SQLite DB for manually registered services and deployables plus
+reviewed DT Project links. It does not yet store verified build/SBOM/deployment
+identity, deployment or exposure declarations, or correction history. Those
+remain in [`ROADMAP.md`](ROADMAP.md#phase-0-production-validation-p0). No
+external organizational asset register is assumed; platform discovery is
+optional evidence and must not silently override reviewed declarations.
+With `sync --asset-db PATH`, an existing registry is checked and read-only
+loaded before orchestration. The sync result reports one association status per
+selected DT Project: `matched`, `unlinked`, `identity_changed`, or `ambiguous`.
+Owner and criticality appear only for a `matched` reviewed UUID/name/version;
+they do not affect priority or Issue operations. This is distinct from the
+legacy optional deployment-context JSON (`--asset-inventory`) and establishes
+neither CI provenance nor deployed version or exposure.
 Typical execution modes:
 
 - scheduled poll from CI or cron
@@ -88,6 +103,15 @@ token. A timeout fails the run and must not be interpreted as verified absence.
 The sync result reports `analysis_snapshot_status` as `not_requested`, `stable`,
 or `no_projects`; `stable` means only that the configured snapshot heuristic
 completed for every processed Project.
+DT read failures, malformed Project/Finding responses, and incomplete Project
+pagination fail the run rather than representing an empty inventory. The Project
+list requires the documented `X-Total-Count` response header on each page and
+checks it against the accumulated page count. Transient HTTP failures use the
+configured bounded retry policy; authentication and permission failures are
+terminal. These checks cannot prove that a syntactically valid Finding array is
+complete or that DT's background analysis has finished. Do not enable automatic
+Issue closure solely on the strength of a stable snapshot without an operational
+review of this remaining uncertainty.
 
 The process flow is:
 
@@ -120,14 +144,17 @@ following requirements are part of the supported deployment profile.
 - Workload Identity trust must be restricted with immutable organization and
   repository IDs, protected refs or environments, and the approved reusable
   workflow identity.
-- Dependency-Track API keys must be held in Secret Manager or an equivalent
-  managed secret store and must not be exposed to calling repositories or logs.
-- CI uploads must pass through a least-privilege boundary that only permits the
-  documented BOM upload operation. It must not become a general
-  Dependency-Track reverse proxy.
-- The upload target must be resolved from an authoritative
-  repository-to-Dependency-Track-project mapping. A caller-provided
-  `project_uuid` alone is not authorization.
+- CI uploads CycloneDX BOMs directly to Dependency-Track with a minimally
+  scoped API key held in a CI secret store, never in repository files or logs.
+  Use a controlled Project name (`service_id/deployable_id`) and immutable
+  Project version. Grant `BOM_UPLOAD`; `autoCreate=true` additionally requires
+  `PROJECT_CREATION_UPLOAD` (or broader `PORTFOLIO_MANAGEMENT`, which should be
+  avoided for this flow). Do not grant analysis or administrative permissions.
+- A CI-supplied Project name/UUID is not proof of repository identity or
+  artifact provenance. sbom-ops reads DT Projects as candidates and requires
+  human review before recording a Project-to-asset link. The risk of a
+  compromised CI writing an incorrect Project is accepted for this initial
+  design; no SBOM upload gateway is required.
 - Service-to-service authentication and browser authentication are separate
   controls and must be validated independently.
 - Production readiness requires structured logs, authentication and upload
@@ -474,6 +501,9 @@ owner and deployed version `null`, and effective deployment, exposure, and
 criticality `unknown`. A `not_deployed` record cannot claim a deployed version.
 The declared version is not yet checked against DT Project version or CI
 deployment evidence; the Project UUID join only checks that DT returned it.
+Therefore a loaded asset record is review context, not proof that a particular
+SBOM or Component is currently deployed. No consumer may label a Finding as
+confirmed deployed solely from this v1 Project UUID join.
 These facts are scoped to Project/service/environment, not to a particular
 Component or Finding. They do not automatically change priority, DT Analysis,
 Issue routing, or Issue state. If an advisory snapshot also supplies Project
@@ -861,15 +891,16 @@ metadata without credentials or the multipart body. A synchronous rejection is
 a completed negative experiment only when all declared expectations match.
 HTTP 400 is non-retryable. Coordinate upload with `autoCreate` must write the
 Project ledger before the request because DT 4.14.3 can create an empty Project
-before schema rejection. Production upload continues to resolve and use an
-existing Project UUID rather than relying on this side effect.
+before schema rejection. The existing `sbom-ops upload --project` helper uses
+an existing UUID; direct CI uploads may use `autoCreate`, but operators must
+not treat upload acceptance as a reviewed asset link.
 
 A format-equivalence experiment must ingest equivalent JSON and XML into the
 same run-scoped Project version and compare more than acceptance status or item
 counts. It must retain normalized inventory and Finding semantics, stable API
 identity mappings, dependency-graph projections, and normalized DT re-export.
 The comparison is evidence only for the exercised CycloneDX version and fields.
-The reviewed 1.5 result permits the production upload boundary to remain
+The reviewed 1.5 result permits the direct CI upload flow to remain
 format-neutral; it does not permit either schema validation or identifier
 quality checks to be skipped.
 

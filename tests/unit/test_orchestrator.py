@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from sbom_ops.clients.dependency_track import (
+    DependencyTrackApiError,
     DependencyTrackFinding,
     DependencyTrackProject,
 )
@@ -23,6 +24,12 @@ from sbom_ops.domain.advisory import (
     EvidenceOutcome,
     ExposureStatus,
     VulnerabilityEvidenceObservation,
+)
+from sbom_ops.domain.asset_registry import (
+    AssetRegistrySnapshot,
+    RegisteredService,
+    RegistryProjectStatus,
+    ReviewedProjectLink,
 )
 from sbom_ops.domain.assets import (
     AssetDeployment,
@@ -204,6 +211,58 @@ def test_orchestrator_keeps_stale_issue_open_by_default() -> None:
     assert payload["assessments"][0]["component_uuid"] is None
     assert payload["assessments"][0]["component_purl"] is None
     assert payload["actions"] == list(result.actions)
+
+
+def test_reviewed_registry_link_is_output_only_and_does_not_change_issues() -> None:
+    class LinkedDependencyTrack(FakeDependencyTrack):
+        def list_projects(self) -> list[DependencyTrackProject]:
+            return [DependencyTrackProject("project-1", "checkout-api/web", "v1")]
+
+    snapshot = AssetRegistrySnapshot(
+        services=(
+            RegisteredService(
+                "checkout-api", "team-checkout", BusinessCriticality.HIGH, "payments"
+            ),
+        ),
+        links=(
+            ReviewedProjectLink(
+                "project-1",
+                "checkout-api/web",
+                "v1",
+                "checkout-api",
+                "web",
+                "alice",
+                "2026-10-06T00:00:00Z",
+            ),
+        ),
+    )
+    baseline_github = FakeGitHub()
+    linked_github = FakeGitHub()
+    baseline = Orchestrator(
+        config(), LinkedDependencyTrack(), FakeKev(), baseline_github
+    ).run()
+    linked = Orchestrator(
+        config(),
+        LinkedDependencyTrack(),
+        FakeKev(),
+        linked_github,
+        asset_registry=snapshot,
+    ).run()
+
+    assert linked.registry_snapshot_status.value == "loaded"
+    assert linked.registry_projects[0].status is RegistryProjectStatus.MATCHED
+    assert linked.as_dict()["registry_projects"][0]["owner"] == "team-checkout"
+    assert linked.asset_inventory_status.value == "not_requested"
+    assert linked.assessments == baseline.assessments
+    assert linked.actions == baseline.actions
+    assert (linked.issues_created, linked.issues_updated, linked.issues_closed) == (
+        baseline.issues_created,
+        baseline.issues_updated,
+        baseline.issues_closed,
+    )
+    assert linked_github.created == baseline_github.created
+    assert linked_github.updated_bodies == baseline_github.updated_bodies
+    assert linked_github.closed == baseline_github.closed
 
 
 def test_action_neutral_assessment_preserves_component_identity() -> None:
@@ -492,6 +551,28 @@ def test_orchestrator_closes_after_second_verified_absence() -> None:
     assert "<!-- sbom-ops:finding-state=RESOLVED -->" in github.updated_bodies[1]
     assert github.closed == [12]
     assert result.actions[1].endswith("count=2 reason=consecutive_absence_confirmed")
+
+
+def test_dt_read_failure_never_marks_or_closes_a_missing_finding() -> None:
+    class FailedDependencyTrack(FakeDependencyTrack):
+        def wait_for_analysis(
+            self, project_uuid: str, *, timeout: float, poll_interval: float
+        ) -> list[DependencyTrackFinding]:
+            raise DependencyTrackApiError("malformed collection")
+
+    github = FakeGitHub(missing_count=1, finding_state_marker="MISSING")
+    safe_config = replace(
+        config(),
+        runtime=RuntimeConfig(wait_for_analysis=True),
+        workflow=WorkflowConfig(close_missing_findings=True),
+    )
+
+    with pytest.raises(DependencyTrackApiError, match="malformed collection"):
+        Orchestrator(safe_config, FailedDependencyTrack(), FakeKev(), github).run()
+
+    assert github.created == []
+    assert github.updated == []
+    assert github.closed == []
 
 
 def test_orchestrator_does_not_close_from_a_count_without_missing_state() -> None:

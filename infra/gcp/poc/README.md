@@ -7,14 +7,19 @@ It intentionally does not provision live Google Cloud resources yet. The first
 goal is to make the proposed security boundaries reviewable before writing
 production Terraform modules.
 
+The static Terraform inputs below still model an earlier upload-gateway
+proposal. That proposal was superseded by direct CI-to-DT upload with a
+protected minimally scoped key and reviewed asset links. Do not use the gateway
+outputs as a deployment requirement; update this harness before any live plan.
+
 ## Scope
 
 The harness captures:
 
 - candidate runtime boundaries for Dependency-Track and sbom-ops components
 - GitHub Actions OIDC/WIF trust inputs
-- repository-to-Dependency-Track-project authorization inputs
-- the narrow SBOM upload gateway contract
+- legacy repository-to-Dependency-Track-project authorization inputs
+- the obsolete narrow SBOM upload gateway contract (for removal, not adoption)
 - validation gates required before any production architecture is accepted
 
 ## Static Validation
@@ -40,5 +45,6 @@ added. Live apply commands must not be run by agents without explicit approval.
 
 1. Add provider-backed resources behind this boundary.
 2. Add deny tests for wrong repository, ref, environment, and reusable workflow.
-3. Add Secret Manager and gateway service account resources.
+3. Remove the obsolete gateway contract from the static harness and model the
+   direct-upload key, network boundary, and asset-review flow.
 4. Add either GKE Autopilot or Cloud Run resources only after the PoC decision is documented.

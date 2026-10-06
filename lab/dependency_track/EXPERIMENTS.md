@@ -2143,6 +2143,11 @@ Project export.
   include those Service edges in `dependencies`.
 - CycloneDX Project JSON export required
   `Accept: application/vnd.cyclonedx+json`; generic JSON returned `406`.
+- Reinspection of the retained release-1 source fixture and export on
+  2026-10-04 found that the exported document had a new `serialNumber`,
+  `metadata.tools` identified Dependency-Track rather than the source tool,
+  and the root Component `bom-ref` was a DT UUID rather than the source PURL.
+  This comparison does not test preservation of custom CycloneDX properties.
 
 ### Interpretation and Product Decision
 
@@ -2150,7 +2155,8 @@ Component UUID is a Project-version-scoped API locator, not a cross-release
 business identifier. sbom-ops should retain stable package identity such as
 PURL when reconciling releases. It may consume DT graph projections for impact
 context, but it must not assume that Project re-export preserves every Service
-edge. The media-type requirement is a verified client contract.
+edge or the original BOM bytes. The media-type requirement is a verified client
+contract.
 
 ### Unverified
 

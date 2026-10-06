@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 from dataclasses import replace
 from uuid import uuid4
@@ -15,11 +16,23 @@ from sbom_ops.clients.github import GitHubApiError
 from sbom_ops.clients.kev import KevApiError
 from sbom_ops.config import AppConfig, load_config
 from sbom_ops.domain.advisory import AdvisorySnapshotStatus
-from sbom_ops.domain.assets import AssetInventoryStatus
+from sbom_ops.domain.asset_registry import (
+    AssetRegistrySnapshot,
+    ProjectLinkAuditStatus,
+    RegisteredDeployable,
+    RegisteredService,
+)
+from sbom_ops.domain.assets import AssetInventoryStatus, BusinessCriticality
 from sbom_ops.services.advisory_snapshot import load_advisory_snapshot
 from sbom_ops.services.asset_inventory import load_asset_inventory
+from sbom_ops.services.asset_registry import (
+    approve_project_link,
+    audit_reviewed_project_links,
+    discover_project_candidates,
+)
 from sbom_ops.services.orchestrator import Orchestrator
 from sbom_ops.services.sync_log import append_sync_event
+from sbom_ops.storage.asset_registry import AssetRegistry
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,6 +59,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="attach a reviewed Project/service/environment inventory JSON file",
     )
     sync_parser.add_argument(
+        "--asset-db",
+        help="show reviewed SQLite Project links without changing priority or Issues",
+    )
+    sync_parser.add_argument(
         "--no-github", action="store_true", help="skip all GitHub Issue operations"
     )
     sync_parser.add_argument(
@@ -60,6 +77,33 @@ def build_parser() -> argparse.ArgumentParser:
     upload_parser.add_argument("bom_path")
     upload_parser.add_argument("--project", dest="project_uuid")
     upload_parser.add_argument("--no-wait", action="store_true")
+
+    assets_parser = subparsers.add_parser("assets")
+    assets_parser.add_argument("--db", required=True, help="local SQLite asset DB")
+    asset_commands = assets_parser.add_subparsers(dest="asset_command", required=True)
+    service_parser = asset_commands.add_parser("register-service")
+    service_parser.add_argument("--service", required=True)
+    service_parser.add_argument("--owner", required=True)
+    service_parser.add_argument(
+        "--criticality",
+        choices=tuple(item.value for item in BusinessCriticality),
+        required=True,
+    )
+    service_parser.add_argument("--reason", required=True)
+    deployable_parser = asset_commands.add_parser("register-deployable")
+    deployable_parser.add_argument("--service", required=True)
+    deployable_parser.add_argument("--deployable", required=True)
+    asset_commands.add_parser("list")
+    asset_commands.add_parser("check")
+    backup_parser = asset_commands.add_parser("backup")
+    backup_parser.add_argument("--output", required=True)
+    asset_commands.add_parser("candidates")
+    asset_commands.add_parser("audit-links")
+    approve_parser = asset_commands.add_parser("approve")
+    approve_parser.add_argument("--service", required=True)
+    approve_parser.add_argument("--deployable", required=True)
+    approve_parser.add_argument("--project", required=True)
+    approve_parser.add_argument("--reviewer", required=True)
 
     plan_parser = subparsers.add_parser("plan")
     plan_parser.add_argument("--config")
@@ -113,7 +157,16 @@ def run_sync(
     force_refresh_kev: bool = False,
     advisory_snapshot_path: str | None = None,
     asset_inventory_path: str | None = None,
+    asset_db_path: str | None = None,
 ) -> int:
+    asset_registry = None
+    if asset_db_path:
+        with AssetRegistry(asset_db_path, read_only=True) as registry:
+            registry.check_integrity()
+            asset_registry = AssetRegistrySnapshot(
+                services=registry.list_services(),
+                links=registry.list_links(),
+            )
     snapshot = None
     snapshot_error = None
     if advisory_snapshot_path:
@@ -141,6 +194,8 @@ def run_sync(
         orchestrator_kwargs["advisory_snapshot"] = snapshot
     if asset_inventory is not None:
         orchestrator_kwargs["asset_inventory"] = asset_inventory
+    if asset_registry is not None:
+        orchestrator_kwargs["asset_registry"] = asset_registry
     orchestrator = Orchestrator(config=config, **orchestrator_kwargs)
     result = orchestrator.run()
     if snapshot_error is not None:
@@ -170,11 +225,29 @@ def run_sync(
         f"updated={result.issues_updated} "
         f"closed={result.issues_closed} "
         f"kev_used_stale_cache={str(result.kev_used_stale_cache).lower()} "
+        f"registry_snapshot_status={result.registry_snapshot_status.value} "
         f"analysis_snapshot_status={result.analysis_snapshot_status.value} "
         f"asset_inventory_status={result.asset_inventory_status.value} "
         f"advisory_snapshot_status={result.advisory_snapshot_status.value} "
         f"dry_run={result.dry_run}"
     )
+    for item in result.registry_projects:
+        service = (
+            f"{item.service_id}/{item.deployable_id}"
+            if item.service_id and item.deployable_id
+            else "unavailable"
+        )
+        print(
+            f"registry-project project={item.project_uuid} "
+            f"status={item.status.value} "
+            f"dt_name={item.dt_name} "
+            f"dt_version={item.dt_version or 'unknown'} "
+            f"reviewed_name={item.reviewed_name or 'none'} "
+            f"reviewed_version={item.reviewed_version or 'none'} "
+            f"service={service} owner={item.owner or 'unknown'} "
+            f"criticality={item.criticality.value if item.criticality else 'unknown'} "
+            f"reviewer={item.reviewer or 'none'}"
+        )
     for assessment in result.assessments:
         rationale = ", ".join(assessment.rationale)
         advisory = (
@@ -201,6 +274,7 @@ def run_sync(
             f"finding {assessment.finding_key} priority={assessment.priority.value} "
             f"component={component} "
             f"purl={assessment.component_purl or 'unavailable'} "
+            f"vulnerability={assessment.vulnerability_id} "
             f"source={assessment.vulnerability_source or 'UNKNOWN'} "
             f"dt_aliases={','.join(assessment.vulnerability_aliases) or 'none'} "
             f"severity={assessment.severity.value} cvss={cvss} "
@@ -277,6 +351,107 @@ def run_upload(args: argparse.Namespace) -> int:
     return 0
 
 
+def _asset_dt_client() -> DependencyTrackClient:
+    base_url = os.getenv("SBOM_OPS_DT_BASE_URL")
+    api_key = os.getenv("SBOM_OPS_DT_API_KEY")
+    if not base_url or not api_key:
+        raise ValueError(
+            "asset discovery requires SBOM_OPS_DT_BASE_URL and SBOM_OPS_DT_API_KEY"
+        )
+    return DependencyTrackClient(base_url, api_key)
+
+
+def run_assets(args: argparse.Namespace) -> int:
+    with AssetRegistry(
+        args.db, create_if_missing=args.asset_command == "register-service"
+    ) as registry:
+        if args.asset_command == "register-service":
+            service = RegisteredService(
+                service_id=args.service,
+                owner=args.owner,
+                criticality=BusinessCriticality(args.criticality),
+                impact_reason=args.reason,
+            )
+            registry.register_service(service)
+            print(f"registered service {service.service_id}")
+        elif args.asset_command == "register-deployable":
+            deployable = RegisteredDeployable(args.service, args.deployable)
+            registry.register_deployable(deployable)
+            print(f"registered deployable {deployable.project_name}")
+        elif args.asset_command == "list":
+            for service in registry.list_services():
+                print(
+                    f"service={service.service_id} owner={service.owner} "
+                    f"criticality={service.criticality.value} "
+                    f"reason={service.impact_reason}"
+                )
+            for deployable in registry.list_deployables():
+                print(f"deployable={deployable.project_name}")
+            for link in registry.list_links():
+                print(
+                    f"link={link.project_uuid} name={link.project_name} "
+                    f"version={link.project_version} reviewer={link.reviewer} "
+                    f"reviewed_at={link.reviewed_at}"
+                )
+        elif args.asset_command == "check":
+            registry.check_integrity()
+            print(f"asset DB integrity OK: {args.db}")
+        elif args.asset_command == "backup":
+            output = registry.backup_to(args.output)
+            print(f"asset DB backup created: {output}")
+        elif args.asset_command == "candidates":
+            for item in discover_project_candidates(
+                registry, _asset_dt_client().list_projects()
+            ):
+                print(
+                    f"status={item.status} project={item.project_uuid} "
+                    f"name={item.project_name} version={item.project_version} "
+                    f"service={item.service_id} deployable={item.deployable_id}"
+                )
+        elif args.asset_command == "audit-links":
+            audits = audit_reviewed_project_links(
+                registry, _asset_dt_client().list_projects()
+            )
+            if not audits:
+                print("no reviewed Project links")
+                return 1
+            for item in audits:
+                dt_version = (
+                    "not_visible"
+                    if item.current_name is None
+                    else item.current_version or "missing_version"
+                )
+                print(
+                    f"status={item.status.value} project={item.link.project_uuid} "
+                    f"reviewed_name={item.link.project_name} "
+                    f"reviewed_version={item.link.project_version} "
+                    f"dt_name={item.current_name or 'not_visible'} "
+                    f"dt_version={dt_version} "
+                    f"reviewer={item.link.reviewer} "
+                    f"reviewed_at={item.link.reviewed_at}"
+                )
+            if any(
+                item.status is not ProjectLinkAuditStatus.MATCHED for item in audits
+            ):
+                return 1
+        elif args.asset_command == "approve":
+            link = approve_project_link(
+                registry,
+                _asset_dt_client().list_projects(),
+                service_id=args.service,
+                deployable_id=args.deployable,
+                project_uuid=args.project,
+                reviewer=args.reviewer,
+            )
+            print(
+                f"reviewed project={link.project_uuid} "
+                f"name={link.project_name} version={link.project_version}"
+            )
+        else:
+            raise ValueError(f"unsupported assets command: {args.asset_command}")
+    return 0
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -284,6 +459,8 @@ def main() -> int:
     try:
         if args.command == "upload":
             return run_upload(args)
+        if args.command == "assets":
+            return run_assets(args)
         config = load_config(args)
         active_config = config
         if args.command == "plan":
@@ -295,6 +472,7 @@ def main() -> int:
                 force_refresh_kev=args.refresh_kev,
                 advisory_snapshot_path=args.advisory_snapshot,
                 asset_inventory_path=args.asset_inventory,
+                asset_db_path=args.asset_db,
             )
         parser.error(f"unsupported command: {args.command}")
     except (
@@ -302,6 +480,7 @@ def main() -> int:
         GitHubApiError,
         KevApiError,
         OSError,
+        sqlite3.Error,
         ValueError,
     ) as exc:
         if (

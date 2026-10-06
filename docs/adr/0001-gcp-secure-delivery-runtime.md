@@ -13,7 +13,7 @@ The platform has three different workload shapes:
 
 - Dependency-Track API server and frontend
 - PostgreSQL-backed inventory data
-- sbom-ops automation, including scheduled sync and a future SBOM upload gateway
+- sbom-ops automation, including scheduled sync and the local asset registry
 
 Dependency-Track remains the inventory and analysis source of truth. GitHub
 Issues remain the remediation workflow source of truth. The GCP design must not
@@ -40,7 +40,7 @@ Adopt a two-track production-shaped PoC before writing production Terraform:
 1. Evaluate Dependency-Track API server, frontend, and PostgreSQL on GKE
    Autopilot with an external managed PostgreSQL option.
 2. Evaluate Cloud Run only for stateless or bounded sbom-ops components, such
-   as the SBOM upload gateway and scheduled sync jobs, unless the PoC proves
+   as scheduled sync jobs, unless the PoC proves
    that Dependency-Track runtime behavior is a good fit.
 
 The first production candidate is:
@@ -48,8 +48,9 @@ The first production candidate is:
 - GKE Autopilot for Dependency-Track API server and frontend
 - managed PostgreSQL for Dependency-Track persistence
 - Workload Identity Federation for GitHub Actions to Google Cloud
-- Secret Manager for Dependency-Track API keys and gateway secrets
-- a narrow SBOM upload gateway that accepts only the documented BOM upload flow
+- protected CI secrets for the minimally scoped DT upload key, with runtime secrets held in
+  Secret Manager or an equivalent managed store
+- direct CI-to-DT BOM upload; no sbom-ops upload gateway by default
 - Cloud Run service or job for sbom-ops components where stateless execution is
   a better fit than Kubernetes
 
@@ -61,12 +62,15 @@ for the next PoC.
 - GitHub Actions must not store long-lived Google Cloud service account keys.
 - OIDC/WIF trust must restrict immutable organization/repository identity,
   protected refs or environments, and approved reusable workflow identity.
-- Caller-provided `project_uuid` must not be trusted as authorization.
-- Repository-to-Dependency-Track-project mapping must be resolved server side.
-- The upload gateway must allow only the BOM upload operation and required
-  content types.
-- Dependency-Track API keys must remain in Secret Manager or an equivalent
-  managed secret store, not in repository or workflow secrets.
+- Caller-provided Project name/UUID must not be treated as verified asset
+  identity. A human reviews the DT Project-to-service link before approval.
+- The DT upload key has `BOM_UPLOAD` and, if auto-creating Projects,
+  `PROJECT_CREATION_UPLOAD`. It is held in protected CI secrets;
+  it must never be committed or printed. This accepts the risk that a
+  compromised CI could write a wrong Project. Reconsider a gateway only if
+  operational evidence justifies it.
+- Runtime Dependency-Track keys remain in Secret Manager or an equivalent
+  managed secret store.
 - Human browser access must be validated separately from machine upload access.
 - Analysis state, VEX decisions, suppression, exceptions, and risk acceptance
   must remain human or explicitly governed workflows.
@@ -78,7 +82,7 @@ for the next PoC.
 Pros:
 
 - Low operational overhead for stateless HTTP services and scheduled jobs.
-- Good fit for an SBOM upload gateway and `sbom-ops sync` job.
+- Good fit for a `sbom-ops sync` job.
 - Native service identity and private invocation controls.
 
 Cons:
@@ -101,7 +105,7 @@ Pros:
   deployment patterns.
 - Autopilot reduces node management while preserving Kubernetes primitives for
   services, ingress, secrets integration, probes, and rollout control.
-- Keeps the upload gateway and scheduled sync free to use Cloud Run when their
+- Keeps scheduled sync free to use Cloud Run when its
   workload shape is stateless or run-to-completion.
 
 Cons:
@@ -135,12 +139,12 @@ The PoC must validate:
 - API server memory and CPU sizing against at least the documented recommended
   local requirements.
 - Dependency-Track OpenAPI reachability from the orchestrator path.
-- SBOM upload through the gateway without exposing the Dependency-Track upload
-  key to GitHub Actions.
+- Direct CI-to-DT SBOM upload using a protected minimally scoped key, followed by
+  a reviewed Project association in the SQLite asset registry.
 - WIF token exchange from GitHub Actions with deny tests for wrong repository,
   wrong ref/environment, and wrong reusable workflow.
-- Secret Manager access only from the gateway or approved automation identity.
-- Cloud Logging and Monitoring coverage for auth failures, gateway 4xx/5xx,
+- Secret Manager access only from approved automation identities.
+- Cloud Logging and Monitoring coverage for auth failures, DT upload 4xx/5xx,
   upload token, Dependency-Track analysis delay, and sync failure.
 - Human frontend access through IAP, Identity Platform, or Dependency-Track
   native OIDC before choosing one.
@@ -163,8 +167,8 @@ explicit human approval because they can create cloud resources and cost.
 
 - Terraform work must start as an evaluation harness, not a production promise.
 - The repository needs a small `infra/gcp/poc` boundary before reusable modules.
-- The upload gateway authorization model must be designed before accepting any
-  caller-selected project UUID.
+- A caller-selected Project name/UUID is an untrusted candidate until the
+  Project-to-asset link is explicitly reviewed.
 - Documentation must record threat model impact, rollback, and validation
   evidence with each infrastructure change.
 - GKE and Cloud Run remain candidates until the PoC result is accepted or this

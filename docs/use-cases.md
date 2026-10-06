@@ -11,7 +11,8 @@
 | --- | --- |
 | CI/CD | SBOM生成、SBOM更新、修正版の検証 |
 | Dependency-Track | SBOM、コンポーネント、脆弱性、EPSS、VEX/分析状態の管理 |
-| 自社の資産台帳 | サービス、稼働環境、担当者、公開状況、事業上の重要度の根拠 |
+| AWS等のデプロイ基盤（任意の連携） | 収集できるワークロード・コンテナ・成果物の観測元 |
+| sbom-ops資産DB（一部実装） | サービス・配布単位の登録と、人が確認したDT Project対応の保存。成果物・稼働情報は未実装 |
 | sbom-ops | Finding取得、KEV補完、優先度計算、資産情報の照合、Issue同期 |
 | GitHub Issues | 開発タスク、担当者、対応状況、クローズ状態の管理 |
 | Security team | 優先度ポリシー、VEX/分析判断、例外承認 |
@@ -44,21 +45,32 @@ SBOMからFindingが出ても、それだけでは「どのサービスの、ど
 誰が対応するか」は分からない。まずDT Project UUIDを、確認済みの
 サービス・環境・担当者の情報と照合する。
 
-### 現在の手順
+### 現在の手順（一部実装）
 
-1. 資産台帳または担当者が確認した内容から、版付きの資産JSONを用意する。
-2. `sync --asset-inventory PATH --dry-run --no-github`でDTのProjectと照合する。
-3. 対応付けのないProject、DTに見つからない資産記録、期限切れの記録を確認する。
-4. 同じCVEが複数環境に存在する場合も、環境ごとの稼働・公開状況を別に表示する。
-5. Security teamが実際の担当者、稼働版、情報源と更新期限を確認する。
+1. 人がサービスID、担当、事業影響の理由と配布単位をSQLite台帳へ登録する。
+2. CIがCycloneDX SBOMをDTへ直接送り、Project名を
+   `service_id/deployable_id`、版を変更不能な成果物IDにする。
+3. 運用担当者がDT画面とCI実行記録を確認し、`assets candidates`のUUID・名・版を
+   照合して`assets approve`で対応を承認する。候補表示だけでは確定しない。
+   承認後は`assets audit-links`でDTから見えるProjectとの一致を再確認する。
+4. DTのFindingと`sync --asset-db var/assets.sqlite3 --dry-run --no-github`の
+   優先度を一件ずつ照合する。承認済みリンクは表示用の情報であり、
+   優先度やIssue操作には反映しない。
+5. 稼働版・環境・公開状況は未実装の別情報として扱い、Project名や承認済み
+   リンクだけで「稼働中」「影響あり」と断定しない。
 
-架空の一連の動作は、`examples/asset-scenario-dt.example.json`と
+資産・優先度の考え方を先に見る架空例は、`examples/asset-scenario-dt.example.json`と
 `examples/asset-inventory.example.json`を入力にして、認証情報なしで
 `python examples/asset_scenario.py`を実行すると確認できる。前者は実際のDT API応答ではなく、
 オフライン検証用に整えた架空データである。本番公開、
 開発環境、期限切れ、対応付けなしの4ケースを扱う。現時点で資産情報は
 優先度やIssueの宛先を自動変更しない。架空テストは照合ロジックを
 確認するものであり、自社の台帳が正しいことの証明にはならない。
+初見の運用担当者が登録からDT画面、候補承認、Finding照合まで実行する手順は、
+[初回演習](operations.md#運用担当者向けの初回演習)にまとめる。
+本番の継続運用ではUUIDの手入力だけに依存せず、成果物と稼働版まで検証する。
+残りの[目標フロー](operations.md#sbomと稼働資産を結ぶ運用フロー一部実装)を
+受入条件として整理する。
 
 ## フロー1: 通常の定期同期
 

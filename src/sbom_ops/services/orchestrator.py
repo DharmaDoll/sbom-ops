@@ -19,6 +19,11 @@ from sbom_ops.domain.advisory import (
     AdvisorySnapshotStatus,
     ProjectExposureObservation,
 )
+from sbom_ops.domain.asset_registry import (
+    AssetRegistrySnapshot,
+    RegistryProjectObservation,
+    RegistrySnapshotStatus,
+)
 from sbom_ops.domain.assets import (
     AssetDeployment,
     AssetInventorySnapshot,
@@ -37,6 +42,7 @@ from sbom_ops.domain.models import (
 from sbom_ops.domain.priority import prioritize_finding
 from sbom_ops.domain.routing import ProjectRouter
 from sbom_ops.domain.workflow import MissingFindingAction, decide_missing_finding
+from sbom_ops.services.asset_registry import observe_registry_projects
 
 
 class DependencyTrackClientProtocol(Protocol):
@@ -100,6 +106,10 @@ class RunResult:
     issues_updated: int
     issues_closed: int
     dry_run: bool
+    registry_snapshot_status: RegistrySnapshotStatus = (
+        RegistrySnapshotStatus.NOT_REQUESTED
+    )
+    registry_projects: tuple[RegistryProjectObservation, ...] = ()
     analysis_snapshot_status: AnalysisSnapshotStatus = (
         AnalysisSnapshotStatus.NOT_REQUESTED
     )
@@ -135,6 +145,8 @@ class RunResult:
             "issues_updated": self.issues_updated,
             "issues_closed": self.issues_closed,
             "dry_run": self.dry_run,
+            "registry_snapshot_status": self.registry_snapshot_status.value,
+            "registry_projects": [item.as_dict() for item in self.registry_projects],
             "analysis_snapshot_status": self.analysis_snapshot_status.value,
             "asset_inventory_status": self.asset_inventory_status.value,
             "asset_inventory_id": self.asset_inventory_id,
@@ -201,6 +213,7 @@ class Orchestrator:
         force_refresh_kev: bool = False,
         advisory_snapshot: AdvisorySnapshot | None = None,
         asset_inventory: AssetInventorySnapshot | None = None,
+        asset_registry: AssetRegistrySnapshot | None = None,
     ) -> None:
         self._config = config
         self._dependency_track = dependency_track or DependencyTrackClient(
@@ -224,6 +237,7 @@ class Orchestrator:
         self._force_refresh_kev = force_refresh_kev
         self._advisory_snapshot = advisory_snapshot
         self._asset_inventory = asset_inventory
+        self._asset_registry = asset_registry
         if config.github.enabled and self._github is None:
             self._github = GitHubIssuesClient(
                 config.github.token,
@@ -268,8 +282,9 @@ class Orchestrator:
     def run(self) -> RunResult:
         run_id = str(uuid4())
         started_at = time.monotonic()
-        projects = self._dependency_track.list_projects()
-        available_project_uuids = {project.uuid for project in projects}
+        all_projects = self._dependency_track.list_projects()
+        available_project_uuids = {project.uuid for project in all_projects}
+        projects = all_projects
         project_filter = set(self._config.runtime.project_uuids)
         if project_filter:
             unavailable = sorted(project_filter - available_project_uuids)
@@ -281,6 +296,11 @@ class Orchestrator:
             projects = [
                 project for project in projects if project.uuid in project_filter
             ]
+        registry_projects = (
+            observe_registry_projects(self._asset_registry, all_projects, projects)
+            if self._asset_registry is not None
+            else ()
+        )
         if not self._config.runtime.wait_for_analysis:
             snapshot_status = AnalysisSnapshotStatus.NOT_REQUESTED
         elif not projects:
@@ -509,6 +529,12 @@ class Orchestrator:
             issues_updated=updated,
             issues_closed=closed,
             dry_run=self._config.runtime.dry_run,
+            registry_snapshot_status=(
+                RegistrySnapshotStatus.LOADED
+                if self._asset_registry is not None
+                else RegistrySnapshotStatus.NOT_REQUESTED
+            ),
+            registry_projects=registry_projects,
             analysis_snapshot_status=snapshot_status,
             asset_inventory_status=(
                 AssetInventoryStatus.LOADED

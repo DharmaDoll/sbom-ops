@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,6 @@ from urllib.request import Request
 
 from sbom_ops.clients.http import (
     HttpApiError,
-    collection_items,
     request_json,
 )
 
@@ -19,6 +19,7 @@ from sbom_ops.clients.http import (
 class DependencyTrackProject:
     uuid: str
     name: str
+    version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -122,12 +123,25 @@ def _vulnerability_aliases(value: Any) -> tuple[str, ...]:
 def _finding_from_payload(
     payload: dict[str, Any], project: DependencyTrackProject
 ) -> DependencyTrackFinding:
-    component = payload.get("component") or {}
-    vulnerability = payload.get("vulnerability") or {}
-    analysis = payload.get("analysis") or {}
+    component = payload.get("component")
+    vulnerability = payload.get("vulnerability")
+    analysis = payload.get("analysis")
+    if not isinstance(component, Mapping) or not isinstance(vulnerability, Mapping):
+        raise DependencyTrackApiError("finding has no component or vulnerability")
+    if not isinstance(component.get("uuid"), str) or not component["uuid"].strip():
+        raise DependencyTrackApiError("finding has no component UUID")
+    if not isinstance(component.get("name"), str) or not component["name"].strip():
+        raise DependencyTrackApiError("finding has no component name")
+    if analysis is None:
+        analysis = {}
+    elif not isinstance(analysis, Mapping):
+        raise DependencyTrackApiError("finding has malformed analysis")
+    suppressed = analysis.get("isSuppressed", False)
+    if not isinstance(suppressed, bool):
+        raise DependencyTrackApiError("finding has malformed suppression state")
     aliases = vulnerability.get("aliases") or []
     vulnerability_id = vulnerability.get("vulnId") or vulnerability.get("id")
-    if not vulnerability_id:
+    if not isinstance(vulnerability_id, str) or not vulnerability_id.strip():
         raise DependencyTrackApiError("finding has no vulnerability identifier")
     cvss_score, cvss_version = _first_cvss_score(
         ("CVSSv3", vulnerability.get("cvssV3BaseScore")),
@@ -151,7 +165,7 @@ def _finding_from_payload(
             maximum=1.0,
         ),
         analysis_state=analysis.get("state"),
-        is_suppressed=bool(analysis.get("isSuppressed", False)),
+        is_suppressed=suppressed,
         analysis_detail=analysis.get("detail"),
         finding_id=payload.get("uuid") or payload.get("id"),
         vulnerability_uuid=vulnerability.get("uuid"),
@@ -180,7 +194,13 @@ class DependencyTrackClient:
         self._max_retries = max_retries
         self._retry_backoff_seconds = retry_backoff_seconds
 
-    def _request_json(self, path: str, params: dict[str, str] | None = None) -> Any:
+    def _request_json(
+        self,
+        path: str,
+        params: dict[str, str] | None = None,
+        *,
+        include_headers: bool = False,
+    ) -> Any:
         query = f"?{urlencode(params)}" if params else ""
         request = Request(
             f"{self._base_url}{path}{query}",
@@ -193,6 +213,7 @@ class DependencyTrackClient:
                 max_retries=self._max_retries,
                 backoff_seconds=self._retry_backoff_seconds,
                 error_message=f"Dependency-Track request failed: {path}",
+                return_headers=include_headers,
             )
         except HttpApiError as exc:
             detail = f" (HTTP {exc.status})" if exc.status else ""
@@ -271,8 +292,12 @@ class DependencyTrackClient:
         while time.monotonic() < deadline:
             payload = self._request_json(f"/api/v1/event/token/{token}")
             processing = (
-                payload.get("processing") if isinstance(payload, dict) else payload
+                payload.get("processing") if isinstance(payload, Mapping) else None
             )
+            if not isinstance(processing, bool):
+                raise DependencyTrackApiError(
+                    "Dependency-Track BOM processing response is malformed"
+                )
             if processing is False:
                 return
             time.sleep(
@@ -296,15 +321,53 @@ class DependencyTrackClient:
         items: list[dict[str, Any]] = []
         offset = 0
         seen: set[str] = set()
+        expected_total: int | None = None
         while True:
             request_params = dict(params or {})
             if paginated:
                 request_params.update(
                     {"offset": str(offset), "limit": str(self._page_size)}
                 )
-            payload = self._request_json(path, request_params or None)
-            page = [dict(item) for item in collection_items(payload, keys)]
-            if not page:
+            if paginated:
+                payload, headers = self._request_json(
+                    path, request_params or None, include_headers=True
+                )
+                raw_total = next(
+                    (
+                        value
+                        for key, value in headers.items()
+                        if key.lower() == "x-total-count"
+                    ),
+                    None,
+                )
+                if (
+                    not isinstance(raw_total, str)
+                    or not raw_total.isascii()
+                    or not raw_total.isdigit()
+                ):
+                    raise DependencyTrackApiError(f"missing pagination total: {path}")
+                page_total = int(raw_total)
+                if expected_total is None:
+                    expected_total = page_total
+                elif page_total != expected_total:
+                    raise DependencyTrackApiError(f"pagination total changed: {path}")
+            else:
+                payload = self._request_json(path, request_params or None)
+            if isinstance(payload, list):
+                raw_page = payload
+            elif isinstance(payload, Mapping):
+                present_keys = [key for key in keys if key in payload]
+                if len(present_keys) != 1 or not isinstance(
+                    payload[present_keys[0]], list
+                ):
+                    raise DependencyTrackApiError(f"malformed collection: {path}")
+                raw_page = payload[present_keys[0]]
+            else:
+                raise DependencyTrackApiError(f"malformed collection: {path}")
+            if any(not isinstance(item, Mapping) for item in raw_page):
+                raise DependencyTrackApiError(f"malformed collection item: {path}")
+            page = [dict(item) for item in raw_page]
+            if not page and not paginated:
                 break
             identifiers = [
                 str(item.get("uuid") or item.get("id") or item) for item in page
@@ -313,8 +376,14 @@ class DependencyTrackClient:
                 raise DependencyTrackApiError(f"pagination did not advance: {path}")
             seen.update(identifiers)
             items.extend(page)
-            if not paginated or len(page) < self._page_size:
+            if not paginated:
                 break
+            if expected_total is None or len(items) > expected_total:
+                raise DependencyTrackApiError(f"pagination exceeds total: {path}")
+            if len(items) == expected_total:
+                break
+            if len(page) < self._page_size:
+                raise DependencyTrackApiError(f"pagination ended before total: {path}")
             offset += len(page)
         return items
 
@@ -322,16 +391,37 @@ class DependencyTrackClient:
         payload = self._get_collection(
             "/api/v1/project", ("projects", "items"), paginated=True
         )
+        if any(
+            not isinstance(item.get("uuid"), str)
+            or not item["uuid"].strip()
+            or not isinstance(item.get("name"), str)
+            or not item["name"].strip()
+            for item in payload
+        ):
+            raise DependencyTrackApiError("project collection has incomplete identity")
         return [
-            DependencyTrackProject(uuid=str(item["uuid"]), name=str(item["name"]))
+            DependencyTrackProject(
+                uuid=str(item["uuid"]),
+                name=str(item["name"]),
+                version=(
+                    str(item["version"]) if item.get("version") is not None else None
+                ),
+            )
             for item in payload
         ]
 
     def get_project_findings(self, project_uuid: str) -> list[DependencyTrackFinding]:
         project_payload = self._request_json(f"/api/v1/project/{project_uuid}")
+        if (
+            not isinstance(project_payload, Mapping)
+            or project_payload.get("uuid") != project_uuid
+            or not isinstance(project_payload.get("name"), str)
+            or not project_payload["name"].strip()
+        ):
+            raise DependencyTrackApiError("project response has incomplete identity")
         project = DependencyTrackProject(
             uuid=project_uuid,
-            name=str(project_payload.get("name") or project_uuid),
+            name=project_payload["name"],
         )
         payload = self._get_collection(
             f"/api/v1/finding/project/{project_uuid}",
@@ -346,6 +436,14 @@ class DependencyTrackClient:
             f"/api/v1/vulnerability/project/{project_uuid}",
             ("vulnerabilities", "items"),
         )
+        if any(
+            not isinstance(item.get("vulnID") or item.get("vulnId"), str)
+            or not (item.get("vulnID") or item.get("vulnId")).strip()
+            for item in vulnerability_payload
+        ):
+            raise DependencyTrackApiError(
+                "vulnerability collection has incomplete identity"
+            )
         epss_by_vulnerability = {
             str(item.get("vulnID") or item.get("vulnId")): _score(
                 item.get("epssScore"), maximum=1.0
@@ -354,11 +452,13 @@ class DependencyTrackClient:
             if item.get("vulnID") or item.get("vulnId")
         }
         return [
-            finding
-            if finding.epss_score is not None
-            else replace(
-                finding,
-                epss_score=epss_by_vulnerability.get(finding.vulnerability_id),
+            (
+                finding
+                if finding.epss_score is not None
+                else replace(
+                    finding,
+                    epss_score=epss_by_vulnerability.get(finding.vulnerability_id),
+                )
             )
             for finding in findings
         ]

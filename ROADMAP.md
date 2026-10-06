@@ -164,9 +164,18 @@ non-advisory Finding assessments matched the earlier run, and Issue actions
 remained zero. The synthetic input and result are ignored under
 `var/product-validation-20261004/`; they establish join behavior, not real
 ownership or exposure.
-Next validate a small reviewed mapping from real organizational inventory,
-including deployed version and ownership, then design any priority or routing
-policy with human review. Missing datasource visibility follows this work.
+Next validate one real build-to-SBOM-to-DT-Project-to-deployment chain, including
+the immutable artifact identity, Project UUID resolution, deployed version,
+environment, and ownership. A manual UUID entry is only a learning exercise:
+the current v1 join cannot prove the deployed artifact matches the SBOM.
+The [target operating flow](docs/operations.md#sbomと稼働資産を結ぶ運用フロー一部実装)
+now assumes no external organizational asset register. The next product gate
+is a small, manual-first sbom-ops asset DB, initially SQLite on a single host
+with local persistent storage. AWS or other platform discovery is optional
+later evidence, not a prerequisite for registration. A human-reported
+deployment is not verified runtime evidence. Only after the identity evidence
+should asset-based priority or routing policy be considered with human review.
+Missing datasource visibility follows this work.
 
 Prioritize asset mapping and datasource coverage over additional lab workflow
 machinery. Human-review tooling is sufficient for an initial
@@ -289,6 +298,61 @@ telemetry contract exists.
 
 ## Phase 0: Production Validation (P0)
 
+- Establish a reproducible, immutable artifact identity linking the generated
+  SBOM and verified DT Project UUID; distinguish a human-reported deployment
+  from an independently observed runtime deployment. Cover
+  multiple containers, overlapping old/new rollouts, missing/ambiguous matches,
+  stale observations, and corrections. Reject silent reuse of one DT Project
+  UUID for a different artifact; record reviewed SBOM corrections. Do not assert
+  deployment from Project UUID or a mutable version tag alone.
+- Implement a minimal manual-first sbom-ops asset DB because no external
+  organizational asset register is assumed. Use SQLite on one host with local
+  persistent storage for the initial deployment; do not share its file across
+  hosts or over network storage. Persist artifact/SBOM/Project links, reviewed
+  service and deployment declarations, provenance, corrections, and audit
+  history; do not copy DT's Findings or GitHub's remediation workflow. Define
+  schema migrations, retention, integrity checks, online backup/restore, and
+  bounded write contention before production use. Revisit a server DB if
+  multi-host writers become necessary. Ephemeral CI jobs must not keep the
+  SQLite file; design a durable registration endpoint or server DB before
+  enabling CI writes to this registry.
+  The first registry slice now rejects missing DB paths on read/approval,
+  exposes SQLite integrity/foreign-key checks, and creates non-overwriting
+  online backups. Retention policy, correction audit, migration tooling, and
+  production restore drills remain open.
+- Define the manual registration contract and CLI first. Register a stable
+  service ID, owner, business criticality and rationale, and planned
+  environments before any build or DT Project exists. A system grouping is
+  optional; each independently built deployable unit gets its own artifact,
+  SBOM, and DT Project mapping. Add deployment and exposure declarations with
+  reviewer, evidence, and expiry later. Support reviewed JSON import through
+  the same validation path. Preserve `unknown` for missing declarations and
+  show conflicts; never silently replace a human declaration with collected
+  data.
+- Prove a real build-to-SBOM-to-DT-Project chain and an operator-entered
+  deployment for one representative service, then test what can and cannot be
+  independently verified. Keep the current JSON input as an evaluation bridge,
+  not proof of deployed coverage. Add read-only ECS/EKS or other-platform
+  discovery only when it closes a specific evidence gap; keep observations
+  source-attributed and handle untagged/unmapped workloads, stale/partial
+  scans, and overlapping versions. Discovery is not a prerequisite for the
+  manual-first registry.
+- Use direct CI-to-DT BOM upload with registered
+  `service_id/deployable_id` Project names and immutable versions. The SQLite
+  registry, candidate discovery, and explicit Project-link approval are the
+  first implemented slice. Read-only auditing now flags reviewed links that
+  are not visible, changed, or ambiguous in DT. An explicit `sync --asset-db`
+  now reports reviewed links for selected Projects without altering priority or
+  Issues. A local Quick Start trial used a disposable DT Project and separate
+  SQLite DB: BOM upload, candidate approval, link audit, backup check, and
+  read-only sync succeeded; DT API and sync each returned 77 Findings. The
+  DT UI login worked, but Finding inspection in the UI was not completed.
+  A subsequent `sync --asset-db` dry-run reported the reviewed link as
+  `matched` with its registered owner and criticality; all 77 Findings were
+  still processed and no Issue action occurred.
+  Next, test real CI run/artifact evidence, re-uploads, corrections,
+  permissions, and deployment joins. Do not treat
+  Project name, tags, or CycloneDX properties as verified identity alone.
 - Validate Dependency-Track Project, Finding, EPSS, Analysis, pagination, and
   processing-token behavior against a representative environment.
 - Run the highest-value planned Identity, Lifecycle, Portfolio, Triage, and
@@ -304,7 +368,12 @@ telemetry contract exists.
 - Validate GitHub Issue create, update, migration, and safe closure after a
   reviewed dry-run.
 - Exercise timeout, `429`, `5xx`, partial reads, analysis-in-progress, and
-  project-filter failure paths without incorrectly closing Issues.
+  project-filter failure paths without incorrectly closing Issues. The client
+  now rejects malformed Finding and Project responses, inconsistent or
+  incomplete Project pagination, and malformed BOM processing status; unit
+  tests cover terminal 401/403, transient retries, and no-close on failed
+  Finding reads. A valid-looking but incomplete Finding array and the absence
+  of a server-side analysis-completion signal remain unresolved closure risks.
 - Validate YAML overrides, secret references, and multi-project routing in
   representative environments.
 - Confirm minimum permissions for separate Dependency-Track read/upload keys and
@@ -324,8 +393,10 @@ The runtime decision and PoC gates are in
 - Validate separate Dependency-Track API, frontend, and external PostgreSQL
   deployment, including migrations, backup, restore, upgrade, and rollback.
 - Implement tightly scoped GitHub OIDC and Workload Identity Federation trust.
-- Implement a least-privilege SBOM upload gateway with server-side
-  repository-to-project authorization and Secret Manager integration.
+- Validate direct CI-to-DT upload with `BOM_UPLOAD` and, only if auto-creating
+  Projects, `PROJECT_CREATION_UPLOAD`, protected CI
+  secrets, immutable Project coordinates, and operator-reviewed asset links.
+  Reconsider a gateway only if operational evidence justifies its complexity.
 - Validate service-to-service authentication and human browser access separately.
 - Publish a pinned, reusable GitHub Actions upload workflow that fails closed by
   default and exposes actionable failures.
@@ -334,12 +405,13 @@ The runtime decision and PoC gates are in
 
 ## Phase 1: Operations Foundation (P1)
 
-- Validate the Project/service/environment/owner/deployment join using a small
-  reviewed organizational inventory. The optional v1 asset input and fictional
-  offline scenario are implemented; real mappings, deployed-version evidence,
-  source update cadence, and review ownership remain to be established. Keep
-  asset criticality and exposure visible without changing priority or Issues
-  until a separate policy decision is reviewed.
+- Extend the Phase 0 verified artifact/deployment join to a small reviewed
+  set of services in the sbom-ops asset DB. Establish source update cadence,
+  expiry monitoring,
+  correction handling, and review ownership. The optional v1 asset input and
+  fictional offline scenario are implemented, but do not verify artifact
+  identity. Keep criticality and exposure visible without changing priority or
+  Issues until a separate policy decision is reviewed.
 - Move local JSONL sync records to a queryable operational store.
 - Record an audit history for Finding, priority, Analysis, and Issue changes.
 - Add freshness monitoring and synchronization failure alerts. Explicit

@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from email.utils import format_datetime
 from io import BytesIO
 from urllib.error import HTTPError
+from urllib.request import Request
 
 import pytest
 
@@ -82,6 +83,23 @@ def test_http_json_response_includes_status_headers_and_duration() -> None:
     assert response.status == 201
     assert response.headers == {"X-Test": "value"}
     assert response.duration_seconds >= 0
+
+
+def test_http_json_can_return_pagination_headers() -> None:
+    payload, headers = request_json(
+        request=kev_module.Request("https://example.test/projects"),
+        timeout=1,
+        max_retries=0,
+        backoff_seconds=0,
+        error_message="failed",
+        opener=lambda request, timeout: FakeResponse(
+            [{"uuid": "project-1"}], headers={"X-Total-Count": "1"}
+        ),
+        return_headers=True,
+    )
+
+    assert payload == [{"uuid": "project-1"}]
+    assert headers == {"X-Total-Count": "1"}
 
 
 def test_http_json_response_can_allow_an_empty_success_body() -> None:
@@ -310,6 +328,66 @@ def test_http_retry_recovers_from_connection_error(monkeypatch) -> None:
     )
 
     assert response == {"ok": True}
+    assert calls == 2
+    assert sleeps == [0.5]
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_http_auth_and_permission_failures_are_terminal(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    calls = 0
+
+    def reject(request: Request, timeout: float) -> None:
+        nonlocal calls
+        del timeout
+        calls += 1
+        raise HTTPError(request.full_url, status, "access denied", {}, BytesIO(b"{}"))
+
+    monkeypatch.setattr(
+        http_module.time,
+        "sleep",
+        lambda _: (_ for _ in ()).throw(AssertionError("must not retry")),
+    )
+
+    with pytest.raises(HttpApiError) as raised:
+        request_json(
+            request=kev_module.Request("https://example.test/data"),
+            timeout=1,
+            max_retries=3,
+            backoff_seconds=0.5,
+            error_message="failed",
+            opener=reject,
+        )
+
+    assert calls == 1
+    assert raised.value.status == status
+
+
+def test_http_timeout_is_retried_with_bounded_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def timeout_once(request: Request, timeout: float) -> FakeResponse:
+        nonlocal calls
+        del request, timeout
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("timed out")
+        return FakeResponse({"ok": True})
+
+    monkeypatch.setattr(http_module.time, "sleep", sleeps.append)
+
+    assert request_json(
+        request=kev_module.Request("https://example.test/data"),
+        timeout=1,
+        max_retries=1,
+        backoff_seconds=0.5,
+        error_message="failed",
+        opener=timeout_once,
+    ) == {"ok": True}
     assert calls == 2
     assert sleeps == [0.5]
 

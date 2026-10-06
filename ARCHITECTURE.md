@@ -25,6 +25,9 @@ sbom-ops CLI
      ├─ reviewed asset inventory JSON (optional)
      │    └─ Project → service / environment / owner / deployed version
      │
+     ├─ local SQLite asset registry (optional)
+     │    └─ registered service / deployable / reviewed DT Project link
+     │
      ├─ advisory evidence JSON (optional)
      │
      └─ GitHub REST API
@@ -45,7 +48,7 @@ Examples
 - cargo-cyclonedx
 
 Upload
-- Dependency-Track API
+- CI → Dependency-Track BOM API directly; sbom-ops is not an upload gateway
 
 ---
 
@@ -68,6 +71,27 @@ owner, deployed version, exposure, and business criticality. It reports
 unmapped Projects and expired observations. These facts are scoped to a
 deployment and remain separate from per-Component Findings. The current
 priority engine and Issue routing do not consume them automatically.
+The current join checks only the Project UUID; it does not prove that the
+deployed artifact is the one represented by that Project's SBOM. The local
+JSON file is an evaluation input, not a production asset system of record.
+
+No external organizational asset register is assumed. The first SQLite asset
+registry now stores manually registered services and deployables and explicit
+human-approved DT Project links. Project names and versions read from DT are
+candidates, not proof of CI origin, SBOM provenance, or deployment.
+`sync --asset-db` projects matching reviewed links into read-only run output;
+it does not feed priority or Issue workflow. A later stage must connect an
+immutable built artifact and its SBOM to the reviewed
+DT Project and retain time-bounded deployment declarations.
+ECS/EKS collectors would later add separate machine observations where useful,
+without silently replacing human records. It must retain provenance and
+unmatched/conflicting observations, plus reviewed owner and business metadata
+that cannot be derived from infrastructure alone. It
+must not copy DT's Finding inventory or GitHub's remediation workflow. The
+first single-host implementation uses SQLite on local persistent storage;
+ephemeral CI jobs only upload to DT and do not write this DB. Shared-file or
+multi-host deployment requires a server DB. See the
+[target operating flow](docs/operations.md#sbomと稼働資産を結ぶ運用フロー一部実装).
 
 ---
 
