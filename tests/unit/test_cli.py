@@ -8,13 +8,18 @@ from types import SimpleNamespace
 import pytest
 
 from sbom_ops import cli
+from sbom_ops.domain.advisory import ExposureStatus
 from sbom_ops.domain.asset_registry import (
+    RegisteredDeployable,
     RegisteredService,
+    RegistryDeploymentObservation,
+    RegistryDeploymentStatus,
     RegistryProjectObservation,
     RegistryProjectStatus,
     RegistrySnapshotStatus,
+    ReportedDeployment,
 )
-from sbom_ops.domain.assets import BusinessCriticality
+from sbom_ops.domain.assets import BusinessCriticality, DeploymentStatus
 from sbom_ops.domain.models import (
     AnalysisSnapshotStatus,
     AnalysisState,
@@ -164,6 +169,21 @@ def test_sync_reads_asset_db_before_running_orchestrator(
                 "checkout-api", "team-checkout", BusinessCriticality.HIGH, "payments"
             )
         )
+        registry.register_deployable(RegisteredDeployable("checkout-api", "web"))
+        registry.register_deployment(
+            ReportedDeployment(
+                "checkout-api",
+                "web",
+                "production",
+                "build-123",
+                DeploymentStatus.DEPLOYED,
+                ExposureStatus.UNKNOWN,
+                "alice",
+                "deployment record 123",
+                "2026-10-07T00:00:00Z",
+                "2099-10-07T00:00:00Z",
+            )
+        )
     captured = {}
 
     class CapturingOrchestrator(FakeOrchestrator):
@@ -177,6 +197,7 @@ def test_sync_reads_asset_db_before_running_orchestrator(
     assert cli.run_sync(config, "json", asset_db_path=str(path)) == 0
     assert captured["registry"].services[0].owner == "team-checkout"
     assert captured["registry"].links == ()
+    assert captured["registry"].deployment_reports[0].artifact_id == "build-123"
     assert json.loads(capsys.readouterr().out)["status"] == "succeeded"
 
 
@@ -260,7 +281,8 @@ def test_text_result_makes_missing_scores_explicit(monkeypatch, capsys) -> None:
         "vulnerability=GHSA-ABCD-1234-5678 "
         "source=GITHUB dt_aliases=CVE-2026-1001 severity=HIGH "
         "cvss=unavailable cvss_version=unavailable epss=unavailable "
-        "in_kev=false advisory=none analysis=NOT_SET suppressed=false "
+        "in_kev=false poc_reported=unknown poc_sources=none advisory=none "
+        "analysis=NOT_SET suppressed=false "
         "rationale=Default monitoring priority" in captured.out
     )
 
@@ -286,6 +308,17 @@ def test_text_result_shows_reviewed_registry_link(monkeypatch, capsys) -> None:
                         reviewer="alice",
                     ),
                 ),
+                registry_deployments=(
+                    RegistryDeploymentObservation(
+                        project_uuid="project-1",
+                        environment="production",
+                        artifact_id="v1",
+                        status=RegistryDeploymentStatus.REPORTED,
+                        report_ids=(1,),
+                        deployment_status=DeploymentStatus.DEPLOYED,
+                        exposure_status=ExposureStatus.UNKNOWN,
+                    ),
+                ),
             )
 
     config = SimpleNamespace(runtime=SimpleNamespace(sync_log_file=None))
@@ -300,6 +333,11 @@ def test_text_result_shows_reviewed_registry_link(monkeypatch, capsys) -> None:
         "dt_name=checkout-api/web dt_version=v1 "
         "reviewed_name=checkout-api/web reviewed_version=v1 "
         "service=checkout-api/web owner=team-checkout criticality=high reviewer=alice"
+    ) in output
+    assert (
+        "registry-deployment project=project-1 environment=production "
+        "artifact=v1 status=reported deployment=deployed exposure=unknown "
+        "report_ids=1 other_artifacts=none"
     ) in output
 
 

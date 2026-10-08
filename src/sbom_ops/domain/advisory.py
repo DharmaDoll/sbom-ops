@@ -30,6 +30,39 @@ class AdvisorySnapshotStatus(StrEnum):
     INVALID = "invalid"
 
 
+class PocReportStatus(StrEnum):
+    REPORTED = "reported"
+    NOT_OBSERVED = "not_observed"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class PocReportSummary:
+    """Provider-reported public PoCs, not independently validated exploits."""
+
+    status: PocReportStatus
+    sources: tuple[VulnerabilityEvidenceObservation, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status.value,
+            "sources": [
+                {
+                    "vulnerability_id": item.vulnerability_id,
+                    "source": item.source,
+                    "outcome": item.outcome.value,
+                    "record_count": item.record_count,
+                    "observed_at": item.observed_at,
+                    "freshness": item.freshness.value,
+                    "effective_freshness": item.effective_freshness().value,
+                    "expires_at": item.expires_at,
+                    "complete": item.complete,
+                }
+                for item in self.sources
+            ],
+        }
+
+
 @dataclass(frozen=True)
 class AdvisoryReference:
     record_id: str | None
@@ -62,6 +95,18 @@ class VulnerabilityEvidenceObservation:
     record_count: int | None
     complete: bool
     references: tuple[AdvisoryReference, ...] = ()
+    expires_at: str | None = None
+
+    def effective_freshness(self, *, now: datetime | None = None) -> EvidenceFreshness:
+        if self.freshness is not EvidenceFreshness.FRESH:
+            return self.freshness
+        if self.expires_at is None:
+            return EvidenceFreshness.UNKNOWN
+        current_time = now or datetime.now(UTC)
+        expires = datetime.fromisoformat(self.expires_at.replace("Z", "+00:00"))
+        if expires <= current_time:
+            return EvidenceFreshness.STALE
+        return EvidenceFreshness.FRESH
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -72,11 +117,37 @@ class VulnerabilityEvidenceObservation:
             "observed_at": self.observed_at,
             "source_revision": self.source_revision,
             "freshness": self.freshness.value,
+            "expires_at": self.expires_at,
             "record_count": self.record_count,
             "retained_record_count": len(self.references),
             "complete": self.complete,
             "references": [reference.as_dict() for reference in self.references],
         }
+
+
+def summarize_poc_reports(
+    observations: tuple[VulnerabilityEvidenceObservation, ...],
+    *,
+    now: datetime | None = None,
+) -> PocReportSummary:
+    """Summarize only explicit public-PoC signals, without summing providers."""
+    sources = tuple(item for item in observations if item.signal == "published_poc")
+    fresh = tuple(
+        item
+        for item in sources
+        if item.effective_freshness(now=now) is EvidenceFreshness.FRESH
+    )
+    if any(item.outcome is EvidenceOutcome.AVAILABLE for item in fresh):
+        status = PocReportStatus.REPORTED
+    elif (
+        sources
+        and len(fresh) == len(sources)
+        and all(item.outcome is EvidenceOutcome.NOT_OBSERVED for item in fresh)
+    ):
+        status = PocReportStatus.NOT_OBSERVED
+    else:
+        status = PocReportStatus.UNKNOWN
+    return PocReportSummary(status=status, sources=sources)
 
 
 @dataclass(frozen=True)

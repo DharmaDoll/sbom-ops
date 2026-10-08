@@ -15,14 +15,19 @@ from sbom_ops.clients.dependency_track import (
 from sbom_ops.clients.github import GitHubApiError
 from sbom_ops.clients.kev import KevApiError
 from sbom_ops.config import AppConfig, load_config
-from sbom_ops.domain.advisory import AdvisorySnapshotStatus
+from sbom_ops.domain.advisory import AdvisorySnapshotStatus, ExposureStatus
 from sbom_ops.domain.asset_registry import (
     AssetRegistrySnapshot,
     ProjectLinkAuditStatus,
     RegisteredDeployable,
     RegisteredService,
+    ReportedDeployment,
 )
-from sbom_ops.domain.assets import AssetInventoryStatus, BusinessCriticality
+from sbom_ops.domain.assets import (
+    AssetInventoryStatus,
+    BusinessCriticality,
+    DeploymentStatus,
+)
 from sbom_ops.services.advisory_snapshot import load_advisory_snapshot
 from sbom_ops.services.asset_inventory import load_asset_inventory
 from sbom_ops.services.asset_registry import (
@@ -93,10 +98,31 @@ def build_parser() -> argparse.ArgumentParser:
     deployable_parser = asset_commands.add_parser("register-deployable")
     deployable_parser.add_argument("--service", required=True)
     deployable_parser.add_argument("--deployable", required=True)
+    deployment_parser = asset_commands.add_parser("report-deployment")
+    deployment_parser.add_argument("--service", required=True)
+    deployment_parser.add_argument("--deployable", required=True)
+    deployment_parser.add_argument("--environment", required=True)
+    deployment_parser.add_argument("--artifact", required=True)
+    deployment_parser.add_argument(
+        "--status",
+        choices=tuple(item.value for item in DeploymentStatus),
+        required=True,
+    )
+    deployment_parser.add_argument(
+        "--exposure",
+        choices=tuple(item.value for item in ExposureStatus),
+        required=True,
+    )
+    deployment_parser.add_argument("--reviewer", required=True)
+    deployment_parser.add_argument("--evidence", required=True)
+    deployment_parser.add_argument("--observed-at", required=True)
+    deployment_parser.add_argument("--expires-at", required=True)
     asset_commands.add_parser("list")
     asset_commands.add_parser("check")
     backup_parser = asset_commands.add_parser("backup")
     backup_parser.add_argument("--output", required=True)
+    migrate_parser = asset_commands.add_parser("migrate")
+    migrate_parser.add_argument("--backup", required=True)
     asset_commands.add_parser("candidates")
     asset_commands.add_parser("audit-links")
     approve_parser = asset_commands.add_parser("approve")
@@ -166,6 +192,7 @@ def run_sync(
             asset_registry = AssetRegistrySnapshot(
                 services=registry.list_services(),
                 links=registry.list_links(),
+                deployment_reports=registry.list_deployment_reports(),
             )
     snapshot = None
     snapshot_error = None
@@ -248,8 +275,30 @@ def run_sync(
             f"criticality={item.criticality.value if item.criticality else 'unknown'} "
             f"reviewer={item.reviewer or 'none'}"
         )
-    for assessment in result.assessments:
+    for item in result.registry_deployments:
+        deployment = (
+            item.deployment_status.value if item.deployment_status else "unknown"
+        )
+        exposure = item.exposure_status.value if item.exposure_status else "unknown"
+        print(
+            f"registry-deployment project={item.project_uuid} "
+            f"environment={item.environment or 'unreported'} "
+            f"artifact={item.artifact_id or 'unknown'} "
+            f"status={item.status.value} "
+            f"deployment={deployment} exposure={exposure} "
+            f"report_ids={','.join(str(value) for value in item.report_ids) or 'none'} "
+            f"other_artifacts={','.join(item.other_artifact_ids) or 'none'}"
+        )
+    for assessment in result.review_assessments():
         rationale = ", ".join(assessment.rationale)
+        poc_sources = (
+            ",".join(
+                f"{item.vulnerability_id}/{item.source}:"
+                f"{item.record_count if item.record_count is not None else 'unknown'}"
+                for item in assessment.poc_reports.sources
+            )
+            or "none"
+        )
         advisory = (
             ",".join(
                 f"{item.source}/{item.signal}:{item.outcome.value}"
@@ -280,6 +329,8 @@ def run_sync(
             f"severity={assessment.severity.value} cvss={cvss} "
             f"cvss_version={assessment.cvss_version or 'unavailable'} epss={epss} "
             f"in_kev={str(assessment.in_kev).lower()} "
+            f"poc_reported={assessment.poc_reports.status.value} "
+            f"poc_sources={poc_sources} "
             f"advisory={advisory} "
             f"analysis={assessment.analysis_state.value} "
             f"suppressed={str(assessment.is_suppressed).lower()} "
@@ -378,6 +429,22 @@ def run_assets(args: argparse.Namespace) -> int:
             deployable = RegisteredDeployable(args.service, args.deployable)
             registry.register_deployable(deployable)
             print(f"registered deployable {deployable.project_name}")
+        elif args.asset_command == "report-deployment":
+            report = registry.register_deployment(
+                ReportedDeployment(
+                    service_id=args.service,
+                    deployable_id=args.deployable,
+                    environment=args.environment,
+                    artifact_id=args.artifact,
+                    deployment_status=DeploymentStatus(args.status),
+                    exposure_status=ExposureStatus(args.exposure),
+                    reviewer=args.reviewer,
+                    evidence=args.evidence,
+                    observed_at=args.observed_at,
+                    expires_at=args.expires_at,
+                )
+            )
+            print(f"recorded human deployment report={report.report_id}")
         elif args.asset_command == "list":
             for service in registry.list_services():
                 print(
@@ -393,12 +460,36 @@ def run_assets(args: argparse.Namespace) -> int:
                     f"version={link.project_version} reviewer={link.reviewer} "
                     f"reviewed_at={link.reviewed_at}"
                 )
+            for report in registry.list_deployment_reports():
+                if report.is_future():
+                    freshness = "future"
+                elif report.is_current():
+                    freshness = "current"
+                else:
+                    freshness = "expired"
+                print(
+                    f"deployment_report={report.report_id} "
+                    f"service={report.service_id} deployable={report.deployable_id} "
+                    f"environment={report.environment} artifact={report.artifact_id} "
+                    f"status={report.deployment_status.value} "
+                    f"exposure={report.exposure_status.value} "
+                    f"freshness={freshness} "
+                    f"reviewer={report.reviewer} evidence={report.evidence} "
+                    f"observed_at={report.observed_at} expires_at={report.expires_at}"
+                )
         elif args.asset_command == "check":
             registry.check_integrity()
             print(f"asset DB integrity OK: {args.db}")
         elif args.asset_command == "backup":
             output = registry.backup_to(args.output)
             print(f"asset DB backup created: {output}")
+        elif args.asset_command == "migrate":
+            if registry.schema_version == 2:
+                print("asset DB already uses schema v2")
+            else:
+                output = registry.backup_to(args.backup)
+                registry.migrate()
+                print(f"asset DB upgraded to schema v2; v1 backup: {output}")
         elif args.asset_command == "candidates":
             for item in discover_project_candidates(
                 registry, _asset_dt_client().list_projects()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -19,6 +20,7 @@ from sbom_ops.domain.advisory import (
 _MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024
 _MAX_OBSERVATIONS = 10_000
 _MAX_EXPOSURE_OBSERVATIONS = 10_000
+_CVE_IDENTIFIER = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
 
 
 def _required_string(value: object, field: str) -> str:
@@ -99,6 +101,12 @@ def load_advisory_snapshot(path: str | Path) -> AdvisorySnapshot:
         )
         source = _required_string(item.get("source"), f"{field}.source")
         signal = _required_string(item.get("signal"), f"{field}.signal")
+        if signal == "published_poc" and not _CVE_IDENTIFIER.fullmatch(
+            vulnerability_id
+        ):
+            raise ValueError(
+                f"{field}.vulnerability_id must be a CVE for published_poc"
+            )
         key = (vulnerability_id.upper(), source.casefold(), signal.casefold())
         if key in observation_keys:
             raise ValueError(f"duplicate observation: {field}")
@@ -108,6 +116,15 @@ def load_advisory_snapshot(path: str | Path) -> AdvisorySnapshot:
             EvidenceFreshness, item.get("freshness"), f"{field}.freshness"
         )
         observed_at = _timestamp(item.get("observed_at"), f"{field}.observed_at")
+        expires_at = item.get("expires_at")
+        if signal == "published_poc" and expires_at is None:
+            raise ValueError(f"{field}.expires_at is required for published_poc")
+        if expires_at is not None:
+            expires_at = _timestamp(expires_at, f"{field}.expires_at")
+            observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+            expires = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            if expires <= observed:
+                raise ValueError(f"{field}.expires_at must be later than observed_at")
         source_revision = _optional_string(
             item.get("source_revision"), f"{field}.source_revision"
         )
@@ -190,6 +207,7 @@ def load_advisory_snapshot(path: str | Path) -> AdvisorySnapshot:
                 record_count=record_count,
                 complete=complete,
                 references=tuple(references),
+                expires_at=expires_at,
             )
         )
 

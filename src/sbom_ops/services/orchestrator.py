@@ -21,6 +21,7 @@ from sbom_ops.domain.advisory import (
 )
 from sbom_ops.domain.asset_registry import (
     AssetRegistrySnapshot,
+    RegistryDeploymentObservation,
     RegistryProjectObservation,
     RegistrySnapshotStatus,
 )
@@ -39,10 +40,13 @@ from sbom_ops.domain.models import (
     PrioritizedFinding,
     Severity,
 )
-from sbom_ops.domain.priority import prioritize_finding
+from sbom_ops.domain.priority import order_assessments_for_review, prioritize_finding
 from sbom_ops.domain.routing import ProjectRouter
 from sbom_ops.domain.workflow import MissingFindingAction, decide_missing_finding
-from sbom_ops.services.asset_registry import observe_registry_projects
+from sbom_ops.services.asset_registry import (
+    observe_registry_deployments,
+    observe_registry_projects,
+)
 
 
 class DependencyTrackClientProtocol(Protocol):
@@ -110,6 +114,7 @@ class RunResult:
         RegistrySnapshotStatus.NOT_REQUESTED
     )
     registry_projects: tuple[RegistryProjectObservation, ...] = ()
+    registry_deployments: tuple[RegistryDeploymentObservation, ...] = ()
     analysis_snapshot_status: AnalysisSnapshotStatus = (
         AnalysisSnapshotStatus.NOT_REQUESTED
     )
@@ -132,6 +137,9 @@ class RunResult:
     actions: tuple[str, ...] = ()
     assessments: tuple[FindingAssessment, ...] = ()
 
+    def review_assessments(self) -> tuple[FindingAssessment, ...]:
+        return order_assessments_for_review(self.assessments)
+
     def as_dict(self) -> dict[str, object]:
         """Return an enum-free payload for CLI and downstream adapters."""
         return {
@@ -147,6 +155,9 @@ class RunResult:
             "dry_run": self.dry_run,
             "registry_snapshot_status": self.registry_snapshot_status.value,
             "registry_projects": [item.as_dict() for item in self.registry_projects],
+            "registry_deployments": [
+                item.as_dict() for item in self.registry_deployments
+            ],
             "analysis_snapshot_status": self.analysis_snapshot_status.value,
             "asset_inventory_status": self.asset_inventory_status.value,
             "asset_inventory_id": self.asset_inventory_id,
@@ -190,9 +201,10 @@ class RunResult:
                         observation.as_dict()
                         for observation in item.advisory_observations
                     ],
+                    "poc_reports": item.poc_reports.as_dict(),
                     "rationale": list(item.rationale),
                 }
-                for item in self.assessments
+                for item in self.review_assessments()
             ],
         }
 
@@ -298,6 +310,11 @@ class Orchestrator:
             ]
         registry_projects = (
             observe_registry_projects(self._asset_registry, all_projects, projects)
+            if self._asset_registry is not None
+            else ()
+        )
+        registry_deployments = (
+            observe_registry_deployments(self._asset_registry, registry_projects)
             if self._asset_registry is not None
             else ()
         )
@@ -535,6 +552,7 @@ class Orchestrator:
                 else RegistrySnapshotStatus.NOT_REQUESTED
             ),
             registry_projects=registry_projects,
+            registry_deployments=registry_deployments,
             analysis_snapshot_status=snapshot_status,
             asset_inventory_status=(
                 AssetInventoryStatus.LOADED

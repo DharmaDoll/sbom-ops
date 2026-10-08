@@ -30,6 +30,9 @@ Dependency-Track analysis state automatically.
 - Explains unavailable or below-threshold EPSS/CVSS inputs in `P3` rationale;
   `P3` is the result of the configured rules, not a low-risk assertion
 - Produces action-neutral finding assessments before any GitHub write
+- Shows source-reported public-PoC presence and per-source counts when an
+  optional snapshot supplies them; orders otherwise equal review results
+  without changing P0–P3 or Issue actions
 - Accepts an optional, reviewed Project/service/environment asset inventory;
   reports missing mappings and expired facts without changing priority
 - Stores human-registered services and deployables in a local SQLite DB; reads
@@ -182,6 +185,37 @@ DT or the registry. `not_visible` means the read key did not return the
 Project—it does **not** prove deletion. `identity_changed` and `ambiguous`
 also need human review. The audit exits nonzero when there are no reviewed
 links or any link is not matched.
+
+You can also record a **human-reported**, unverified deployment. This
+quick-start example deliberately says `unknown`; it does not assert that the
+demo build is running or internet-facing:
+
+```bash
+export DEMO_OBSERVED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+export DEMO_EXPIRES_AT="$(python -c 'from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+sbom-ops assets --db var/assets.sqlite3 report-deployment \
+  --service "$DEMO_SERVICE_ID" --deployable web \
+  --environment training --artifact "$DEMO_PROJECT_VERSION" \
+  --status unknown --exposure unknown --reviewer your-name \
+  --evidence 'Training declaration; runtime was not checked' \
+  --observed-at "$DEMO_OBSERVED_AT" --expires-at "$DEMO_EXPIRES_AT"
+sbom-ops assets --db var/assets.sqlite3 list
+```
+
+Each report is appended with a new ID; an updated claim needs a new report.
+The list shows whether each report is current, future-dated, or expired, but
+neither this report nor the reviewed Project link proves a running workload.
+`sync --asset-db` reports an exact artifact/version match only after the DT
+Project UUID, name, and version match the reviewed link. It shows
+`unverified_link`, `unreported`, `other_artifact`, `expired`,
+`future_observation`, `conflict`, or `reported` per Project/environment.
+`reported` means only that a current human claim was found. Conflicting
+current claims remain unresolved. No claim changes a Finding, priority, DT
+Analysis, or GitHub Issue.
+For an existing schema-v1 registry, first take a non-overwriting backup and
+explicitly migrate it with `sbom-ops assets --db PATH migrate --backup
+BACKUP_PATH`; new registries use schema v2. Keep evidence text free of secrets.
+
 For a persistent registry, check it and take a non-overwriting online backup
 before making further changes:
 
@@ -221,11 +255,19 @@ SQLite registry read-only and shows `registry-project status=matched` only when
 the reviewed Project UUID, name, and version still agree with DT. An unlinked,
 changed, or ambiguous Project does not inherit the registered owner or
 criticality. This context does not alter priority or GitHub Issue actions.
-Deployment and exposure remain unknown; the older `--asset-inventory` JSON is
-a separate evaluation input, not the SQLite registry.
+The separate `registry-deployment` line shows a time-bounded human claim only
+when its artifact ID exactly matches the reviewed DT Project version. It is
+not independent runtime proof; missing, expired, or conflicting claims do not
+change priority. The older `--asset-inventory` JSON is a separate evaluation
+input, not the SQLite registry.
 The sample BOM can produce many Findings. Choose **one** in DT and search the
 CLI output for its `vulnerability=` ID; do not review every row in the first
 session.
+
+For a deeper artifact-to-SBOM-to-deployment exercise, the repository also
+contains a tiny [Go container sample](examples/identity-demo/main.go). It
+requires Go, Docker, Trivy, and a local DT instance; see the
+[operator guide](docs/operations.md#固定成果物を使ったローカル通し検証).
 
 ## Optional Evaluation Inputs
 
@@ -283,6 +325,15 @@ exact input can be identified later. See
 [`SPEC.md`](SPEC.md#advisory-evidence-and-deployment-context) for the v1 schema
 and semantics. The isolated Exploit Intelligence lab can export a Vuls sample
 to this format; see its [handoff instructions](lab/exploit_intelligence/README.md#product-snapshot-handoff).
+
+An explicit `published_poc` signal adds a source-by-source `poc_reports`
+presence/count summary. If it is fresh, unexpired, and reported, otherwise
+equal Findings appear first in JSON and text review output; P0–P3 and GitHub
+actions do not change. The Vuls lab exporter emits general `exploit-record`
+references, **not** PoC counts, so those samples do not trigger the ordering.
+An [offline Vulnerability-Lookup handoff](lab/exploit_intelligence/README.md#product-snapshot-handoff)
+can convert PoC-labelled Sightings with an explicit expiry window. Unknown or
+stale PoC data never means "no PoC". The product does not run PoCs.
 
 To use your own reviewed asset inventory, copy the example to a local file,
 replace the fictional Project UUIDs with accessible DT Project UUIDs, and run:

@@ -7,12 +7,32 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from types import TracebackType
 
+from sbom_ops.domain.advisory import ExposureStatus
 from sbom_ops.domain.asset_registry import (
     RegisteredDeployable,
     RegisteredService,
+    ReportedDeployment,
     ReviewedProjectLink,
 )
-from sbom_ops.domain.assets import BusinessCriticality
+from sbom_ops.domain.assets import BusinessCriticality, DeploymentStatus
+
+_DEPLOYMENT_REPORTS_SCHEMA = """
+    CREATE TABLE deployment_reports (
+        report_id INTEGER PRIMARY KEY,
+        service_id TEXT NOT NULL,
+        deployable_id TEXT NOT NULL,
+        environment TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        deployment_status TEXT NOT NULL,
+        exposure_status TEXT NOT NULL,
+        reviewer TEXT NOT NULL,
+        evidence TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        FOREIGN KEY (service_id, deployable_id)
+            REFERENCES deployables(service_id, deployable_id)
+    )
+"""
 
 
 class AssetRegistry:
@@ -26,6 +46,7 @@ class AssetRegistry:
         if create_if_missing and read_only:
             raise ValueError("asset DB cannot be created in read-only mode")
         self.path = Path(path)
+        self._read_only = read_only
         if not self.path.parent.is_dir():
             raise ValueError(
                 f"asset DB parent directory does not exist: {self.path.parent}"
@@ -65,9 +86,14 @@ class AssetRegistry:
     ) -> None:
         self._db.close()
 
+    @property
+    def schema_version(self) -> int:
+        return self._schema_version
+
     def _initialize(self, *, create_if_missing: bool) -> None:
         version = self._db.execute("PRAGMA user_version").fetchone()[0]
-        if version == 1:
+        if version in (1, 2):
+            self._schema_version = version
             return
         if version != 0:
             raise ValueError(f"unsupported asset DB schema version: {version}")
@@ -104,8 +130,38 @@ class AssetRegistry:
                     FOREIGN KEY (service_id, deployable_id)
                         REFERENCES deployables(service_id, deployable_id)
                 );
-                PRAGMA user_version = 1;
+                CREATE TABLE deployment_reports (
+                    report_id INTEGER PRIMARY KEY,
+                    service_id TEXT NOT NULL,
+                    deployable_id TEXT NOT NULL,
+                    environment TEXT NOT NULL,
+                    artifact_id TEXT NOT NULL,
+                    deployment_status TEXT NOT NULL,
+                    exposure_status TEXT NOT NULL,
+                    reviewer TEXT NOT NULL,
+                    evidence TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    FOREIGN KEY (service_id, deployable_id)
+                        REFERENCES deployables(service_id, deployable_id)
+                );
+                PRAGMA user_version = 2;
                 """)
+        self._schema_version = 2
+
+    def migrate(self) -> bool:
+        """Explicitly upgrade v1 after the operator has taken a backup."""
+        if self._read_only:
+            raise ValueError("cannot migrate a read-only asset DB")
+        if self._schema_version == 2:
+            return False
+        self.check_integrity()
+        with self._db:
+            self._db.execute(_DEPLOYMENT_REPORTS_SCHEMA)
+            self._db.execute("PRAGMA user_version = 2")
+        self._schema_version = 2
+        self.check_integrity()
+        return True
 
     def check_integrity(self) -> None:
         results = self._db.execute("PRAGMA integrity_check").fetchall()
@@ -177,6 +233,72 @@ class AssetRegistry:
                 f"service missing or deployable already registered: "
                 f"{deployable.project_name}"
             ) from exc
+
+    def register_deployment(self, report: ReportedDeployment) -> ReportedDeployment:
+        if self._schema_version < 2:
+            raise ValueError("asset DB v1 requires an explicit backup and migration")
+        try:
+            with self._db:
+                cursor = self._db.execute(
+                    "INSERT INTO deployment_reports (service_id, deployable_id, "
+                    "environment, artifact_id, deployment_status, exposure_status, "
+                    "reviewer, evidence, observed_at, expires_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        report.service_id,
+                        report.deployable_id,
+                        report.environment,
+                        report.artifact_id,
+                        report.deployment_status.value,
+                        report.exposure_status.value,
+                        report.reviewer.strip(),
+                        report.evidence.strip(),
+                        report.observed_at,
+                        report.expires_at,
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                "deployment's service/deployable is not registered"
+            ) from exc
+        return ReportedDeployment(
+            service_id=report.service_id,
+            deployable_id=report.deployable_id,
+            environment=report.environment,
+            artifact_id=report.artifact_id,
+            deployment_status=report.deployment_status,
+            exposure_status=report.exposure_status,
+            reviewer=report.reviewer.strip(),
+            evidence=report.evidence.strip(),
+            observed_at=report.observed_at,
+            expires_at=report.expires_at,
+            report_id=cursor.lastrowid,
+        )
+
+    def list_deployment_reports(self) -> tuple[ReportedDeployment, ...]:
+        if self._schema_version < 2:
+            return ()
+        rows = self._db.execute(
+            "SELECT report_id, service_id, deployable_id, environment, artifact_id, "
+            "deployment_status, exposure_status, reviewer, evidence, observed_at, "
+            "expires_at FROM deployment_reports ORDER BY report_id"
+        ).fetchall()
+        return tuple(
+            ReportedDeployment(
+                service_id=row[1],
+                deployable_id=row[2],
+                environment=row[3],
+                artifact_id=row[4],
+                deployment_status=DeploymentStatus(row[5]),
+                exposure_status=ExposureStatus(row[6]),
+                reviewer=row[7],
+                evidence=row[8],
+                observed_at=row[9],
+                expires_at=row[10],
+                report_id=row[0],
+            )
+            for row in rows
+        )
 
     def list_deployables(self) -> tuple[RegisteredDeployable, ...]:
         rows = self._db.execute(

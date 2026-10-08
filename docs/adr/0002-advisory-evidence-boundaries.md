@@ -66,6 +66,11 @@ a versioned handoff contract, measured limits, and explicit failure tests.
 ## Consequences
 
 - A generic `has_poc` or `exploited` boolean is not an acceptable product DTO.
+  The source-attributed `published_poc` summary reports whether a provider
+  labelled a CVE-scoped record as a public PoC and how many such records it
+  returned; the product does not test whether the PoC works. It orders
+  otherwise equal Findings for review only, without changing the priority
+  category, Dependency-Track state, or Issue actions.
 - Public-corpus Projects keep deployment exposure `unknown` unless an
   authoritative inventory or reviewed operator observation says otherwise.
 - A CVE-level evidence record may be shown next to a Component only as a

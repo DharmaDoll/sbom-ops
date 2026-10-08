@@ -28,7 +28,9 @@ from sbom_ops.domain.advisory import (
 from sbom_ops.domain.asset_registry import (
     AssetRegistrySnapshot,
     RegisteredService,
+    RegistryDeploymentStatus,
     RegistryProjectStatus,
+    ReportedDeployment,
     ReviewedProjectLink,
 )
 from sbom_ops.domain.assets import (
@@ -235,6 +237,21 @@ def test_reviewed_registry_link_is_output_only_and_does_not_change_issues() -> N
                 "2026-10-06T00:00:00Z",
             ),
         ),
+        deployment_reports=(
+            ReportedDeployment(
+                "checkout-api",
+                "web",
+                "production",
+                "v1",
+                DeploymentStatus.DEPLOYED,
+                ExposureStatus.UNKNOWN,
+                "alice",
+                "reviewed deployment record",
+                "2026-10-07T00:00:00Z",
+                "2099-10-07T00:00:00Z",
+                1,
+            ),
+        ),
     )
     baseline_github = FakeGitHub()
     linked_github = FakeGitHub()
@@ -251,6 +268,8 @@ def test_reviewed_registry_link_is_output_only_and_does_not_change_issues() -> N
 
     assert linked.registry_snapshot_status.value == "loaded"
     assert linked.registry_projects[0].status is RegistryProjectStatus.MATCHED
+    assert linked.registry_deployments[0].status is RegistryDeploymentStatus.REPORTED
+    assert linked.as_dict()["registry_deployments"][0]["source"] == "human_reported"
     assert linked.as_dict()["registry_projects"][0]["owner"] == "team-checkout"
     assert linked.asset_inventory_status.value == "not_requested"
     assert linked.assessments == baseline.assessments
@@ -392,6 +411,76 @@ def test_advisory_snapshot_matches_explicit_cve_alias_without_changing_priority(
     )
     assert assessment.advisory_observations[0].vulnerability_id == "cve-2026-0001"
     assert assessment.priority == baseline.assessments[0].priority
+
+
+def test_explicit_poc_reports_order_equal_risk_output_without_workflow_change() -> None:
+    class EqualFindings(FakeDependencyTrack):
+        def get_project_findings(
+            self, project_uuid: str
+        ) -> list[DependencyTrackFinding]:
+            del project_uuid
+            return [finding("CVE-2026-0001"), finding("CVE-2026-0002")]
+
+    class NoKev:
+        def get_known_exploited_vulnerabilities(
+            self, *, force_refresh: bool = False
+        ) -> set[str]:
+            del force_refresh
+            return set()
+
+    snapshot = AdvisorySnapshot(
+        snapshot_id="poc-report",
+        generated_at="2026-10-07T00:00:00Z",
+        vulnerability_observations=(
+            VulnerabilityEvidenceObservation(
+                vulnerability_id="CVE-2026-0002",
+                source="lookup",
+                signal="published_poc",
+                outcome=EvidenceOutcome.AVAILABLE,
+                observed_at="2026-10-07T00:00:00Z",
+                source_revision=None,
+                freshness=EvidenceFreshness.FRESH,
+                record_count=2,
+                complete=True,
+                expires_at="2099-01-01T00:00:00Z",
+            ),
+        ),
+        project_exposure=(),
+    )
+    disabled_config = replace(config(), github=replace(config().github, enabled=False))
+    baseline = Orchestrator(disabled_config, EqualFindings(), NoKev()).run()
+    result = Orchestrator(
+        disabled_config, EqualFindings(), NoKev(), advisory_snapshot=snapshot
+    ).run()
+
+    assert [item.vulnerability_id for item in result.assessments] == [
+        "CVE-2026-0001",
+        "CVE-2026-0002",
+    ]
+    assert [item["vulnerability_id"] for item in result.as_dict()["assessments"]] == [
+        "CVE-2026-0002",
+        "CVE-2026-0001",
+    ]
+    assert result.as_dict()["assessments"][0]["poc_reports"] == {
+        "status": "reported",
+        "sources": [
+            {
+                "vulnerability_id": "CVE-2026-0002",
+                "source": "lookup",
+                "outcome": "available",
+                "record_count": 2,
+                "observed_at": "2026-10-07T00:00:00Z",
+                "freshness": "fresh",
+                "effective_freshness": "fresh",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "complete": True,
+            }
+        ],
+    }
+    assert [item.priority for item in result.assessments] == [
+        item.priority for item in baseline.assessments
+    ]
+    assert result.actions == baseline.actions == ()
 
 
 def test_asset_inventory_keeps_project_scope_and_does_not_change_priority() -> None:

@@ -167,14 +167,43 @@ ownership or exposure.
 Next validate one real build-to-SBOM-to-DT-Project-to-deployment chain, including
 the immutable artifact identity, Project UUID resolution, deployed version,
 environment, and ownership. A manual UUID entry is only a learning exercise:
-the current v1 join cannot prove the deployed artifact matches the SBOM.
+the current Project/version join cannot prove the deployed artifact matches the
+SBOM.
+The 2026-10-07 local probe found only the Dependency-Track service container
+running, not a representative application deployment. Its fixed image ID was
+read from Docker and an OS-package-only CycloneDX SBOM with 103 Components was
+generated locally; no BOM was uploaded to DT and no deployment was registered.
+This checks only that a running image can be tied to a generated SBOM, not the
+CI build, application dependency inventory, DT Project, or production runtime
+chain. Use a representative application artifact for that gate rather than
+counting the DT infrastructure image as product validation.
+On 2026-10-08 a purpose-built, dependency-free Go HTTP container completed a
+local end-to-end identity exercise. The running container's image ID matched
+the ID used for a CycloneDX 1.6 SBOM, the DT Project version, and a human
+deployment report in SQLite. DT ingested all three SBOM Components, and a
+GitHub-disabled dry-run joined the reviewed Project and report while leaving
+Issue actions at zero. Its 47 Findings were all for the Go standard library
+and all P3 under current score rules; this is not a production risk verdict.
+After the disposable container was stopped, a second report produced
+`conflict`, not an automatic transition to `not_deployed`; Finding priorities
+remained unchanged. The DB and raw sync outputs remain ignored under
+`var/product-validation-20261007-identity-demo/`. This exercise validates
+identity plumbing, not CI provenance, SBOM completeness, deployment discovery,
+or internet exposure. Next add an explicit supersession/correction workflow
+for human reports and repeat the chain with a real CI-built application
+artifact before asset context can influence prioritization.
 The [target operating flow](docs/operations.md#sbomと稼働資産を結ぶ運用フロー一部実装)
-now assumes no external organizational asset register. The next product gate
-is a small, manual-first sbom-ops asset DB, initially SQLite on a single host
-with local persistent storage. AWS or other platform discovery is optional
-later evidence, not a prerequisite for registration. A human-reported
-deployment is not verified runtime evidence. Only after the identity evidence
-should asset-based priority or routing policy be considered with human review.
+now assumes no external organizational asset register. A small, manual-first
+SQLite asset DB exists for one host with local persistent storage; it now
+accepts append-only human deployment reports. A read-only, ambiguity-aware
+join to reviewed DT Project name/version and an exact declared artifact ID
+is implemented, but does not prove that the artifact is running or that the
+SBOM came from that build. The next product gate is an operator-verified real
+build-to-SBOM-to-DT-to-deployment chain. AWS or other platform discovery is
+optional later evidence,
+not a prerequisite for registration. A human-reported deployment is not
+verified runtime evidence. Only after the identity evidence should asset-based
+priority or routing policy be considered with human review.
 Missing datasource visibility follows this work.
 
 Prioritize asset mapping and datasource coverage over additional lab workflow
@@ -316,16 +345,22 @@ telemetry contract exists.
   multi-host writers become necessary. Ephemeral CI jobs must not keep the
   SQLite file; design a durable registration endpoint or server DB before
   enabling CI writes to this registry.
-  The first registry slice now rejects missing DB paths on read/approval,
-  exposes SQLite integrity/foreign-key checks, and creates non-overwriting
-  online backups. Retention policy, correction audit, migration tooling, and
-  production restore drills remain open.
+  The registry rejects missing DB paths on read/approval, exposes SQLite
+  integrity/foreign-key checks, and creates non-overwriting online backups.
+  Schema v2 adds append-only human deployment declarations and an explicit,
+  backup-first v1 migration. Retention policy, resolved correction/conflict
+  audit, and production restore drills remain open.
 - Define the manual registration contract and CLI first. Register a stable
   service ID, owner, business criticality and rationale, and planned
   environments before any build or DT Project exists. A system grouping is
   optional; each independently built deployable unit gets its own artifact,
-  SBOM, and DT Project mapping. Add deployment and exposure declarations with
-  reviewer, evidence, and expiry later. Support reviewed JSON import through
+  SBOM, and DT Project mapping. The CLI now records human deployment and
+  exposure declarations with artifact ID, reviewer, evidence, and expiry as
+  append-only claims, not verified running state. The read-only sync now joins
+  exact version-matching declarations to reviewed DT Project links while
+  showing stale, missing, future, other-artifact, and conflicting claims.
+  Next verify one real immutable artifact chain and add an explicit correction
+  workflow; support reviewed JSON import through
   the same validation path. Preserve `unknown` for missing declarations and
   show conflicts; never silently replace a human declaration with collected
   data.
@@ -461,6 +496,19 @@ The runtime decision and PoC gates are in
   as distinct evidence. Assess available/not-observed/unknown and freshness before
   proposing any configurable priority policy. Lab runs must not assign a final
   security decision or silently change current prioritization.
+- Adopt the 2026-10-07 PoC ordering decision: for otherwise equivalent Findings
+  in the same P0–P3 category, a source-reported public PoC should be reviewed
+  first. A source-attributed, CVE-scoped presence/count projection and
+  deterministic review-output tie-break are implemented for the explicit
+  `published_poc` snapshot signal. The current Vuls exporter emits general
+  `exploit-record` observations and therefore does not trigger the tie-break.
+  The isolated lab now exports recorded Vulnerability-Lookup PoC Sighting
+  counts with a configured expiry window; product-runtime acquisition remains
+  future work. Do not assess
+  whether PoC code works, treat generic public-reference counts as PoC counts,
+  demote `unknown` as if it meant none, or equate PoC with BOD 26-04 exploit
+  automation. Category/SLA changes remain a later policy decision with asset
+  context and EPSS double-counting considered; see `docs/priority-policy.md`.
 - Continue the bounded Vulnerability-Lookup evaluation as a complementary
   online source. In a 2026-09-26 refresh of the same 25-CVE cohort, five CVEs
   still had Sightings in both sources, `vuls.db` alone covered thirteen, and

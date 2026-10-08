@@ -2,15 +2,20 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Sequence
+from datetime import UTC, datetime
 
 from sbom_ops.clients.dependency_track import DependencyTrackProject
+from sbom_ops.domain.advisory import ExposureStatus
 from sbom_ops.domain.asset_registry import (
     AssetRegistrySnapshot,
     ProjectCandidate,
     ProjectLinkAudit,
     ProjectLinkAuditStatus,
+    RegistryDeploymentObservation,
+    RegistryDeploymentStatus,
     RegistryProjectObservation,
     RegistryProjectStatus,
+    ReportedDeployment,
     ReviewedProjectLink,
     project_candidate,
 )
@@ -79,6 +84,143 @@ def observe_registry_projects(
                 reviewed_at=link.reviewed_at,
             )
         )
+    return tuple(observations)
+
+
+def observe_registry_deployments(
+    snapshot: AssetRegistrySnapshot,
+    projects: Sequence[RegistryProjectObservation],
+    *,
+    now: datetime | None = None,
+) -> tuple[RegistryDeploymentObservation, ...]:
+    """Join human claims to reviewed immutable Project identities, read-only."""
+    current_time = now or datetime.now(UTC)
+    by_deployable: dict[tuple[str, str], list[ReportedDeployment]] = {}
+    for report in snapshot.deployment_reports:
+        by_deployable.setdefault((report.service_id, report.deployable_id), []).append(
+            report
+        )
+    observations: list[RegistryDeploymentObservation] = []
+    for project in projects:
+        if project.status is not RegistryProjectStatus.MATCHED:
+            observations.append(
+                RegistryDeploymentObservation(
+                    project_uuid=project.project_uuid,
+                    environment=None,
+                    artifact_id=project.dt_version,
+                    status=RegistryDeploymentStatus.UNVERIFIED_LINK,
+                )
+            )
+            continue
+        if project.service_id is None or project.deployable_id is None:
+            raise ValueError("matched Project lacks a reviewed deployable identity")
+        reports = by_deployable.get((project.service_id, project.deployable_id), [])
+        if not reports:
+            observations.append(
+                RegistryDeploymentObservation(
+                    project_uuid=project.project_uuid,
+                    environment=None,
+                    artifact_id=project.dt_version,
+                    status=RegistryDeploymentStatus.UNREPORTED,
+                )
+            )
+            continue
+        by_environment: dict[str, list[ReportedDeployment]] = {}
+        for report in reports:
+            by_environment.setdefault(report.environment, []).append(report)
+        for environment, environment_reports in sorted(by_environment.items()):
+            exact = [
+                report
+                for report in environment_reports
+                if report.artifact_id == project.dt_version
+            ]
+            if not exact:
+                other_current = [
+                    report
+                    for report in environment_reports
+                    if report.is_current(now=current_time)
+                ]
+                observations.append(
+                    RegistryDeploymentObservation(
+                        project_uuid=project.project_uuid,
+                        environment=environment,
+                        artifact_id=project.dt_version,
+                        status=(
+                            RegistryDeploymentStatus.OTHER_ARTIFACT
+                            if other_current
+                            else RegistryDeploymentStatus.UNREPORTED
+                        ),
+                        report_ids=tuple(
+                            report.report_id
+                            for report in other_current
+                            if report.report_id is not None
+                        ),
+                        other_artifact_ids=tuple(
+                            sorted({report.artifact_id for report in other_current})
+                        ),
+                    )
+                )
+                continue
+            current = [
+                report for report in exact if report.is_current(now=current_time)
+            ]
+            if not current:
+                status = (
+                    RegistryDeploymentStatus.FUTURE_OBSERVATION
+                    if any(report.is_future(now=current_time) for report in exact)
+                    else RegistryDeploymentStatus.EXPIRED
+                )
+                observations.append(
+                    RegistryDeploymentObservation(
+                        project_uuid=project.project_uuid,
+                        environment=environment,
+                        artifact_id=project.dt_version,
+                        status=status,
+                        report_ids=tuple(
+                            report.report_id
+                            for report in exact
+                            if report.report_id is not None
+                        ),
+                    )
+                )
+                continue
+            claims = {
+                (report.deployment_status, report.exposure_status) for report in current
+            }
+            if len(claims) != 1 or any(
+                report.exposure_status is ExposureStatus.CONFLICT for report in current
+            ):
+                status = RegistryDeploymentStatus.CONFLICT
+                latest = None
+            else:
+                status = RegistryDeploymentStatus.REPORTED
+                latest = max(
+                    current,
+                    key=lambda report: (
+                        datetime.fromisoformat(
+                            report.observed_at.replace("Z", "+00:00")
+                        ),
+                        report.report_id or 0,
+                    ),
+                )
+            observations.append(
+                RegistryDeploymentObservation(
+                    project_uuid=project.project_uuid,
+                    environment=environment,
+                    artifact_id=project.dt_version,
+                    status=status,
+                    report_ids=tuple(
+                        report.report_id
+                        for report in current
+                        if report.report_id is not None
+                    ),
+                    deployment_status=latest.deployment_status if latest else None,
+                    exposure_status=latest.exposure_status if latest else None,
+                    reviewer=latest.reviewer if latest else None,
+                    observed_at=latest.observed_at if latest else None,
+                    expires_at=latest.expires_at if latest else None,
+                )
+            )
     return tuple(observations)
 
 

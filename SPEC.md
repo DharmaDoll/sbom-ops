@@ -76,8 +76,12 @@ The orchestrator runs as a stateless CLI job.
 This describes the process, not a guarantee that all future workflows can be
 implemented without durable shared state. The optional asset registry is a
 single-host SQLite DB for manually registered services and deployables plus
-reviewed DT Project links. It does not yet store verified build/SBOM/deployment
-identity, deployment or exposure declarations, or correction history. Those
+reviewed DT Project links. Schema v2 also stores append-only human deployment
+and exposure declarations by service, deployable, environment, and artifact ID,
+with reviewer, evidence, observation time, and expiry. These declarations are
+not verified runtime facts, are not joined to individual Findings, and do not
+resolve conflicting claims. The DB still does not store verified
+build/SBOM/deployment identity or a resolved correction history. Those
 remain in [`ROADMAP.md`](ROADMAP.md#phase-0-production-validation-p0). No
 external organizational asset register is assumed; platform discovery is
 optional evidence and must not silently override reviewed declarations.
@@ -85,9 +89,22 @@ With `sync --asset-db PATH`, an existing registry is checked and read-only
 loaded before orchestration. The sync result reports one association status per
 selected DT Project: `matched`, `unlinked`, `identity_changed`, or `ambiguous`.
 Owner and criticality appear only for a `matched` reviewed UUID/name/version;
-they do not affect priority or Issue operations. This is distinct from the
-legacy optional deployment-context JSON (`--asset-inventory`) and establishes
-neither CI provenance nor deployed version or exposure.
+they do not affect priority or Issue operations. The separate
+`registry_deployments` output joins a human declaration only when the reviewed
+UUID/name/version still match DT and the declaration's artifact ID equals the
+reviewed Project version exactly. It reports `unverified_link`, `unreported`,
+`other_artifact`, `expired`, `future_observation`, `conflict`, or `reported`
+per Project/environment. Multiple live claims with incompatible deployment or
+exposure states remain `conflict`, without an effective verdict. An active
+claim is still not an independent runtime observation. This is distinct from
+the legacy optional deployment-context JSON (`--asset-inventory`) and does not
+establish CI provenance or change priority or Issue operations.
+An existing schema-v1 DB remains readable. Adding declaration storage requires
+an explicit `assets migrate --backup PATH`, which creates a checked,
+non-overwriting v1 backup before the v2 migration; it is never automatic on
+`sync` or read. A deployment declaration is append-only and expiry is checked
+when listed. No report is treated as confirmed deployment merely because its
+artifact ID resembles a DT Project version.
 Typical execution modes:
 
 - scheduled poll from CI or cron
@@ -534,6 +551,21 @@ for the full shape.
   is affected or deployed in the exposed environment.
 - Evidence remains advisory: it cannot alter priority, Dependency-Track
   Analysis/VEX, suppression, Issue state, or remediation workflow.
+- The exact signal `published_poc` means a provider reports public-PoC records
+  for a syntactically valid CVE; it does not claim that sbom-ops executed or
+  validated them. A source-attributed `poc_reports` summary exposes
+  `reported`, `not_observed`, or `unknown` and each source's count. Generic
+  `exploit-record` and other advisory signals do not count as PoCs. Counts are
+  never summed across providers. Only a `fresh` `available` report is
+  `reported`; `published_poc` requires an `expires_at` later than `observed_at`,
+  and expiry is checked again at review time. All queried sources must be
+  effectively fresh and `not_observed` to report `not_observed` within those
+  sources. Otherwise the status is `unknown`.
+- JSON and text assessment output places a `reported` PoC first only among
+  Findings equal in Project, P0–P3, KEV, severity, numeric CVSS, EPSS, Analysis,
+  and suppression. It preserves unrelated output positions and does not
+  reorder internal Findings or GitHub actions. PoC count is context, not a
+  linear weight, and PoC presence is not BOD 26-04 exploit automation.
 - Optional acquisition failure must not block the core Dependency-Track sync.
   Product code must not import or execute the lab package.
 - `schema_version` must be integer `1`; the document has `snapshot_id`,

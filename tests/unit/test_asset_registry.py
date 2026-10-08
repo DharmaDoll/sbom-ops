@@ -2,23 +2,30 @@ from __future__ import annotations
 
 import sqlite3
 import stat
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from sbom_ops.clients.dependency_track import DependencyTrackProject
+from sbom_ops.domain.advisory import ExposureStatus
 from sbom_ops.domain.asset_registry import (
     AssetRegistrySnapshot,
     ProjectLinkAuditStatus,
     RegisteredDeployable,
     RegisteredService,
+    RegistryDeploymentStatus,
     RegistryProjectStatus,
+    ReportedDeployment,
+    ReviewedProjectLink,
 )
-from sbom_ops.domain.assets import BusinessCriticality
+from sbom_ops.domain.assets import BusinessCriticality, DeploymentStatus
 from sbom_ops.services.asset_registry import (
     approve_project_link,
     audit_reviewed_project_links,
     discover_project_candidates,
+    observe_registry_deployments,
     observe_registry_projects,
 )
 from sbom_ops.storage.asset_registry import AssetRegistry
@@ -117,9 +124,211 @@ def test_duplicate_registration_does_not_overwrite(tmp_path) -> None:
 def test_unknown_schema_is_rejected(tmp_path) -> None:
     db_path = tmp_path / "assets.sqlite3"
     with sqlite3.connect(db_path) as db:
-        db.execute("PRAGMA user_version = 2")
+        db.execute("PRAGMA user_version = 3")
     with pytest.raises(ValueError, match="unsupported"):
         AssetRegistry(db_path)
+
+
+def _deployment_report(*, artifact_id: str = "build-123") -> ReportedDeployment:
+    return ReportedDeployment(
+        service_id="checkout-api",
+        deployable_id="web",
+        environment="production",
+        artifact_id=artifact_id,
+        deployment_status=DeploymentStatus.DEPLOYED,
+        exposure_status=ExposureStatus.CONFIRMED,
+        reviewer="alice",
+        evidence="deployment record 123",
+        observed_at="2026-10-07T00:00:00Z",
+        expires_at="2026-10-08T00:00:00Z",
+    )
+
+
+def test_human_deployment_reports_are_append_only_and_expire(tmp_path: Path) -> None:
+    db_path = tmp_path / "assets.sqlite3"
+    with AssetRegistry(db_path, create_if_missing=True) as registry:
+        _register(registry)
+        first = registry.register_deployment(_deployment_report())
+        second = registry.register_deployment(_deployment_report())
+        assert (first.report_id, second.report_id) == (1, 2)
+        with pytest.raises(ValueError, match="not registered"):
+            registry.register_deployment(
+                replace(_deployment_report(), service_id="other-service")
+            )
+    with AssetRegistry(db_path, read_only=True) as registry:
+        reports = registry.list_deployment_reports()
+        assert len(reports) == 2
+        assert reports[0].evidence == "deployment record 123"
+        assert reports[1].is_current(now=datetime(2026, 10, 9, tzinfo=UTC)) is False
+        assert reports[1].is_current(now=datetime(2026, 10, 7, tzinfo=UTC)) is True
+
+
+def test_deployment_report_rejects_inconsistent_claim() -> None:
+    original = _deployment_report()
+    with pytest.raises(ValueError, match="requires a deployed artifact"):
+        replace(original, deployment_status=DeploymentStatus.NOT_DEPLOYED)
+    with pytest.raises(ValueError, match="requires a deployed artifact"):
+        replace(original, deployment_status=DeploymentStatus.UNKNOWN)
+    with pytest.raises(ValueError, match="expiry"):
+        replace(original, expires_at=original.observed_at)
+    with pytest.raises(ValueError, match="control text"):
+        replace(original, evidence="first line\nsecond line")
+
+
+def _reviewed_snapshot(
+    reports: tuple[ReportedDeployment, ...] = (),
+) -> tuple[AssetRegistrySnapshot, tuple[DependencyTrackProject, ...]]:
+    snapshot = AssetRegistrySnapshot(
+        services=(
+            RegisteredService(
+                "checkout-api", "team-checkout", BusinessCriticality.HIGH, "payments"
+            ),
+        ),
+        links=(
+            ReviewedProjectLink(
+                "uuid-1",
+                "checkout-api/web",
+                "build-123",
+                "checkout-api",
+                "web",
+                "alice",
+                "2026-10-07T00:00:00Z",
+            ),
+        ),
+        deployment_reports=reports,
+    )
+    return snapshot, (
+        DependencyTrackProject("uuid-1", "checkout-api/web", "build-123"),
+    )
+
+
+def test_deployment_join_requires_reviewed_exact_artifact_and_time() -> None:
+    now = datetime(2026, 10, 7, 10, tzinfo=UTC)
+    report = replace(_deployment_report(), report_id=1)
+    snapshot, dt_projects = _reviewed_snapshot((report,))
+    project = observe_registry_projects(snapshot, dt_projects, dt_projects)
+    joined = observe_registry_deployments(snapshot, project, now=now)
+    assert joined[0].status is RegistryDeploymentStatus.REPORTED
+    assert joined[0].deployment_status is DeploymentStatus.DEPLOYED
+    assert joined[0].exposure_status is ExposureStatus.CONFIRMED
+    assert joined[0].as_dict()["report_ids"] == [1]
+    assert joined[0].as_dict()["source"] == "human_reported"
+
+    changed_project = (DependencyTrackProject("uuid-1", "checkout-api/web", "v2"),)
+    changed = observe_registry_projects(snapshot, changed_project, changed_project)
+    assert (
+        observe_registry_deployments(snapshot, changed, now=now)[0].status
+        is RegistryDeploymentStatus.UNVERIFIED_LINK
+    )
+    other_artifact = replace(report, artifact_id="build-124", report_id=2)
+    snapshot, dt_projects = _reviewed_snapshot((other_artifact,))
+    project = observe_registry_projects(snapshot, dt_projects, dt_projects)
+    mismatch = observe_registry_deployments(snapshot, project, now=now)[0]
+    assert mismatch.status is RegistryDeploymentStatus.OTHER_ARTIFACT
+    assert mismatch.other_artifact_ids == ("build-124",)
+    assert mismatch.deployment_status is None
+    stale_alternative = replace(
+        other_artifact,
+        observed_at="2026-10-05T00:00:00Z",
+        expires_at="2026-10-06T00:00:00Z",
+    )
+    snapshot, dt_projects = _reviewed_snapshot((stale_alternative,))
+    project = observe_registry_projects(snapshot, dt_projects, dt_projects)
+    assert (
+        observe_registry_deployments(snapshot, project, now=now)[0].status
+        is RegistryDeploymentStatus.UNREPORTED
+    )
+
+
+def test_deployment_join_exposes_expiry_future_and_conflict_without_verdict() -> None:
+    now = datetime(2026, 10, 7, 10, tzinfo=UTC)
+    original = replace(_deployment_report(), report_id=1)
+    snapshot, dt_projects = _reviewed_snapshot()
+    project = observe_registry_projects(snapshot, dt_projects, dt_projects)
+    assert (
+        observe_registry_deployments(snapshot, project, now=now)[0].status
+        is RegistryDeploymentStatus.UNREPORTED
+    )
+    for report, expected in (
+        (
+            replace(
+                original,
+                observed_at="2026-10-05T00:00:00Z",
+                expires_at="2026-10-06T00:00:00Z",
+            ),
+            RegistryDeploymentStatus.EXPIRED,
+        ),
+        (
+            replace(
+                original,
+                observed_at="2026-10-08T00:00:00Z",
+                expires_at="2026-10-09T00:00:00Z",
+            ),
+            RegistryDeploymentStatus.FUTURE_OBSERVATION,
+        ),
+    ):
+        snapshot, dt_projects = _reviewed_snapshot((report,))
+        project = observe_registry_projects(snapshot, dt_projects, dt_projects)
+        result = observe_registry_deployments(snapshot, project, now=now)[0]
+        assert result.status is expected
+        assert result.deployment_status is None
+
+    not_deployed = replace(
+        original,
+        deployment_status=DeploymentStatus.NOT_DEPLOYED,
+        exposure_status=ExposureStatus.UNKNOWN,
+        report_id=2,
+    )
+    snapshot, dt_projects = _reviewed_snapshot((original, not_deployed))
+    project = observe_registry_projects(snapshot, dt_projects, dt_projects)
+    conflict = observe_registry_deployments(snapshot, project, now=now)[0]
+    assert conflict.status is RegistryDeploymentStatus.CONFLICT
+    assert conflict.report_ids == (1, 2)
+    assert conflict.deployment_status is None
+    assert conflict.exposure_status is None
+    explicit_conflict = replace(original, exposure_status=ExposureStatus.CONFLICT)
+    snapshot, dt_projects = _reviewed_snapshot((explicit_conflict,))
+    project = observe_registry_projects(snapshot, dt_projects, dt_projects)
+    assert (
+        observe_registry_deployments(snapshot, project, now=now)[0].status
+        is RegistryDeploymentStatus.CONFLICT
+    )
+
+
+def test_deployment_join_keeps_overlapping_artifacts_separate() -> None:
+    now = datetime(2026, 10, 7, 10, tzinfo=UTC)
+    older = replace(_deployment_report(), report_id=1)
+    newer = replace(_deployment_report(), artifact_id="build-124", report_id=2)
+    snapshot, dt_projects = _reviewed_snapshot((older, newer))
+    project = observe_registry_projects(snapshot, dt_projects, dt_projects)
+    result = observe_registry_deployments(snapshot, project, now=now)[0]
+    assert result.status is RegistryDeploymentStatus.REPORTED
+    assert result.report_ids == (1,)
+
+
+def test_v1_asset_db_requires_explicit_backed_up_migration(tmp_path: Path) -> None:
+    db_path = tmp_path / "assets.sqlite3"
+    backup_path = tmp_path / "assets-v1.sqlite3"
+    with AssetRegistry(db_path, create_if_missing=True) as registry:
+        _register(registry)
+    with sqlite3.connect(db_path) as db:
+        db.execute("DROP TABLE deployment_reports")
+        db.execute("PRAGMA user_version = 1")
+    with AssetRegistry(db_path) as registry:
+        assert registry.schema_version == 1
+        assert registry.list_deployment_reports() == ()
+        with pytest.raises(ValueError, match="migration"):
+            registry.register_deployment(_deployment_report())
+        registry.backup_to(backup_path)
+        assert registry.migrate() is True
+        assert registry.migrate() is False
+        assert registry.register_deployment(_deployment_report()).report_id == 1
+    with AssetRegistry(backup_path, read_only=True) as backup:
+        assert backup.schema_version == 1
+        assert backup.list_deployables()[0].project_name == "checkout-api/web"
+    with AssetRegistry(db_path, read_only=True) as registry:
+        assert registry.schema_version == 2
+        assert len(registry.list_deployment_reports()) == 1
 
 
 def test_invalid_identifier_is_rejected() -> None:

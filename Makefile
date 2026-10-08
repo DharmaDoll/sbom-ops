@@ -31,7 +31,7 @@ MAPPING_POC_CHECKPOINT ?= $(EXPLOIT_LAB_DIR)/reviewed-mapping-vulnerability-look
 EXPLOIT_LAB_EXECUTE_FLAG = $(if $(filter 1 true yes,$(EXECUTE)),--execute,)
 PYTHON ?= python3.12
 
-.PHONY: dt-up dt-down dt-logs dt-ps dt-openapi-check dt-lab-validate dt-lab-openapi dt-lab-run dt-lab-parent-child dt-lab-routing-metadata dt-lab-triage-analysis dt-lab-triage-delegation dt-lab-triage-vex dt-lab-triage-vex-targeting dt-lab-invalid-cyclonedx dt-lab-json-xml-equivalence dt-lab-corpus-validate dt-lab-corpus-run dt-lab-cleanup dt-lab-test exploit-lab-validate exploit-lab-run exploit-lab-vuls-db-run exploit-lab-dt-sample exploit-lab-identifier-resolution exploit-lab-identifier-cross-check exploit-lab-identifier-review-queue exploit-lab-identifier-review-template exploit-lab-identifier-review-apply exploit-lab-identifier-enrichment-input exploit-lab-reviewed-mapping-poc exploit-lab-vulnerability-lookup-run exploit-lab-vulnerability-lookup-dt-sample exploit-lab-vulnerability-lookup-compare exploit-lab-evidence-review-queue exploit-lab-evidence-review-template exploit-lab-evidence-review-apply exploit-lab-evidence-review-agreement exploit-lab-evidence-adjudication-queue exploit-lab-evidence-adjudication-template exploit-lab-evidence-adjudication-apply exploit-lab-test dt-bom-upload dt-demo-upload dt-demo-update-upload infra-gcp-poc-fmt-check infra-gcp-poc-validate test lint
+.PHONY: dt-up dt-down dt-logs dt-ps dt-openapi-check dt-lab-validate dt-lab-openapi dt-lab-run dt-lab-parent-child dt-lab-routing-metadata dt-lab-triage-analysis dt-lab-triage-delegation dt-lab-triage-vex dt-lab-triage-vex-targeting dt-lab-invalid-cyclonedx dt-lab-json-xml-equivalence dt-lab-corpus-validate dt-lab-corpus-run dt-lab-cleanup dt-lab-test exploit-lab-validate exploit-lab-run exploit-lab-vuls-db-run exploit-lab-dt-sample exploit-lab-export-poc-snapshot exploit-lab-identifier-resolution exploit-lab-identifier-cross-check exploit-lab-identifier-review-queue exploit-lab-identifier-review-template exploit-lab-identifier-review-apply exploit-lab-identifier-enrichment-input exploit-lab-reviewed-mapping-poc exploit-lab-vulnerability-lookup-run exploit-lab-vulnerability-lookup-dt-sample exploit-lab-vulnerability-lookup-compare exploit-lab-evidence-review-queue exploit-lab-evidence-review-template exploit-lab-evidence-review-apply exploit-lab-evidence-review-agreement exploit-lab-evidence-adjudication-queue exploit-lab-evidence-adjudication-template exploit-lab-evidence-adjudication-apply exploit-lab-test dt-bom-upload dt-demo-upload dt-demo-update-upload infra-gcp-poc-fmt-check infra-gcp-poc-validate test lint
 .PHONY: dt-lab-datasource-freshness dt-lab-osv-markers
 
 dt-up:
@@ -124,6 +124,11 @@ exploit-lab-dt-sample:
 exploit-lab-export-product-snapshot:
 	$(if $(strip $(VULS_RESULT)),,$(error VULS_RESULT is required))
 	PYTHONPATH=$(EXPLOIT_LAB_PYTHONPATH) $(PYTHON) -m exploit_lab.cli export-product-advisory-snapshot --manifest "$(EXPLOIT_LAB_MANIFEST)" --vuls-result "$(VULS_RESULT)" --freshness "$(or $(VULS_RESULT_FRESHNESS),unknown)" --output-dir "$(EXPLOIT_LAB_DIR)/product-snapshots"
+
+exploit-lab-export-poc-snapshot:
+	$(if $(strip $(VULNERABILITY_LOOKUP_RESULT)),,$(error VULNERABILITY_LOOKUP_RESULT is required))
+	$(if $(strip $(POC_REPORT_MAX_AGE_HOURS)),,$(error POC_REPORT_MAX_AGE_HOURS is required))
+	PYTHONPATH=$(EXPLOIT_LAB_PYTHONPATH) $(PYTHON) -m exploit_lab.cli export-vulnerability-lookup-poc-snapshot --manifest "$(EXPLOIT_LAB_MANIFEST)" --vulnerability-lookup-result "$(VULNERABILITY_LOOKUP_RESULT)" --max-age-hours "$(POC_REPORT_MAX_AGE_HOURS)" --output-dir "$(EXPLOIT_LAB_DIR)/product-snapshots"
 
 exploit-lab-identifier-resolution:
 	$(if $(strip $(DT_FINDINGS)),,$(error DT_FINDINGS is required and may contain multiple findings.json paths))

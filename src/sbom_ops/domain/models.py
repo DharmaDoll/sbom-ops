@@ -5,7 +5,11 @@ import json
 from dataclasses import dataclass
 from enum import StrEnum
 
-from sbom_ops.domain.advisory import VulnerabilityEvidenceObservation
+from sbom_ops.domain.advisory import (
+    PocReportSummary,
+    VulnerabilityEvidenceObservation,
+    summarize_poc_reports,
+)
 
 
 class Severity(StrEnum):
@@ -153,3 +157,7 @@ class FindingAssessment:
     vulnerability_aliases: tuple[str, ...] = ()
     cvss_version: str | None = None
     advisory_observations: tuple[VulnerabilityEvidenceObservation, ...] = ()
+
+    @property
+    def poc_reports(self) -> PocReportSummary:
+        return summarize_poc_reports(self.advisory_observations)

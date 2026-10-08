@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from collections import defaultdict
+from collections.abc import Sequence
+
 from sbom_ops.config import PriorityConfig
+from sbom_ops.domain.advisory import PocReportStatus
 from sbom_ops.domain.models import (
     Enrichment,
     Finding,
+    FindingAssessment,
     PrioritizedFinding,
     Priority,
     Severity,
@@ -68,3 +73,34 @@ def prioritize_finding(
             f"{config.p2_cvss_threshold:.1f} threshold"
         )
     return PrioritizedFinding(finding, enrichment, Priority.P3, tuple(rationale))
+
+
+def order_assessments_for_review(
+    assessments: Sequence[FindingAssessment],
+) -> tuple[FindingAssessment, ...]:
+    """Prefer reported PoCs only among otherwise equal risk assessments.
+
+    Keep unrelated assessments and the original DT order in their existing
+    positions. This order is for review output, not priority or Issue actions.
+    """
+    groups: dict[tuple[object, ...], list[FindingAssessment]] = defaultdict(list)
+    keys: list[tuple[object, ...]] = []
+    for item in assessments:
+        key = (
+            item.project_uuid,
+            item.priority,
+            item.in_kev,
+            item.severity,
+            item.cvss_score,
+            item.epss_score,
+            item.analysis_state,
+            item.is_suppressed,
+        )
+        keys.append(key)
+        groups[key].append(item)
+    for values in groups.values():
+        values.sort(
+            key=lambda item: item.poc_reports.status is not PocReportStatus.REPORTED
+        )
+    positions = {key: iter(values) for key, values in groups.items()}
+    return tuple(next(positions[key]) for key in keys)

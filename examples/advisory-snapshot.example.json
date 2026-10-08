@@ -6,9 +6,10 @@
     {
       "vulnerability_id": "CVE-2026-1234",
       "source": "vulnerability-lookup",
-      "signal": "exploit_reference",
+      "signal": "published_poc",
       "outcome": "available",
       "observed_at": "2026-10-03T00:00:00Z",
+      "expires_at": "2026-10-10T00:00:00Z",
       "source_revision": "provider-revision-or-null",
       "freshness": "fresh",
       "record_count": 1,

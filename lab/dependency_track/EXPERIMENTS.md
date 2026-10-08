@@ -1,5 +1,69 @@
 # Dependency-Track Lab Experiment Ledger
 
+## 2026-10-08 — Local built-image to SBOM to DT to asset-report chain
+
+- Status: live disposable Project import and product dry-run completed; temporary
+  container stopped and auto-removed; Project and local image retained
+- Target: Dependency-Track 4.14.3 bundled container; Go 1.24.4 toolchain;
+  repository-owned `examples/identity-demo/` built as a scratch container
+- Safety: localhost-only container port, read-only container filesystem,
+  GitHub disabled, no DT Analysis/VEX mutation, no PoC execution
+
+### Purpose and Performed Work
+
+Test the shortest real artifact-identity path without mistaking the DT server
+image for an application. A dependency-free Go HTTP demo was tested, built into
+a static binary and a local image without a base-image download, then run as a
+temporary container. Docker inspection and the local health response were
+checked. Trivy generated a CycloneDX 1.6 SBOM from the fixed image ID in
+offline, license-only mode; no vulnerability DB was used. The BOM was uploaded
+directly to a new disposable DT Project named by service/deployable with the
+same fixed ID as Project version. After event-token completion, the Project
+and Components were read back. A separate SQLite DB registered the service,
+deployable, reviewed Project link, and a time-bounded human-reported local
+deployment. Product sync ran with `--dry-run --no-github`. After the container
+was stopped, a second `not_deployed` report and sync tested the state change.
+The DB integrity check and non-overwriting online backup both passed.
+
+### Observed Facts
+
+- Docker's image ID for the running container exactly matched the ID used to
+  generate the SBOM, DT Project version, and asset report. The localhost health
+  endpoint returned `ok` before shutdown.
+- The SBOM listed 3 Components: the demo application, its Go module, and Go
+  standard library. DT returned those same 3 Component names after BOM-token
+  completion. The product dry-run processed one Project and 47 Findings, all
+  for `stdlib` and all P3 under the current rules; Issue actions were zero.
+- Before shutdown, the reviewed Project link was `matched` and the exact
+  artifact/Project/environment human report was `reported`, with exposure
+  `unknown`. After shutdown, Docker no longer listed the temporary container.
+  The append-only `not_deployed` report overlapped the first report's validity
+  window, so the product correctly returned `conflict`, with no effective
+  deployment or exposure verdict. The 47 Finding keys and priorities were
+  unchanged between the two syncs; Issue actions remained zero.
+
+### Interpretation and Product Decision
+
+The existing product path can carry one actual locally built artifact through
+SBOM creation, direct DT import, reviewed Project identity, and a separate
+human deployment declaration. This is identity-plumbing evidence, not proof
+that a real CI build produced the SBOM or that a production workload runs it.
+The stop transition exposes a concrete product gap: append-only reports need
+an explicit supersession/correction workflow, not last-write-wins and not a
+silent priority change. Keep contradictory active reports as `conflict` until
+such a reviewed rule exists.
+
+### Unverified and Local Evidence
+
+CI provenance, SBOM completeness, EKS/ECS image-ID normalization, internet
+exposure, production asset ownership, and DT behavior after upgrades remain
+unverified. The disposable DT Project and local image were intentionally
+retained; the run-scoped container was removed by Docker's `--rm` on stop.
+Raw BOM, sync output, DB, backup, binary, and environment-specific UUIDs
+stay under ignored `var/product-validation-20261007-identity-demo/`; no
+credential or target-specific identifier is copied into this ledger. See
+`docs/operations.md` for the reproducible local exercise.
+
 ## 2026-09-26 — VEX targeting isolation across Projects
 
 - Status: live two-Project run completed; Analysis state restored; both Projects cleaned

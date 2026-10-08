@@ -246,7 +246,15 @@ DT 4.14のBOM APIでは`BOM_UPLOAD`が必要で、`autoCreate=true`には追加�
 だけを表示する。版なし・同名同版の重複・既存承認とのUUID不一致は承認しない。
 `assets approve`は再度DTからProject一覧を読み、UUIDと名/版が一意に一致する
 場合だけ、承認者と時刻をSQLiteに保存する。DTへの書込みやIssueの変更はしない。
-一つの成果物を複数環境へ配布する情報は、まだ台帳に記録していない。
+人が申告した配布情報は、schema v2の台帳にサービス・配布単位・環境・成果物ID・
+稼働状態・公開状態・確認者・根拠・観測時刻・有効期限として追記できる。同じ対象の
+訂正も新たな申告として残し、古い記録を消さない。`sync --asset-db`は確認済みの
+Project UUID・名・版がDTと一致し、その版と申告された成果物IDも完全一致する場合
+だけ、Project/環境ごとの申告状態を読み取り専用で表示する。未確認リンク、申告なし、
+別成果物、期限切れ、未来時刻、矛盾は別の状態として示す。矛盾する有効な申告を
+自動選択せず、Finding・優先度・Issueにも反映しない。実稼働の独立検証はまだ
+行わない。`assets list`の`current`は申告の有効期間内という意味だけで、稼働を
+証明しない。
 
 この方式ではCIの自己申告やProject名だけで実行元の認可を証明できない。
 限定したDTアップロードキー、CIシークレットの保護、登録済み配布単位との照合、
@@ -315,7 +323,11 @@ CIの実行記録、手入力、将来のデプロイ観測が
 - 公開状況を含む人の判断と機械観測を別々に保持し、矛盾、収集失敗、
   訂正履歴を残す。
 
-登録手段は現在CLIのみ。レビュー済みJSONの取り込みは未実装であり、
+登録手段は現在CLIのみ。`assets report-deployment`は人の申告を追記し、
+`assets list`は履歴と期限状態を表示する。既存のschema v1 DBは読み取り可能で、
+新しい申告を記録する前に`assets migrate --backup PATH`でバックアップを作成し、
+明示的にv2へ移行する。新規DBはv2で作成する。レビュー済みJSONの取り込みは
+未実装であり、
 既存の`sync --asset-inventory`は別の読み取り専用評価入力である。
 担当・重要度・公開状況は、AWSからの推測で決めない。手入力の稼働申告も
 「人が確認した情報」であって、実行中コンテナとの照合がない限り、
@@ -352,6 +364,77 @@ GitHub Actionsのように実行環境が毎回破棄されるジョブには、
 [オンラインバックアップ](https://www.sqlite.org/backup.html)。
 DBの配置、バックアップ、保存期間、収集権限と対象範囲は本番運用前に決める。
 現行の`--asset-inventory`は読み取り専用の評価用入力として残し、DB実装と混同しない。
+
+### 固定成果物を使ったローカル通し検証
+
+`examples/identity-demo/`は、外部依存のない小さなGo HTTPアプリである。
+本番アプリの代わりにはならないが、実際にビルド・起動したイメージの固定IDを
+SBOM、DT Project版、資産DBの申告へ一貫して渡せるかを試せる。Go 1.22以上、
+Docker、Trivy、ローカルDT、README記載のアップロード／読み取りキーが必要。
+作業ファイルはGit管理外の`var/`に置く。
+
+```bash
+mkdir -p var/identity-demo
+(cd examples/identity-demo && go test ./... && \
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+    -buildvcs=false -ldflags=-buildid= -o ../../var/identity-demo/demo .)
+docker build --network=none -f examples/identity-demo/Dockerfile \
+  -t sbom-ops/identity-demo:local var/identity-demo
+export DEMO_IMAGE_ID="$(docker image inspect sbom-ops/identity-demo:local \
+  --format '{{.Id}}')"
+docker run --rm -d --name sbom-ops-identity-demo \
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  -p 127.0.0.1::8080 sbom-ops/identity-demo:local
+docker inspect sbom-ops-identity-demo --format '{{.Image}} {{.State.Running}}'
+export DEMO_PORT="$(docker port sbom-ops-identity-demo 8080/tcp | sed 's/.*://')"
+curl --fail --silent --show-error "http://127.0.0.1:$DEMO_PORT/health"
+trivy image --image-src docker --format cyclonedx \
+  --output var/identity-demo/demo.sbom.cdx.json --offline-scan \
+  --scanners license --skip-java-db-update "$DEMO_IMAGE_ID"
+```
+
+`docker inspect`のイメージIDが`DEMO_IMAGE_ID`と完全一致することを確認する。
+再実行時に同名コンテナが残っている場合は、先にそのIDと用途を確認し、
+この検証用コンテナだけを停止するか、別のコンテナ名を使う。
+ここでのTrivy実行はSBOM作成用であり、脆弱性DBを用いた評価ではない。
+READMEのQuick startと同じ手順でサービス・配布単位を登録し、
+`Project名=service_id/web`、`Project版=$DEMO_IMAGE_ID`を指定して
+`scripts/upload_bom.sh var/identity-demo/demo.sbom.cdx.json`からDTへ直接送る。
+たとえば次のように、毎回異なる検証用サービスIDを使う。
+
+```bash
+export DEMO_SERVICE_ID="identity-demo-$(date +%s)"
+sbom-ops assets --db var/identity-demo/assets.sqlite3 register-service \
+  --service "$DEMO_SERVICE_ID" --owner local-test \
+  --criticality standard --reason 'Disposable local artifact-chain exercise'
+sbom-ops assets --db var/identity-demo/assets.sqlite3 register-deployable \
+  --service "$DEMO_SERVICE_ID" --deployable web
+unset SBOM_OPS_DT_PROJECT_UUID
+export SBOM_OPS_DT_PROJECT_NAME="$DEMO_SERVICE_ID/web"
+export SBOM_OPS_DT_PROJECT_VERSION="$DEMO_IMAGE_ID"
+scripts/upload_bom.sh var/identity-demo/demo.sbom.cdx.json
+```
+
+BOM処理トークンの完了を確認し、DTのProject名・版・UUIDとコンポーネントを
+読み戻してから`assets approve`する。`assets report-deployment`の環境は
+`local-demo`、成果物IDは`DEMO_IMAGE_ID`とし、確認者・根拠・期限を明記する。
+`sync --asset-db ... --dry-run --no-github`でProject対応と申告を別々に確認する。
+終了時は`docker stop sbom-ops-identity-demo`で専用コンテナを停止する。
+`--rm`でそのコンテナは自動削除されるが、ローカルイメージ、DT Project、
+SQLite DBは残る。別の実験対象を誤って削除しないこと。
+
+2026-10-08の実施では、Goテスト・固定イメージの起動・localhostのhealth応答、
+CycloneDX 1.6の3コンポーネント生成、DTによる同じ3件の取込、
+Project版と稼働イメージIDの一致、SQLiteの確認済み対応・稼働申告の表示を確認した。
+DTはGo標準ライブラリに47件のFindingを返したが、この検証はそれらの
+脆弱性評価やSBOM網羅性を判定するものではない。GitHub操作は0件だった。
+停止申告を追記すると、先の稼働申告と有効期間が重なるため、現行実装は
+`conflict`を返した。Findingと優先度は停止前後で同一だった。
+これは安全側の表示だが、通常の更新を解決するには明示的な訂正・継承手続きが
+必要である。ローカルの根拠は無視対象の
+`var/product-validation-20261007-identity-demo/`にあり、鍵・環境固有UUID・
+生の結果はGitへ入れない。本番のCIビルド由来、外部環境の実稼働、公開範囲は
+この演習では未検証である。
 
 Daily
 
