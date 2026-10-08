@@ -55,6 +55,35 @@ https://dtrack.example.com/api/v1/finding/project/{uuid}
 | VEX | CycloneDX VEX | サプライヤー／製品チーム → Dependency-Track | Dependency-TrackへのVEX投入後、Findingの`analysis`を読み取り | DT／Security team | `NOT_AFFECTED`等の判断反映 |
 | 対応管理 | Issue、担当、対応状況 | GitHub Issues | GitHub REST API | sbom-ops | Issue作成・更新・クローズ |
 
+### データソースの鮮度
+
+Dependency-TrackでAnalyzerやMirrorが有効であること、更新間隔が設定されている
+こと、コンテナがhealthyであることは、直近の同期成功やデータ完全性の証明では
+ない。同期成功時刻または同等の安定した観測値を取得できない場合、鮮度は
+`unknown`として扱い、Findingのsource名から取得経路や同期状態を推定しない。
+
+2026-09-14のlab観測では初回のOSV、NIST、EPSS完了ログは識別できた一方、後続の
+2つの30時間窓では通常ログが存在しても対象taskイベントを観測できなかった。
+これは「指定したログ窓では未観測」という事実であり、task未実行やデータの
+staleを断定するものではない。再現手順と限界は
+[`lab/dependency_track/README.md`](../lab/dependency_track/README.md)および
+実験台帳に記録する。現時点ではこの情報を優先度、Analysis、抑制、Issue操作へ
+使用しない。
+
+同日の追加観測では、DT 4.14.3が成功したOSV処理後に書く内部markerを確認し、
+Go、npm、PyPI、RubyGemsの全markerが初回mirror時刻から約73時間更新されて
+いなかった。これは「このdatastoreに、より新しい成功OSV更新が記録されて
+いない」ことを示すが、scheduler未実行と更新失敗は区別できない。markerは
+REST API契約ではなくバージョン依存の内部実装なので、製品clientでは使用せず
+lab診断だけに限定する。
+
+同じ期間には、1時間周期のPortfolio Metricsが初回を含め19回、6時間周期の
+Internal Component Identificationが3回完了していた。scheduler全体の停止では
+ない一方、壁時計約78.5時間に対して1時間taskの反復は18周期に留まる。断続稼働
+するlab hostでは、コンテナ起動からの壁時計を24時間timerの経過時間とみなさず、
+control taskの反復も併記する。本番監視ではdatasource ageとruntime availabilityを
+分離し、停止中のruntimeを上流mirror障害と誤分類しない。
+
 ## 1. Dependency-TrackのFinding
 
 ### 取得
@@ -160,6 +189,110 @@ URLは`SBOM_OPS_KEV_FEED_URL`で変更できる。
 KEV該当は業務上の緊急度を示すものであり、Dependency-TrackのAnalysis stateを
 自動変更する根拠にはしない。
 
+## 3.1 将来の脆弱性Enrichment: Vulnerability-LookupとVuls vuls.db
+
+PoC、公開Exploit、実悪用観測、KEV、EPSS、vendor VEX等を補助情報として扱う
+ため、[`Vulnerability-Lookup`](https://github.com/vulnerability-lookup/vulnerability-lookup)
+をオンライン取得の第一候補として`lab/exploit_intelligence`で評価する。
+Vulnerability-LookupはCVE単位のHTTP APIを提供し、Sighting、複数KEV catalog、
+EPSS、VEXを個別に取得できる。保守中のVuls `vuls.db`は比較・オフライン候補、
+旧[`vulsio/go-exploitdb`](https://github.com/vulsio/go-exploitdb)はアーカイブ済み
+比較基準に限定し、いずれも現時点では本番依存にしない。
+
+Vulnerability-LookupのSightingは`published-proof-of-concept`、`exploited`、
+`confirmed`等を区別するが、種別名だけを事実認定に使わない。公式コレクタでは
+Exploit-DBレコードが`exploited`、Nuclei templateが`confirmed`として登録される
+ため、`type`、source URL、author、origin、観測日時を別々に保持する。
+`exploited`を無条件に実悪用確認済みへ変換せず、CISA KEV等の由来が明確な強い
+証拠と、公開ツール・記事・scanner templateを分けて人へ提示する。
+
+オンラインラボはendpointごとに独立した`available` / `not_observed` / `unknown`
+を記録する。APIの`404`だけを`not_observed`とし、timeout、HTTP障害、Schema不一致
+は`unknown`とする。Sightingの`content`とVEXの大きな`details`は保存せず、件数、
+source、種別、識別子、時刻等のbounded metadataだけを残す。公開APIへの大規模
+実行はcorpus round-robinとCVE IDで決定論的に25 CVEへ絞り、別の25 CVE guardも
+適用する。両方を明示的に引き上げた場合だけ取得件数を増やせる。
+HTTP `408`、`429`、`500`、`502`、`503`、`504`だけを上限付きでretryし、
+`Retry-After`のdelay-secondsとHTTP-dateを尊重する。不正または未指定のheaderは
+指数backoffへ戻し、localの1回の待機は最大30秒とする。有効なserver指定が30秒を
+超える場合は早期再送せず、当該signalを`unknown`にする。retry枯渇も`unknown`に
+してcheckpointへ保存しない。実public instanceからの429/5xx応答はまだ観測して
+いないため、これはHTTP契約の合成テスト結果である。
+checkpoint entryは`disabled`、`missing`、`fresh`、`expired`、`future`、`invalid`
+をsignalごとに記録・集計する。期限切れの確定観測は証拠として返さず再取得し、
+成功時だけ新しいtimestampで置換する。再取得が`unknown`なら古いentryを延命せず、
+期限切れのまま診断用に保持するため、次回もcache hitにはならない。
+確定した各signalは次のrequest前にatomic保存する。途中でrunnerが中断した場合、
+未完了の集約resultは発行しないが、同じcontractで再実行すれば完了済みentryだけを
+再利用して残りを取得する。2/5 signal後の`KeyboardInterrupt`復旧は合成テスト済み
+である。別processを一時ファイル書込後・replace直前に`SIGKILL`した場合も、既存
+checkpointのbyte列が保全されることを確認した。次のwriterはlock内で当該checkpointの
+UUID付き孤児一時ファイルだけを削除してからmerge・replaceする。host停止やstorage
+障害時のdurabilityは未検証である。書込順序はtemporary fileのflush・`fsync`、
+atomic replace、親directoryの`fsync`とする。replace前の`fsync`失敗では旧checkpointを
+保全して一時ファイルを除去し、runを失敗させる。
+checkpoint更新時はPOSIX sidecar lock内でdiskを再読込し、同一contractのentryを
+timestampでmergeしてからatomic replaceする。異なるkeyのlost updateと、同一keyを
+古いwriterが巻き戻すことを防ぐ。HTTP request中はlockしないため重複requestは許容し、
+barrier同期した2つのlocal processでも両entryの保持を確認した。network filesystem
+上のlock動作とhost/storage停止は未検証である。lock取得は50ms間隔のnon-blocking pollingで、
+default 10秒後にfail closedとする。timeout時はcheckpointを置換せず、取得済みsignalを
+保存済みとは扱わない。設定値はrunのsample policyへ記録する。
+
+2026-09-05の小規模API probeでは、Log4Shellに対してEPSS、4件のKEV assertion、
+1,963件のSighting、Red HatとSUSEの2件のVEX summaryが返った。Sightingは
+`per_page=2`でも大きなfree-form `content`を含み、`X-Fields`による除外要求も当該
+公開instanceでは反映されなかった。このため一括`with_*`取得や大量record保持は
+避け、signalごとの小さなページとmetadata countを使う。架空CVEの基本検索が
+HTTP 200で別identifierを返す事例も観測したため、全endpointで要求CVEとresponse
+内identifierの一致を検証し、不一致は`unknown`として隔離する。
+
+`vuls.db`側では2026-09-04にExploitDB、GitHub PoC、inTheWild、Trickest、Nuclei、
+Metasploitのsourceとraw／extracted commitを取得できた。2026-09-05の実SBOM
+Findingサンプルでは151 CVE中55件に計231件の参照が紐づいたが、206件はTrickest
+由来で一般的なCVE一覧リポジトリも含まれた。そのため、両候補を同一CVE集合で
+比較し、coverage、鮮度、重複、誤関連、response size、latencyを測定するまで
+`vuls.db`を廃止しない。
+
+2026-09-06には同じDT captureから決定論的に選んだ25 CVEを比較した。
+Vulnerability-Lookupの125 signal requestはunknownなしで232秒、EPSSは25件、
+PoC型Sightingは2件、confirmed型は2件、exploited型は1件、KEVは1件で取得できた。
+Sighting系と`vuls.db` public-referenceのcoverageは、両方5件、`vuls.db`のみ13件、
+Vulnerability-Lookupのみ0件、両方なし7件だった。したがってPoC coverageの代替
+とはせず、Vulnerability-LookupはEPSS、KEV、実悪用観測等のオンライン補完、
+`vuls.db`は広いpublic-reference比較・offline候補として併用評価する。全151 CVE
+への拡大前にcheckpoint/resumeとpacingを用意し、件数よりsource URLの精度確認を
+優先する。`vuls.db`のみの13件は全件にTrickestが含まれ、9件はTrickest単独で、
+一般的なCVE monitorやcatalogもあった。この差を「13件のPoC欠落」とは解釈しない。
+
+同13件の保持済みrecordから人手review queueを作ると、37 recordは27 URLに集約
+され、32 recordがTrickest由来だった。3 URLが複数CVEで再利用され11 recordへ
+影響し、2組の同一CVE／URLは複数datasourceに重複していた。URL再利用、CVE IDの
+URL内存在、datasource重複等は機械的hintとしてのみ扱い、全項目を`unreviewed`で
+開始する。URL patternや件数でPoC品質を自動判定しない。
+
+人手reviewはvuls.db snapshot digest、CVE、datasource、source ID、URL等から作る
+不変record identityへ結び付ける。queue run IDとsnapshot digestが一致し、reviewer、
+timezone付き日時、明示label、rationaleが揃った項目だけを部分適用できる。別snapshot
+のlabelは自動継承せず、再確認なしに本番のpriorityやworkflowへ昇格させない。
+同一queue／snapshotを独立した2名がreviewした結果は、両者が完了した項目だけを母数
+として完全一致率、偶然一致率、Cohen's kappa、confusion matrix、不一致項目を比較
+できる。ただし一致度は判断の一貫性であって正しさではないため、自動合格閾値は
+設けず、本番状態を変更する根拠にもしない。不一致だけを両reviewerのlabel、日時、
+rationale、元queue run、snapshot digest付きでadjudication queueへ移せる。
+agreement artifactの件数、対象集合、reviewer provenanceに不整合があればfail closedとし、
+全項目は`unreviewed`のまま新しい人間のadjudicatorへ渡す。adjudication templateは
+上書きせず、queue／agreement／元review queue／snapshotの4 binding、record metadata、
+timezone付き日時、明示label、rationaleを検証する。元のいずれかのreviewerによる
+自己adjudicationは拒否し、部分適用で残る項目は`unreviewed`を維持する。実際の37
+recordに対する人手review、第三者判断、snapshot更新時の再review方針は未検証である。
+
+どちらの候補もCVE単位の情報であり、SBOM Componentのpurl／versionへの適用性は
+Dependency-Trackと人によるreviewに残す。公開レコード、Sighting、KEV assertion、
+外部VEXの存在だけで`EXPLOITABLE`、優先度、抑制状態、Issueクローズを自動変更
+しない。EPSSはDependency-Trackの値を優先し、CISA direct feedをP0のauthorityと
+する現在のpolicyも維持する。
+
 ## 4. VEXとAnalysis state
 
 ### 初期値と後続入力
@@ -242,6 +375,57 @@ MVPでは`NOT_AFFECTED`、`FALSE_POSITIVE`、抑制済みFindingを新規Issue�
 除外する。ただし、既存Issueを自動的にクローズするかどうかは、Finding消滅と
 Analysis state変更を区別した明示的な運用ルールで決める。
 
+## 今後の検証：PoCと資産コンテキストの紐づけ
+
+以下は計画中の証拠モデルであり、現行の優先度計算への入力ではない。
+トリアージルールの変更に先立ち、取得可能性と紐づけの正確性を検証する。
+
+| 証拠 | 紐づけ単位 | 保存・確認すべき事項 |
+| --- | --- | --- |
+| 脆弱性識別子 | DT vulnerability source/IDとComponent UUID/PURL | CVE対応の出典・確認日時・未解決理由。GHSA/GOをCVEとみなさない |
+| 公開PoC | 根拠付きで解決した脆弱性識別子 | 出典、観測日時、対象バージョン、レビュー状態。公開と悪用確認は別 |
+| Internet facing | デプロイ環境とProject／サービス | 運用台帳や明示的な担当者入力、観測日時、有効期限、不明・競合状態 |
+| 到達可能性 | 対象Component／機能とデプロイ環境 | 外部公開から脆弱な処理まで到達できる根拠。公開状態だけで推定しない |
+
+パッケージが公開されていること、公開GitHubリポジトリがあること、SBOMに
+サービスURLがあることだけでは、実際のデプロイ先が外部公開されているとは
+判断しない。公開SBOMコーパスに対応する運用環境は未指定なので、公開状況は
+不明とする。ユーザーから別途対象が指定されるまでネットワーク探索は行わない。
+
+CVE対応が不明ならPoC照会は「識別子未解決」であり「PoCなし」ではない。
+取得失敗、照会成功だが未観測、未レビュー、証拠の期限切れも区別する。
+これらを残した上で、将来、人がレビューした設定可能な評価方針を検討する。
+
+2026-09-13の全範囲等間隔25件（GHSA 9・GO 8・PYSEC 8）比較では、
+Vulnerability-LookupはGHSA 8件とPYSEC 8件を単一CVEへ解決した一方、GOは8件
+とも未解決だった。OSV公式のID別レコードではその16件が同じCVE aliasを返し、
+GOも7件にCVE aliasがあり、残るGO 1件とGHSA 1件はレコードあり・aliasなし
+だった。候補集合の不一致、missing、取得失敗は観測されなかった。
+したがって単一aggregatorを識別子解決の権威とせず、元IDを保持したまま、出典別
+候補・照合時刻・一致／競合／未解決を保存する。OSV照合も同じ上流データを共有
+し得るため独立証拠とは呼ばず、PoCや適用可能性の根拠にも転用しない。
+未解決GOには非CVEの`related`が1件あったが、`aliases`、`related`、`upstream`は
+OSV schema上の意味が異なる。自由記述内の別IDも含め、明示的な`aliases`以外を
+同一脆弱性の対応候補へ昇格させない。
+照合契約は[OSV ID別API](https://google.github.io/osv.dev/get-v1-vulns/)と
+[OSV alias semantics](https://ossf.github.io/osv-schema/#aliases-field)に従う。
+
+候補はcross-check snapshotのSHA-256に固定したreview queueへ移し、初期値を必ず
+`unreviewed`とする。人が`confirmed-alias`、`rejected`、または
+`needs-more-evidence`を根拠付きで選ぶ。review fileもqueue snapshotへ固定し、
+placeholder、snapshot差替え、未完了判断は拒否する。`confirmed-alias`は後続の
+bounded PoC検証へ渡せるlab証拠であり、優先度、Analysis、Issue操作の許可ではない。
+handoffではqueueとreviewed resultを再検証し、元の非CVE ID、候補CVE、出典、
+reviewer、時刻、根拠を保持する。確認済み0件または25件超過を拒否し、artifact生成
+自体は外部照会を開始しない。
+
+後続のmapped-ID PoC検証も別コマンドとし、既定ではdry-runである。dry-runはhandoff
+を検証して、確認済みCVEごとのPoC公開、悪用観測、confirmed、KEV、EPSSという5 signal
+のrequest計画だけを出力し、外部APIもcheckpointも変更しない。live実行には明示的な
+`EXECUTE=1`が必要で、最大25 CVE・125 request、pacing、signal単位checkpointを適用する。
+結果は元IDと人手review provenanceに結合し、`available`、`not_observed`、`unknown`を
+区別するが、priority、Analysis、抑制、Issue状態を変更しない。
+
 ## 5. GitHub Issues
 
 GitHubはFindingの検出元ではない。Remediation workflowの一次情報源である。
@@ -289,6 +473,14 @@ Analysis stateによる除外は、優先度計算後かつIssue作成前に行�
 - GitHub Issuesは対応状況の管理元であり、脆弱性分析の管理元ではない。
 - 情報源・取得失敗・欠損値はログとIssue本文で追跡可能にする。
 - 情報源の値を根拠なく上書きしない。
+
+ラボの`triage-delegation-boundary`とVEXシナリオにより、Analysis判断、詳細、
+Suppression、コメントと監査履歴はDTを正本にできる。GitHub／Jiraは対応タスク
+状態の正本とする。sbom-opsが保持するのはstable Finding key、最後に観測した
+semantic digest、観測結果／時刻、work-item相関であり、監査コメント本文を複製
+しない。DT 4.14.3にはAnalysis変更cursorやETagがないため、再同期は必ず
+`suppressed=true`を指定した完全Finding snapshotで行う。MVPのAnalysis／VEX
+書き込み経路は引き続き読み取り専用とし、独自のトリアージ正本を追加しない。
 
 ## キャッシュ、永続化、LLM利用
 

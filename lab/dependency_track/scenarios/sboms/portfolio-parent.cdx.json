@@ -1,0 +1,23 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:29ec0d91-ef78-44d7-9879-cd89f673600d",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-09-02T00:00:00Z",
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:generic/dt-lab-portfolio-parent@1.0.0",
+      "name": "dt-lab-portfolio-parent",
+      "version": "1.0.0",
+      "purl": "pkg:generic/dt-lab-portfolio-parent@1.0.0"
+    }
+  },
+  "components": [],
+  "dependencies": [
+    {
+      "ref": "pkg:generic/dt-lab-portfolio-parent@1.0.0",
+      "dependsOn": []
+    }
+  ]
+}

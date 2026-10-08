@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from sbom_ops.clients.dependency_track import (
+    DependencyTrackApiError,
     DependencyTrackFinding,
     DependencyTrackProject,
 )
@@ -15,7 +18,28 @@ from sbom_ops.config import (
     RuntimeConfig,
     WorkflowConfig,
 )
-from sbom_ops.services.orchestrator import Orchestrator
+from sbom_ops.domain.advisory import (
+    AdvisorySnapshot,
+    EvidenceFreshness,
+    EvidenceOutcome,
+    ExposureStatus,
+    VulnerabilityEvidenceObservation,
+)
+from sbom_ops.domain.asset_registry import (
+    AssetRegistrySnapshot,
+    RegisteredService,
+    RegistryDeploymentStatus,
+    RegistryProjectStatus,
+    ReportedDeployment,
+    ReviewedProjectLink,
+)
+from sbom_ops.domain.assets import (
+    AssetDeployment,
+    AssetInventorySnapshot,
+    BusinessCriticality,
+    DeploymentStatus,
+)
+from sbom_ops.services.orchestrator import Orchestrator, ProjectSelectionError
 
 
 def config() -> AppConfig:
@@ -76,7 +100,10 @@ class FakeDependencyTrackWithExcludedFinding(FakeDependencyTrack):
 
 
 class FakeKev:
-    def get_known_exploited_vulnerabilities(self) -> set[str]:
+    def get_known_exploited_vulnerabilities(
+        self, *, force_refresh: bool = False
+    ) -> set[str]:
+        del force_refresh
         return {"CVE-2026-0001"}
 
 
@@ -85,6 +112,7 @@ class FakeGitHub:
         self,
         *,
         missing_count: int = 0,
+        finding_state_marker: str | None = None,
         legacy_only: bool = False,
         tracked_issue_key: str = "project-1:old:1:CVE-2025-0001",
     ) -> None:
@@ -93,6 +121,7 @@ class FakeGitHub:
         self.closed: list[int] = []
         self.created: list[tuple[str, str, list[str]]] = []
         self.missing_count = missing_count
+        self.finding_state_marker = finding_state_marker
         self.legacy_only = legacy_only
         self.tracked_issue_key = tracked_issue_key
         self.searched_keys: list[str] = []
@@ -108,6 +137,11 @@ class FakeGitHub:
         return None
 
     def list_open_issues(self, label: str) -> list[dict]:
+        state_marker = (
+            f"\n<!-- sbom-ops:finding-state={self.finding_state_marker} -->"
+            if self.finding_state_marker
+            else ""
+        )
         missing_marker = (
             f"\n<!-- sbom-ops:missing-count={self.missing_count} -->"
             if self.missing_count
@@ -119,6 +153,7 @@ class FakeGitHub:
                 "title": "old finding",
                 "body": (
                     f"<!-- sbom-ops:finding-key={self.tracked_issue_key} -->"
+                    f"{state_marker}"
                     f"{missing_marker}"
                 ),
             }
@@ -147,6 +182,7 @@ def test_orchestrator_keeps_stale_issue_open_by_default() -> None:
     assert result.run_id
     assert result.duration_seconds >= 0
     assert result.kev_used_stale_cache is False
+    assert result.analysis_snapshot_status.value == "not_requested"
     assert result.issues_created == 0
     assert result.issues_updated == 1
     assert result.issues_closed == 0
@@ -161,12 +197,382 @@ def test_orchestrator_keeps_stale_issue_open_by_default() -> None:
     assert len(result.assessments) == 2
     assert result.assessments[0].priority.value == "P0"
     assert result.assessments[0].analysis_state.value == "NOT_SET"
+    assert result.assessments[0].in_kev is True
     payload = result.as_dict()
     assert payload["status"] == "succeeded"
     assert payload["run_id"] == result.run_id
     assert payload["kev_used_stale_cache"] is False
+    assert payload["analysis_snapshot_status"] == "not_requested"
+    assert payload["assessments"][0]["vulnerability_source"] == "NVD"
+    assert payload["assessments"][0]["severity"] == "HIGH"
+    assert payload["assessments"][0]["cvss_score"] == 8.0
+    assert payload["assessments"][0]["epss_score"] == 0.1
     assert payload["assessments"][0]["priority"] == "P0"
+    assert payload["assessments"][0]["is_suppressed"] is False
+    assert payload["assessments"][0]["in_kev"] is True
+    assert payload["assessments"][0]["component_uuid"] is None
+    assert payload["assessments"][0]["component_purl"] is None
     assert payload["actions"] == list(result.actions)
+
+
+def test_reviewed_registry_link_is_output_only_and_does_not_change_issues() -> None:
+    class LinkedDependencyTrack(FakeDependencyTrack):
+        def list_projects(self) -> list[DependencyTrackProject]:
+            return [DependencyTrackProject("project-1", "checkout-api/web", "v1")]
+
+    snapshot = AssetRegistrySnapshot(
+        services=(
+            RegisteredService(
+                "checkout-api", "team-checkout", BusinessCriticality.HIGH, "payments"
+            ),
+        ),
+        links=(
+            ReviewedProjectLink(
+                "project-1",
+                "checkout-api/web",
+                "v1",
+                "checkout-api",
+                "web",
+                "alice",
+                "2026-10-06T00:00:00Z",
+            ),
+        ),
+        deployment_reports=(
+            ReportedDeployment(
+                "checkout-api",
+                "web",
+                "production",
+                "v1",
+                DeploymentStatus.DEPLOYED,
+                ExposureStatus.UNKNOWN,
+                "alice",
+                "reviewed deployment record",
+                "2026-10-07T00:00:00Z",
+                "2099-10-07T00:00:00Z",
+                1,
+            ),
+        ),
+    )
+    baseline_github = FakeGitHub()
+    linked_github = FakeGitHub()
+    baseline = Orchestrator(
+        config(), LinkedDependencyTrack(), FakeKev(), baseline_github
+    ).run()
+    linked = Orchestrator(
+        config(),
+        LinkedDependencyTrack(),
+        FakeKev(),
+        linked_github,
+        asset_registry=snapshot,
+    ).run()
+
+    assert linked.registry_snapshot_status.value == "loaded"
+    assert linked.registry_projects[0].status is RegistryProjectStatus.MATCHED
+    assert linked.registry_deployments[0].status is RegistryDeploymentStatus.REPORTED
+    assert linked.as_dict()["registry_deployments"][0]["source"] == "human_reported"
+    assert linked.as_dict()["registry_projects"][0]["owner"] == "team-checkout"
+    assert linked.asset_inventory_status.value == "not_requested"
+    assert linked.assessments == baseline.assessments
+    assert linked.actions == baseline.actions
+    assert (linked.issues_created, linked.issues_updated, linked.issues_closed) == (
+        baseline.issues_created,
+        baseline.issues_updated,
+        baseline.issues_closed,
+    )
+    assert linked_github.created == baseline_github.created
+    assert linked_github.updated_bodies == baseline_github.updated_bodies
+    assert linked_github.closed == baseline_github.closed
+
+
+def test_action_neutral_assessment_preserves_component_identity() -> None:
+    class DependencyTrackWithPurl(FakeDependencyTrack):
+        def get_project_findings(
+            self, project_uuid: str
+        ) -> list[DependencyTrackFinding]:
+            del project_uuid
+            return [
+                replace(
+                    finding("CVE-2026-0003"),
+                    component_uuid="component-3",
+                    component_purl="pkg:pypi/example@1.2.3",
+                    vulnerability_aliases=(
+                        "CVE-2026-0001",
+                        "GHSA-abcd-efgh-ijkl",
+                    ),
+                    cvss_version="CVSSv4",
+                )
+            ]
+
+    disabled_config = replace(config(), github=replace(config().github, enabled=False))
+    result = Orchestrator(
+        disabled_config,
+        DependencyTrackWithPurl(),
+        FakeKev(),
+        FakeGitHub(),
+    ).run()
+
+    assessment = result.as_dict()["assessments"][0]
+    assert assessment["component_uuid"] == "component-3"
+    assert assessment["component_purl"] == "pkg:pypi/example@1.2.3"
+    assert assessment["component_name"] == "openssl"
+    assert assessment["component_version"] == "3.0.0"
+    assert assessment["vulnerability_aliases"] == [
+        "CVE-2026-0001",
+        "GHSA-abcd-efgh-ijkl",
+    ]
+    assert assessment["cvss_version"] == "CVSSv4"
+    assert assessment["priority"] == "P0"
+    assert assessment["in_kev"] is True
+
+
+def test_explicit_cve_alias_can_match_kev_without_replacing_primary_id() -> None:
+    class DependencyTrackWithCveAlias(FakeDependencyTrack):
+        def get_project_findings(
+            self, project_uuid: str
+        ) -> list[DependencyTrackFinding]:
+            del project_uuid
+            return [
+                replace(
+                    finding("GHSA-abcd-efgh-ijkl"),
+                    vulnerability_source="GITHUB",
+                    vulnerability_aliases=("cve-2026-0001",),
+                )
+            ]
+
+    disabled_config = replace(config(), github=replace(config().github, enabled=False))
+    result = Orchestrator(
+        disabled_config,
+        DependencyTrackWithCveAlias(),
+        FakeKev(),
+        FakeGitHub(),
+    ).run()
+
+    assessment = result.as_dict()["assessments"][0]
+    assert assessment["vulnerability_id"] == "GHSA-abcd-efgh-ijkl"
+    assert assessment["vulnerability_aliases"] == ["cve-2026-0001"]
+    assert assessment["in_kev"] is True
+    assert assessment["priority"] == "P0"
+    assert assessment["rationale"] == ["KEV match"]
+
+
+def test_advisory_snapshot_matches_explicit_cve_alias_without_changing_priority() -> (
+    None
+):
+    class DependencyTrackWithAlias(FakeDependencyTrack):
+        def get_project_findings(
+            self, project_uuid: str
+        ) -> list[DependencyTrackFinding]:
+            del project_uuid
+            return [
+                replace(
+                    finding("GHSA-abcd-efgh-ijkl"),
+                    vulnerability_aliases=("CVE-2026-0001",),
+                )
+            ]
+
+    snapshot = AdvisorySnapshot(
+        snapshot_id="test-snapshot",
+        generated_at="2026-10-03T00:00:00Z",
+        vulnerability_observations=(
+            VulnerabilityEvidenceObservation(
+                vulnerability_id="cve-2026-0001",
+                source="lookup",
+                signal="exploit_reference",
+                outcome=EvidenceOutcome.AVAILABLE,
+                observed_at="2026-10-03T00:00:00Z",
+                source_revision=None,
+                freshness=EvidenceFreshness.FRESH,
+                record_count=1,
+                complete=True,
+            ),
+        ),
+        project_exposure=(),
+    )
+    disabled_config = replace(config(), github=replace(config().github, enabled=False))
+    baseline = Orchestrator(
+        disabled_config,
+        DependencyTrackWithAlias(),
+        FakeKev(),
+        FakeGitHub(),
+    ).run()
+
+    result = Orchestrator(
+        disabled_config,
+        DependencyTrackWithAlias(),
+        FakeKev(),
+        advisory_snapshot=snapshot,
+    ).run()
+
+    assessment = result.assessments[0]
+    assert result.advisory_snapshot_status.value == "loaded"
+    assert result.advisory_snapshot_id == "test-snapshot"
+    assert result.as_dict()["advisory_snapshot_generated_at"] == (
+        "2026-10-03T00:00:00Z"
+    )
+    assert assessment.advisory_observations[0].vulnerability_id == "cve-2026-0001"
+    assert assessment.priority == baseline.assessments[0].priority
+
+
+def test_explicit_poc_reports_order_equal_risk_output_without_workflow_change() -> None:
+    class EqualFindings(FakeDependencyTrack):
+        def get_project_findings(
+            self, project_uuid: str
+        ) -> list[DependencyTrackFinding]:
+            del project_uuid
+            return [finding("CVE-2026-0001"), finding("CVE-2026-0002")]
+
+    class NoKev:
+        def get_known_exploited_vulnerabilities(
+            self, *, force_refresh: bool = False
+        ) -> set[str]:
+            del force_refresh
+            return set()
+
+    snapshot = AdvisorySnapshot(
+        snapshot_id="poc-report",
+        generated_at="2026-10-07T00:00:00Z",
+        vulnerability_observations=(
+            VulnerabilityEvidenceObservation(
+                vulnerability_id="CVE-2026-0002",
+                source="lookup",
+                signal="published_poc",
+                outcome=EvidenceOutcome.AVAILABLE,
+                observed_at="2026-10-07T00:00:00Z",
+                source_revision=None,
+                freshness=EvidenceFreshness.FRESH,
+                record_count=2,
+                complete=True,
+                expires_at="2099-01-01T00:00:00Z",
+            ),
+        ),
+        project_exposure=(),
+    )
+    disabled_config = replace(config(), github=replace(config().github, enabled=False))
+    baseline = Orchestrator(disabled_config, EqualFindings(), NoKev()).run()
+    result = Orchestrator(
+        disabled_config, EqualFindings(), NoKev(), advisory_snapshot=snapshot
+    ).run()
+
+    assert [item.vulnerability_id for item in result.assessments] == [
+        "CVE-2026-0001",
+        "CVE-2026-0002",
+    ]
+    assert [item["vulnerability_id"] for item in result.as_dict()["assessments"]] == [
+        "CVE-2026-0002",
+        "CVE-2026-0001",
+    ]
+    assert result.as_dict()["assessments"][0]["poc_reports"] == {
+        "status": "reported",
+        "sources": [
+            {
+                "vulnerability_id": "CVE-2026-0002",
+                "source": "lookup",
+                "outcome": "available",
+                "record_count": 2,
+                "observed_at": "2026-10-07T00:00:00Z",
+                "freshness": "fresh",
+                "effective_freshness": "fresh",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "complete": True,
+            }
+        ],
+    }
+    assert [item.priority for item in result.assessments] == [
+        item.priority for item in baseline.assessments
+    ]
+    assert result.actions == baseline.actions == ()
+
+
+def test_asset_inventory_keeps_project_scope_and_does_not_change_priority() -> None:
+    class TwoProjects(FakeDependencyTrack):
+        def list_projects(self) -> list[DependencyTrackProject]:
+            return [
+                DependencyTrackProject("project-1", "service-a"),
+                DependencyTrackProject("project-2", "service-b"),
+            ]
+
+        def get_project_findings(
+            self, project_uuid: str
+        ) -> list[DependencyTrackFinding]:
+            return [
+                replace(
+                    finding("CVE-2026-0001"),
+                    project_uuid=project_uuid,
+                    project_name=project_uuid,
+                )
+            ]
+
+    def deployment(project_uuid: str) -> AssetDeployment:
+        return AssetDeployment(
+            project_uuid=project_uuid,
+            service_id="service-a",
+            environment="production",
+            owner="team-a",
+            deployed_version="service-a@1.0.0",
+            deployment_status=DeploymentStatus.DEPLOYED,
+            exposure_status=ExposureStatus.CONFIRMED,
+            criticality=BusinessCriticality.CRITICAL,
+            source="reviewed-inventory",
+            observed_at="2026-10-04T00:00:00Z",
+            expires_at="2099-01-01T00:00:00Z",
+        )
+
+    snapshot = AssetInventorySnapshot(
+        snapshot_id="assets-1",
+        generated_at="2026-10-04T00:00:00Z",
+        deployments=(deployment("project-1"), deployment("project-3")),
+        sha256="example-digest",
+    )
+    disabled_config = replace(config(), github=replace(config().github, enabled=False))
+    baseline = Orchestrator(
+        disabled_config, TwoProjects(), FakeKev(), FakeGitHub()
+    ).run()
+    result = Orchestrator(
+        disabled_config,
+        TwoProjects(),
+        FakeKev(),
+        FakeGitHub(),
+        asset_inventory=snapshot,
+    ).run()
+
+    assert result.asset_inventory_status.value == "loaded"
+    assert result.asset_inventory_id == "assets-1"
+    assert result.asset_unmapped_project_uuids == ("project-2",)
+    assert result.asset_unmatched_project_uuids == ("project-3",)
+    assert [item.project_uuid for item in result.asset_deployments] == ["project-1"]
+    assert [item.priority for item in result.assessments] == [
+        item.priority for item in baseline.assessments
+    ]
+    assert result.actions == baseline.actions == ()
+
+
+def test_non_cve_alias_does_not_match_kev() -> None:
+    class DependencyTrackWithGhsaAlias(FakeDependencyTrack):
+        def get_project_findings(
+            self, project_uuid: str
+        ) -> list[DependencyTrackFinding]:
+            del project_uuid
+            return [
+                replace(
+                    finding("GHSA-abcd-efgh-ijkl"),
+                    vulnerability_aliases=(
+                        "GHSA-wxyz-1234-5678",
+                        "CVE-2026-0001-extra",
+                    ),
+                )
+            ]
+
+    disabled_config = replace(config(), github=replace(config().github, enabled=False))
+    result = Orchestrator(
+        disabled_config,
+        DependencyTrackWithGhsaAlias(),
+        FakeKev(),
+        FakeGitHub(),
+    ).run()
+
+    assessment = result.as_dict()["assessments"][0]
+    assert assessment["in_kev"] is False
+    assert assessment["priority"] != "P0"
 
 
 def test_orchestrator_marks_first_verified_absence_without_closing() -> None:
@@ -179,6 +585,7 @@ def test_orchestrator_marks_first_verified_absence_without_closing() -> None:
 
     result = Orchestrator(safe_config, FakeDependencyTrack(), FakeKev(), github).run()
 
+    assert result.analysis_snapshot_status.value == "stable"
     assert result.issues_updated == 2
     assert result.issues_closed == 0
     assert github.updated == [11, 12]
@@ -218,7 +625,7 @@ def test_orchestrator_resets_missing_count_when_finding_reappears() -> None:
 
 
 def test_orchestrator_closes_after_second_verified_absence() -> None:
-    github = FakeGitHub(missing_count=1)
+    github = FakeGitHub(missing_count=1, finding_state_marker="MISSING")
     safe_config = replace(
         config(),
         runtime=RuntimeConfig(wait_for_analysis=True),
@@ -233,6 +640,134 @@ def test_orchestrator_closes_after_second_verified_absence() -> None:
     assert "<!-- sbom-ops:finding-state=RESOLVED -->" in github.updated_bodies[1]
     assert github.closed == [12]
     assert result.actions[1].endswith("count=2 reason=consecutive_absence_confirmed")
+
+
+def test_dt_read_failure_never_marks_or_closes_a_missing_finding() -> None:
+    class FailedDependencyTrack(FakeDependencyTrack):
+        def wait_for_analysis(
+            self, project_uuid: str, *, timeout: float, poll_interval: float
+        ) -> list[DependencyTrackFinding]:
+            raise DependencyTrackApiError("malformed collection")
+
+    github = FakeGitHub(missing_count=1, finding_state_marker="MISSING")
+    safe_config = replace(
+        config(),
+        runtime=RuntimeConfig(wait_for_analysis=True),
+        workflow=WorkflowConfig(close_missing_findings=True),
+    )
+
+    with pytest.raises(DependencyTrackApiError, match="malformed collection"):
+        Orchestrator(safe_config, FailedDependencyTrack(), FakeKev(), github).run()
+
+    assert github.created == []
+    assert github.updated == []
+    assert github.closed == []
+
+
+def test_orchestrator_does_not_close_from_a_count_without_missing_state() -> None:
+    github = FakeGitHub(missing_count=1)
+    safe_config = replace(
+        config(),
+        runtime=RuntimeConfig(wait_for_analysis=True),
+        workflow=WorkflowConfig(close_missing_findings=True),
+    )
+
+    result = Orchestrator(safe_config, FakeDependencyTrack(), FakeKev(), github).run()
+
+    assert result.issues_closed == 0
+    assert github.closed == []
+    assert "<!-- sbom-ops:finding-state=MISSING -->" in github.updated_bodies[1]
+    assert "<!-- sbom-ops:missing-count=1 -->" in github.updated_bodies[1]
+    assert result.actions[1].endswith("count=1 reason=awaiting_absence_confirmation")
+
+
+@pytest.mark.parametrize(
+    "duplicate_marker",
+    [
+        "<!-- sbom-ops:finding-state=MISSING -->",
+        "<!-- sbom-ops:missing-count=1 -->",
+    ],
+)
+def test_orchestrator_restarts_duplicate_missing_metadata(
+    duplicate_marker: str,
+) -> None:
+    class DuplicateMetadataGitHub(FakeGitHub):
+        def list_open_issues(self, label: str) -> list[dict]:
+            issues = super().list_open_issues(label)
+            issues[0]["body"] += f"\n{duplicate_marker}"
+            return issues
+
+    github = DuplicateMetadataGitHub(missing_count=1, finding_state_marker="MISSING")
+    safe_config = replace(
+        config(),
+        runtime=RuntimeConfig(wait_for_analysis=True),
+        workflow=WorkflowConfig(close_missing_findings=True),
+    )
+
+    result = Orchestrator(safe_config, FakeDependencyTrack(), FakeKev(), github).run()
+
+    assert result.issues_closed == 0
+    assert github.updated_bodies[1].count("sbom-ops:finding-state=MISSING") == 1
+    assert github.updated_bodies[1].count("sbom-ops:missing-count=1") == 1
+
+
+def test_orchestrator_resets_stale_missing_state_when_finding_reappears() -> None:
+    github = FakeGitHub(
+        finding_state_marker="MISSING",
+        tracked_issue_key="project-1:openssl:3.0.0:CVE-2026-0002",
+    )
+
+    result = Orchestrator(
+        config(), FakeDependencyTrackWithExcludedFinding(), FakeKev(), github
+    ).run()
+
+    assert result.issues_closed == 0
+    assert github.updated == [12]
+    assert "<!-- sbom-ops:finding-state=ACTIVE -->" in github.updated_bodies[0]
+    assert "sbom-ops:missing-count" not in github.updated_bodies[0]
+
+
+def test_analysis_snapshot_status_reports_no_projects() -> None:
+    class NoProjects(FakeDependencyTrack):
+        def list_projects(self) -> list[DependencyTrackProject]:
+            return []
+
+    safe_config = replace(
+        config(),
+        runtime=RuntimeConfig(wait_for_analysis=True),
+        github=replace(config().github, enabled=False),
+    )
+    result = Orchestrator(safe_config, NoProjects(), FakeKev(), FakeGitHub()).run()
+
+    assert result.projects_processed == 0
+    assert result.analysis_snapshot_status.value == "no_projects"
+
+
+def test_suppressed_finding_cancels_pending_absence_closure() -> None:
+    # DT lab 2026-09-01: suppressed=true retains suppressed inventory.
+    class SuppressedInventory(FakeDependencyTrack):
+        def get_project_findings(
+            self, project_uuid: str
+        ) -> list[DependencyTrackFinding]:
+            return [replace(finding("CVE-2026-0002"), is_suppressed=True)]
+
+    github = FakeGitHub(
+        missing_count=1,
+        tracked_issue_key="project-1:openssl:3.0.0:CVE-2026-0002",
+    )
+    safe_config = replace(
+        config(),
+        runtime=RuntimeConfig(wait_for_analysis=True),
+        workflow=WorkflowConfig(close_missing_findings=True),
+    )
+    result = Orchestrator(safe_config, SuppressedInventory(), FakeKev(), github).run()
+
+    assert result.issues_created == 0
+    assert result.issues_closed == 0
+    assert github.closed == []
+    assert github.updated == [12]
+    assert "<!-- sbom-ops:finding-state=ACTIVE -->" in github.updated_bodies[0]
+    assert "sbom-ops:missing-count" not in github.updated_bodies[0]
 
 
 def test_orchestrator_dry_run_does_not_mutate_github() -> None:
@@ -269,6 +804,76 @@ def test_orchestrator_can_disable_github_issue_actions() -> None:
     assert result.issues_closed == 0
     assert result.actions == ()
     assert len(result.assessments) == 2
+    assert github.created == []
+    assert github.updated == []
+    assert github.closed == []
+
+
+def test_assessment_exposes_missing_scores_without_changing_priority_policy() -> None:
+    class MissingScores(FakeDependencyTrack):
+        def get_project_findings(
+            self, project_uuid: str
+        ) -> list[DependencyTrackFinding]:
+            return [
+                replace(
+                    finding("GHSA-ABCD-1234-5678", severity="HIGH"),
+                    cvss_score=None,
+                    epss_score=None,
+                    vulnerability_source="GITHUB",
+                )
+            ]
+
+    disabled_config = replace(config(), github=replace(config().github, enabled=False))
+    result = Orchestrator(
+        disabled_config, MissingScores(), FakeKev(), FakeGitHub()
+    ).run()
+
+    assessment = result.as_dict()["assessments"][0]
+    assert assessment["vulnerability_source"] == "GITHUB"
+    assert assessment["severity"] == "HIGH"
+    assert assessment["cvss_score"] is None
+    assert assessment["epss_score"] is None
+    assert assessment["priority"] == "P3"
+    assert assessment["in_kev"] is False
+    assert assessment["rationale"] == [
+        "Default monitoring priority",
+        "EPSS unavailable",
+        "CVSS unavailable; severity label is not used as a score fallback",
+    ]
+
+
+def test_assessment_preserves_dependency_track_analysis_detail() -> None:
+    analyst_note = "Reviewed by AppSec.\nReachability is not yet confirmed."
+
+    class FindingWithAnalysisDetail(FakeDependencyTrack):
+        def get_project_findings(
+            self, project_uuid: str
+        ) -> list[DependencyTrackFinding]:
+            del project_uuid
+            return [replace(finding("CVE-2026-0005"), analysis_detail=analyst_note)]
+
+    disabled_config = replace(config(), github=replace(config().github, enabled=False))
+    result = Orchestrator(
+        disabled_config,
+        FindingWithAnalysisDetail(),
+        FakeKev(),
+        FakeGitHub(),
+    ).run()
+
+    assessment = result.as_dict()["assessments"][0]
+    assert assessment["analysis_detail"] == analyst_note
+
+
+def test_unavailable_project_filter_fails_before_external_workflow_actions() -> None:
+    github = FakeGitHub()
+    selected_config = replace(
+        config(),
+        runtime=replace(config().runtime, project_uuids=("missing-project",)),
+    )
+
+    with pytest.raises(ProjectSelectionError, match="not accessible: missing-project"):
+        Orchestrator(selected_config, FakeDependencyTrack(), FakeKev(), github).run()
+
     assert github.created == []
     assert github.updated == []
     assert github.closed == []

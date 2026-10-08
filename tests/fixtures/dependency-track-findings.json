@@ -10,13 +10,22 @@
       "uuid": "vulnerability-1",
       "source": "NVD",
       "vulnId": "CVE-2026-0001",
+      "aliases": [
+        {"cveId": "CVE-2026-1001", "ghsaId": "GHSA-abcd-efgh-ijkl"},
+        {"cveId": "CVE-2026-1001", "otherId": "ignored-by-v1"}
+      ],
       "severity": "CRITICAL",
       "cvssV3BaseScore": 9.8,
+      "cvssV4Score": 8.8,
       "epssScore": 0.91,
       "cwes": [{"cweId": 78}],
       "description": "Example vulnerability"
     },
-    "analysis": {"state": "NOT_SET", "isSuppressed": false},
+    "analysis": {
+      "state": "NOT_SET",
+      "isSuppressed": false,
+      "detail": "Reviewed by AppSec.\nReachability is not yet confirmed."
+    },
     "uuid": "finding-1"
   },
   {

@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 3
 
 target:
   dependency_track_version: 4.14.3
@@ -10,6 +10,10 @@ scenarios:
     category: lifecycle
     status: implemented
     purpose: Observe identity and Finding changes when vulnerable components are updated or replaced.
+    hypotheses:
+      - DT updates inventory and Findings when a new SBOM replaces components in the same Project version.
+    decision_questions:
+      - Can DT Finding lifecycle provide remediation evidence without duplicating SBOM diff logic in sbom-ops?
     project:
       name: dt-lab-vulnerable-demo
       version: 0.1.0
@@ -39,6 +43,10 @@ scenarios:
     category: identity
     status: implemented
     purpose: Distinguish components with identical display coordinates but different ecosystems or PURLs.
+    hypotheses:
+      - DT preserves distinct component identities when display coordinates match but PURLs differ.
+    decision_questions:
+      - Can sbom-ops rely on DT identity plus PURL instead of defining a parallel component identity scheme?
     project:
       name: dt-lab-identity-purl
       version: 1.0.0
@@ -57,6 +65,10 @@ scenarios:
     category: identity
     status: implemented
     purpose: Measure matching and UUID stability when PURL is absent and hashes or CPEs are present.
+    hypotheses:
+      - DT applies usable fallback identity rules when a component has no PURL.
+    decision_questions:
+      - Which identifiers must sbom-ops require or preserve when DT cannot use a PURL?
     project:
       name: dt-lab-identity-fallback
       version: 1.0.0
@@ -75,6 +87,10 @@ scenarios:
     category: identity
     status: implemented
     purpose: Observe one component reached through multiple dependency paths without duplicate remediation work.
+    hypotheses:
+      - DT represents one component reached by multiple dependency paths without duplicate Findings.
+    decision_questions:
+      - Can DT own component and Finding deduplication for remediation task creation?
     project:
       name: dt-lab-identity-paths
       version: 1.0.0
@@ -94,6 +110,10 @@ scenarios:
     category: lifecycle
     status: implemented
     purpose: Record Component, Finding, and Metrics transitions across add and remove uploads.
+    hypotheses:
+      - A replacement SBOM makes DT inventory, Findings, and metrics reflect component additions and removals.
+    decision_questions:
+      - Which DT transitions are reliable enough to open, update, or close remediation tasks?
     project:
       name: dt-lab-lifecycle-components
       version: 1.0.0
@@ -123,6 +143,10 @@ scenarios:
     category: lifecycle
     status: implemented
     purpose: Compare UUID and Finding behavior across releases of the same named Project.
+    hypotheses:
+      - DT isolates component and Finding identity by Project version while retaining portfolio relationships.
+    decision_questions:
+      - Should remediation tasks follow a DT Project version, a component, or a vulnerability across releases?
     project:
       name: dt-lab-lifecycle-versions
       version: 1.0.0
@@ -150,26 +174,78 @@ scenarios:
 
   - id: portfolio-parent-child
     category: portfolio
-    status: planned
-    purpose: Measure inherited risk and API responses across parent and child Projects.
+    status: implemented
+    purpose: Measure hierarchy representation and default inherited-risk behavior across parent and child Projects.
+    hypotheses:
+      - DT preserves a child-to-parent relationship and exposes the child through the parent's paginated children endpoint.
+      - Hierarchy creation alone does not imply risk aggregation when the parent's collection logic remains at its default.
+    decision_questions:
+      - Which hierarchy and inherited-risk behavior can sbom-ops delegate to DT?
+      - Is explicit collection-logic management required before a parent can be a remediation boundary?
     project:
       name: dt-lab-portfolio-parent
       version: 1.0.0
-    steps: []
+    steps:
+      - id: parent
+        bom: sboms/portfolio-parent.cdx.json
+        observe:
+          - project
+          - components
+          - findings
+          - metrics
+          - bom-export
+      - id: child
+        project_name: dt-lab-portfolio-child
+        parent_step: parent
+        bom: sboms/portfolio-child.cdx.json
+        observe:
+          - project
+          - components
+          - findings
+          - metrics
+          - bom-export
 
   - id: portfolio-tags-properties
     category: portfolio
-    status: planned
-    purpose: Evaluate tags and properties as routing and ownership metadata.
+    status: implemented
+    purpose: Evaluate least-privilege Project tags and properties as routing and ownership metadata.
+    hypotheses:
+      - Tags supplied on initial coordinate upload are queryable through the Project projection and paginated tag filter.
+      - A creation-only upload key cannot silently reconcile changed tags on an existing Project.
+      - Project properties require management permission even for their dedicated read endpoint.
+    decision_questions:
+      - Can ownership and repository routing be derived from DT without a second inventory?
+      - Which DT metadata source can be read and updated with least privilege and deterministic replacement semantics?
     project:
       name: dt-lab-portfolio-metadata
       version: 1.0.0
-    steps: []
+    steps:
+      - id: initial-routing
+        bom: sboms/portfolio-tags-properties.cdx.json
+        project_tags:
+          - dt-lab-owner-alpha
+          - dt-lab-repository-alpha
+        observe:
+          - project
+          - components
+      - id: changed-routing
+        bom: sboms/portfolio-tags-properties.cdx.json
+        project_tags:
+          - dt-lab-owner-beta
+          - dt-lab-repository-beta
+        probe_project_properties: true
+        observe:
+          - project
+          - components
 
   - id: portfolio-direct-transitive-graph
     category: portfolio
     status: implemented
     purpose: Compare direct and transitive dependency graph representation.
+    hypotheses:
+      - DT dependency APIs preserve enough direct and transitive structure for impact context.
+    decision_questions:
+      - Can sbom-ops consume DT graph projections instead of reconstructing the CycloneDX dependency graph?
     project:
       name: dt-lab-dependency-graph
       version: 1.0.0
@@ -191,6 +267,10 @@ scenarios:
     category: triage
     status: implemented
     purpose: Compare CVE, GHSA, OSV, aliases, and vulnerability source identity.
+    hypotheses:
+      - DT correlates vulnerability sources and aliases well enough to prevent duplicate remediation tasks.
+    decision_questions:
+      - Which DT vulnerability identifier should anchor a remediation task across intelligence sources?
     project:
       name: dt-lab-triage-aliases
       version: 1.0.0
@@ -208,26 +288,264 @@ scenarios:
 
   - id: triage-analysis-states
     category: triage
-    status: planned
-    purpose: Observe every Analysis state separately from Finding and remediation state.
+    status: implemented
+    purpose: Observe an Analysis decision cycle separately from Finding and remediation state.
+    hypotheses:
+      - DT Analysis states and audit history can own human security triage without a duplicate sbom-ops state machine.
+      - Suppressed Findings remain queryable explicitly while leaving the default unsuppressed Finding view.
+      - The RESOLVED state exposed by the target OpenAPI may be accepted even though the v4.14 Analysis States guide omits it.
+    decision_questions:
+      - Which Analysis states are authoritative inputs to task creation, updates, and closure?
+      - Which decisions must remain human-controlled and must never be inferred by sbom-ops?
+      - Are state, justification, response, detail, comments, and suppression preserved consistently across the update response, audit trail, and Finding projection?
+      - Can suppression or RESOLVED ever justify downstream closure, or must closure remain based on verified Finding absence?
     project:
       name: dt-lab-triage-analysis
       version: 1.0.0
-    steps: []
+    steps:
+      - id: decision-cycle
+        bom: sboms/triage-analysis-states.cdx.json
+        observe:
+          - project
+          - components
+          - findings
+          - metrics
+        analysis_actions:
+          - id: begin-triage
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: IN_TRIAGE
+            justification: NOT_SET
+            response: NOT_SET
+            detail: Synthetic lab finding under investigation.
+            comment: DT lab begins a disposable analysis-state experiment.
+            suppressed: false
+          - id: mark-exploitable
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: EXPLOITABLE
+            justification: NOT_SET
+            response: UPDATE
+            detail: Synthetic lab decision requiring a component update.
+            comment: DT lab records an exploitable decision on a disposable Project.
+            suppressed: false
+          - id: mark-not-affected
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: NOT_AFFECTED
+            justification: CODE_NOT_REACHABLE
+            response: NOT_SET
+            detail: Synthetic lab decision used only to observe suppression behavior.
+            comment: DT lab records a not-affected decision and suppresses the Finding.
+            suppressed: true
+          - id: mark-false-positive
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: FALSE_POSITIVE
+            justification: NOT_SET
+            response: NOT_SET
+            detail: Synthetic lab decision used only to observe audit history.
+            comment: DT lab changes the disposable Finding to false-positive.
+            suppressed: true
+          - id: mark-resolved
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: RESOLVED
+            justification: NOT_SET
+            response: UPDATE
+            detail: Synthetic lab decision testing the OpenAPI-only RESOLVED state.
+            comment: DT lab tests whether DT 4.14.3 accepts and projects RESOLVED.
+            suppressed: false
+          - id: restore-not-set
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: NOT_SET
+            justification: NOT_SET
+            response: NOT_SET
+            detail: Synthetic lab experiment completed and restored to NOT_SET.
+            comment: DT lab restores the disposable Finding before cleanup.
+            suppressed: false
+
+  - id: triage-delegation-boundary
+    category: triage
+    status: implemented
+    purpose: Determine the maximum safe triage responsibility that can be delegated to Dependency-Track.
+    hypotheses:
+      - DT can own finding review, Analysis decisions, comments, suppression, VEX state, and their audit trail.
+      - GitHub or Jira only needs workflow state for remediation work that remains actionable after DT triage.
+      - sbom-ops can remain an orchestration bridge instead of maintaining a duplicate triage database.
+    decision_questions:
+      - Which triage data and actions are authoritative in DT, sbom-ops, and the work management system?
+      - Which DT changes can be detected reliably enough to create, update, or close remediation tasks?
+      - What minimal state must sbom-ops retain for idempotency and reconciliation?
+      - Which DT decisions require human approval or explicit workflow logic before downstream action?
+    project:
+      name: dt-lab-triage-delegation
+      version: 1.0.0
+    steps:
+      - id: reconciliation-cycle
+        bom: sboms/triage-delegation-boundary.cdx.json
+        observe:
+          - project
+          - components
+          - findings
+          - metrics
+        analysis_actions:
+          - id: seed-review
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: IN_TRIAGE
+            justification: NOT_SET
+            response: NOT_SET
+            detail: Stable synthetic decision for reconciliation testing.
+            comment: DT lab seeds the reconciliation audit trail.
+            suppressed: false
+          - id: append-comment-only
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: IN_TRIAGE
+            justification: NOT_SET
+            response: NOT_SET
+            detail: Stable synthetic decision for reconciliation testing.
+            comment: DT lab appends a comment without changing the decision.
+            suppressed: false
+          - id: replay-identical-request
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: IN_TRIAGE
+            justification: NOT_SET
+            response: NOT_SET
+            detail: Stable synthetic decision for reconciliation testing.
+            comment: DT lab appends a comment without changing the decision.
+            suppressed: false
+          - id: suppress-only
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: IN_TRIAGE
+            justification: NOT_SET
+            response: NOT_SET
+            detail: Stable synthetic decision for reconciliation testing.
+            comment: DT lab suppresses the Finding without changing its decision.
+            suppressed: true
+          - id: unsuppress-only
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: IN_TRIAGE
+            justification: NOT_SET
+            response: NOT_SET
+            detail: Stable synthetic decision for reconciliation testing.
+            comment: DT lab unsuppresses the Finding without changing its decision.
+            suppressed: false
+          - id: restore-not-set
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: NOT_SET
+            justification: NOT_SET
+            response: NOT_SET
+            detail: DT lab reconciliation experiment completed and restored.
+            comment: DT lab restores the reconciliation target to NOT_SET.
+            suppressed: false
 
   - id: triage-vex-round-trip
     category: triage
-    status: planned
+    status: implemented
     purpose: Validate VEX import, Analysis projection, export, and human approval boundaries.
+    hypotheses:
+      - DT can preserve reviewed VEX and Analysis decisions through import and export without semantic loss.
+    decision_questions:
+      - Can DT be the authoritative store for VEX-backed applicability decisions?
+      - What approval boundary must sbom-ops enforce before acting on VEX or Analysis state?
     project:
       name: dt-lab-triage-vex
       version: 1.0.0
-    steps: []
+    steps:
+      - id: not-affected-round-trip
+        bom: sboms/triage-vex-round-trip.cdx.json
+        observe:
+          - project
+          - components
+          - findings
+          - metrics
+        vex_round_trip:
+          id: not-affected-round-trip
+          replay_import: true
+          seed_analysis:
+            id: seed-not-affected
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: NOT_AFFECTED
+            justification: CODE_NOT_REACHABLE
+            response: NOT_SET
+            detail: Synthetic VEX round-trip decision with unreachable code.
+            comment: DT lab seeds a reviewed not-affected decision for VEX export.
+            suppressed: true
+
+  - id: triage-vex-targeting
+    category: triage
+    status: implemented
+    purpose: Distinguish Project-scoped and Component-scoped CycloneDX VEX effects, including cross-Project isolation.
+    hypotheses:
+      - An affects ref resolved through a declared VEX Component limits a decision to its identity match, while a metadata Project ref applies it to every matching Finding in that Project.
+      - Applying VEX to one Project does not change matching Findings in another Project that contains the same Component and vulnerability.
+    decision_questions:
+      - Must sbom-ops reject Project-scoped VEX when only one Component was reviewed?
+      - Which Component declaration and reference are required for an exact Component-scoped VEX decision?
+    project:
+      name: dt-lab-triage-vex-targeting
+      version: 1.0.0
+    steps:
+      - id: comparison-project
+        project_name: dt-lab-triage-vex-targeting-comparison
+        bom: sboms/triage-vex-targeting.cdx.json
+        observe:
+          - project
+          - components
+          - findings
+      - id: compare-project-and-component-scope
+        bom: sboms/triage-vex-targeting.cdx.json
+        observe:
+          - project
+          - components
+          - findings
+          - metrics
+        vex_targeting_probe:
+          id: project-and-component-scope
+          comparison_project_step: comparison-project
+          control_component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.13.3
+          input_component_bom_ref: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+          decision:
+            id: target-primary-component
+            component_purl: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+            vulnerability_id: CVE-2021-44228
+            vulnerability_source: NVD
+            state: NOT_AFFECTED
+            justification: CODE_NOT_REACHABLE
+            response: NOT_SET
+            detail: Synthetic targeting probe limited to one reviewed Component.
+            comment: DT lab compares Component-scoped and Project-scoped VEX targeting.
+            suppressed: true
 
   - id: triage-policy-violations
     category: triage
     status: planned
     purpose: Keep vulnerability findings and policy violations as independent workflows.
+    hypotheses:
+      - DT distinguishes policy violation analysis from vulnerability analysis throughout its API and audit model.
+    decision_questions:
+      - Should policy violations create a separate task type or remain outside the first product workflow?
     project:
       name: dt-lab-triage-policy
       version: 1.0.0
@@ -235,26 +553,71 @@ scenarios:
 
   - id: robustness-invalid-cyclonedx
     category: robustness
-    status: planned
-    purpose: Capture synchronous schema validation and asynchronous processing failure contracts.
+    status: implemented
+    purpose: Capture synchronous schema rejection and auto-created Project side effects for an invalid CycloneDX upload.
+    hypotheses:
+      - DT rejects a schema-invalid CycloneDX BOM synchronously with RFC 9457 problem details.
+      - Coordinate upload with autoCreate may create an empty Project before BOM validation fails.
+    decision_questions:
+      - Which failures should sbom-ops surface, retry, or reject before upload?
+      - Does coordinate upload require compensating cleanup when validation fails after Project creation?
     project:
       name: dt-lab-invalid-cyclonedx
       version: 1.0.0
-    steps: []
+    steps:
+      - id: invalid-component-type
+        bom: sboms/robustness-invalid-component-type.cdx.json
+        observe:
+          - project
+          - components
+          - findings
+        expected_bom_rejection:
+          status: 400
+          media_type: application/problem+json
+          project_created: true
 
   - id: robustness-json-xml-equivalence
     category: robustness
-    status: planned
+    status: implemented
     purpose: Compare equivalent supported CycloneDX JSON and XML ingestion results.
+    hypotheses:
+      - Equivalent supported JSON and XML BOMs produce equivalent DT inventory and Findings.
+    decision_questions:
+      - Can sbom-ops remain format-neutral, or must it normalize inputs before upload?
     project:
       name: dt-lab-format-equivalence
       version: 1.0.0
-    steps: []
+    steps:
+      - id: json
+        bom: sboms/robustness-format-equivalence.cdx.json
+        observe:
+          - project
+          - components
+          - direct-components
+          - dependency-graph
+          - findings
+          - vulnerabilities
+          - bom-export
+      - id: xml
+        bom: sboms/robustness-format-equivalence.cdx.xml
+        observe:
+          - project
+          - components
+          - direct-components
+          - dependency-graph
+          - findings
+          - vulnerabilities
+          - bom-export
+        equivalent_to_step: json
 
   - id: robustness-large-bom
     category: robustness
     status: planned
     purpose: Measure upload, processing, query latency, and response size at controlled scales.
+    hypotheses:
+      - DT asynchronous processing and pagination remain usable at representative SBOM sizes.
+    decision_questions:
+      - What polling, pagination, timeout, and retry limits belong in the product adapter?
     project:
       name: dt-lab-large-bom
       version: 1.0.0

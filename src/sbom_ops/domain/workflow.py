@@ -73,6 +73,7 @@ def observe_workflow_state(
 def decide_missing_finding(
     previous_missing_count: int,
     *,
+    previous_finding_state: FindingState | None,
     automatic_closure_enabled: bool,
     scan_verified: bool,
     confirmations_required: int,
@@ -97,6 +98,13 @@ def decide_missing_finding(
             reason="analysis_completion_not_verified",
         )
 
+    # A count without the matching MISSING state is not a prior confirmed
+    # observation. Malformed or out-of-range metadata starts a new sequence.
+    if (
+        previous_finding_state != FindingState.MISSING
+        or not 1 <= previous_missing_count < confirmations_required
+    ):
+        previous_missing_count = 0
     missing_count = previous_missing_count + 1
     if missing_count >= confirmations_required:
         return MissingFindingDecision(

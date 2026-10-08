@@ -12,6 +12,7 @@ from sbom_ops.domain.workflow import (
 def test_missing_finding_stays_open_when_automatic_closure_is_disabled() -> None:
     decision = decide_missing_finding(
         0,
+        previous_finding_state=None,
         automatic_closure_enabled=False,
         scan_verified=True,
         confirmations_required=2,
@@ -25,6 +26,7 @@ def test_missing_finding_stays_open_when_automatic_closure_is_disabled() -> None
 def test_missing_finding_stays_open_when_scan_is_not_verified() -> None:
     decision = decide_missing_finding(
         0,
+        previous_finding_state=None,
         automatic_closure_enabled=True,
         scan_verified=False,
         confirmations_required=2,
@@ -37,12 +39,14 @@ def test_missing_finding_stays_open_when_scan_is_not_verified() -> None:
 def test_missing_finding_requires_consecutive_confirmations() -> None:
     first = decide_missing_finding(
         0,
+        previous_finding_state=None,
         automatic_closure_enabled=True,
         scan_verified=True,
         confirmations_required=2,
     )
     second = decide_missing_finding(
         first.missing_count,
+        previous_finding_state=first.finding_state,
         automatic_closure_enabled=True,
         scan_verified=True,
         confirmations_required=2,
@@ -59,10 +63,36 @@ def test_missing_finding_never_allows_one_run_closure() -> None:
     with pytest.raises(ValueError, match="at least 2"):
         decide_missing_finding(
             0,
+            previous_finding_state=None,
             automatic_closure_enabled=True,
             scan_verified=True,
             confirmations_required=1,
         )
+
+
+@pytest.mark.parametrize(
+    ("previous_state", "previous_count"),
+    [
+        (None, 1),
+        (FindingState.ACTIVE, 1),
+        (FindingState.RESOLVED, 1),
+        (FindingState.MISSING, 0),
+        (FindingState.MISSING, 2),
+    ],
+)
+def test_missing_finding_restarts_inconsistent_observation(
+    previous_state: FindingState | None, previous_count: int
+) -> None:
+    decision = decide_missing_finding(
+        previous_count,
+        previous_finding_state=previous_state,
+        automatic_closure_enabled=True,
+        scan_verified=True,
+        confirmations_required=2,
+    )
+
+    assert decision.action == MissingFindingAction.MARK_MISSING
+    assert decision.missing_count == 1
 
 
 def test_analysis_observation_does_not_close_remediation() -> None:

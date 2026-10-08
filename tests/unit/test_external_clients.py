@@ -1,8 +1,21 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import sqlite3
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
+from email.utils import format_datetime
+from io import BytesIO
+from urllib.error import HTTPError
+from urllib.request import Request
+
+import pytest
 
 from sbom_ops.clients import github as github_module
+from sbom_ops.clients import http as http_module
 from sbom_ops.clients import kev as kev_module
 from sbom_ops.clients.github import GitHubIssuesClient
 from sbom_ops.clients.http import HttpApiError, HttpJsonResponse, request_json
@@ -39,6 +52,17 @@ class FakeEmptyResponse(FakeResponse):
         return b""
 
 
+def _hold_kev_sqlite_lock(lock_path: str, ready, release) -> None:
+    connection = sqlite3.connect(lock_path, timeout=5, isolation_level=None)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        ready.set()
+        release.wait(timeout=5)
+        connection.execute("ROLLBACK")
+    finally:
+        connection.close()
+
+
 def test_http_json_response_includes_status_headers_and_duration() -> None:
     response = request_json(
         request=kev_module.Request("https://example.test/data"),
@@ -61,6 +85,23 @@ def test_http_json_response_includes_status_headers_and_duration() -> None:
     assert response.duration_seconds >= 0
 
 
+def test_http_json_can_return_pagination_headers() -> None:
+    payload, headers = request_json(
+        request=kev_module.Request("https://example.test/projects"),
+        timeout=1,
+        max_retries=0,
+        backoff_seconds=0,
+        error_message="failed",
+        opener=lambda request, timeout: FakeResponse(
+            [{"uuid": "project-1"}], headers={"X-Total-Count": "1"}
+        ),
+        return_headers=True,
+    )
+
+    assert payload == [{"uuid": "project-1"}]
+    assert headers == {"X-Total-Count": "1"}
+
+
 def test_http_json_response_can_allow_an_empty_success_body() -> None:
     response = request_json(
         request=kev_module.Request("https://example.test/data"),
@@ -76,6 +117,279 @@ def test_http_json_response_can_allow_an_empty_success_body() -> None:
     assert isinstance(response, HttpJsonResponse)
     assert response.payload is None
     assert response.status == 204
+
+
+def test_http_error_preserves_problem_details_without_retrying_client_error() -> None:
+    calls = 0
+    problem = {
+        "status": 400,
+        "title": "The uploaded BOM is invalid",
+        "detail": "component type is invalid",
+    }
+
+    def reject(request, timeout):
+        nonlocal calls
+        calls += 1
+        raise HTTPError(
+            request.full_url,
+            400,
+            "Bad Request",
+            {"Content-Type": "application/problem+json"},
+            BytesIO(json.dumps(problem).encode()),
+        )
+
+    with pytest.raises(HttpApiError) as raised:
+        request_json(
+            request=kev_module.Request("https://example.test/bom"),
+            timeout=1,
+            max_retries=3,
+            backoff_seconds=0,
+            error_message="failed",
+            opener=reject,
+        )
+
+    assert calls == 1
+    assert raised.value.status == 400
+    assert raised.value.payload == problem
+    assert raised.value.headers == {"Content-Type": "application/problem+json"}
+    assert raised.value.duration_seconds is not None
+
+
+@pytest.mark.parametrize(
+    ("status", "retry_after", "backoff_seconds", "expected_delay"),
+    [
+        (429, "2", 0.5, 2.0),
+        (503, "not-a-valid-retry-time", 0.5, 0.5),
+        (503, "٢", 0.5, 0.5),
+    ],
+)
+def test_http_retry_honors_delay_seconds_and_invalid_header_fallback(
+    monkeypatch,
+    status: int,
+    retry_after: str,
+    backoff_seconds: float,
+    expected_delay: float,
+) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def open_after_one_failure(request, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise HTTPError(
+                request.full_url,
+                status,
+                "retry later",
+                {"Retry-After": retry_after},
+                BytesIO(b""),
+            )
+        return FakeResponse({"ok": True})
+
+    monkeypatch.setattr(http_module.time, "sleep", sleeps.append)
+
+    response = request_json(
+        request=kev_module.Request("https://example.test/data"),
+        timeout=1,
+        max_retries=1,
+        backoff_seconds=backoff_seconds,
+        error_message="failed",
+        opener=open_after_one_failure,
+    )
+
+    assert response == {"ok": True}
+    assert calls == 2
+    assert sleeps == [expected_delay]
+
+
+def test_http_retry_does_not_retry_before_long_server_delay(monkeypatch) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def reject(request, timeout):
+        nonlocal calls
+        calls += 1
+        raise HTTPError(
+            request.full_url,
+            429,
+            "retry later",
+            {"Retry-After": "45"},
+            BytesIO(json.dumps({"limited": True}).encode()),
+        )
+
+    monkeypatch.setattr(http_module.time, "sleep", sleeps.append)
+
+    with pytest.raises(HttpApiError) as raised:
+        request_json(
+            request=kev_module.Request("https://example.test/data"),
+            timeout=1,
+            max_retries=1,
+            backoff_seconds=0.5,
+            error_message="failed",
+            opener=reject,
+        )
+
+    assert calls == 1
+    assert sleeps == []
+    assert raised.value.status == 429
+    assert raised.value.payload == {"limited": True}
+
+
+def test_http_retry_honors_retry_after_http_date(monkeypatch) -> None:
+    calls = 0
+    sleeps: list[float] = []
+    now = datetime(2026, 9, 7, 12, 0, 0, tzinfo=UTC)
+    retry_at = datetime(2026, 9, 7, 12, 0, 10, tzinfo=UTC)
+
+    def open_after_one_failure(request, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise HTTPError(
+                request.full_url,
+                503,
+                "retry later",
+                {"Retry-After": format_datetime(retry_at, usegmt=True)},
+                BytesIO(b""),
+            )
+        return FakeResponse({"ok": True})
+
+    monkeypatch.setattr(http_module.time, "time", lambda: now.timestamp())
+    monkeypatch.setattr(http_module.time, "sleep", sleeps.append)
+
+    response = request_json(
+        request=kev_module.Request("https://example.test/data"),
+        timeout=1,
+        max_retries=1,
+        backoff_seconds=0.5,
+        error_message="failed",
+        opener=open_after_one_failure,
+    )
+
+    assert response == {"ok": True}
+    assert calls == 2
+    assert sleeps == [10.0]
+
+
+def test_http_retry_exhaustion_preserves_last_response(monkeypatch) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def reject(request, timeout):
+        nonlocal calls
+        calls += 1
+        raise HTTPError(
+            request.full_url,
+            503,
+            "unavailable",
+            {"Retry-After": "0", "X-Request-ID": f"request-{calls}"},
+            BytesIO(json.dumps({"attempt": calls}).encode()),
+        )
+
+    monkeypatch.setattr(http_module.time, "sleep", sleeps.append)
+
+    with pytest.raises(HttpApiError) as raised:
+        request_json(
+            request=kev_module.Request("https://example.test/data"),
+            timeout=1,
+            max_retries=1,
+            backoff_seconds=0.5,
+            error_message="failed",
+            opener=reject,
+        )
+
+    assert calls == 2
+    assert sleeps == [0.0]
+    assert raised.value.status == 503
+    assert raised.value.payload == {"attempt": 2}
+    assert raised.value.headers["X-Request-ID"] == "request-2"
+
+
+def test_http_retry_recovers_from_connection_error(monkeypatch) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def reconnect(request, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ConnectionResetError("connection closed")
+        return FakeResponse({"ok": True})
+
+    monkeypatch.setattr(http_module.time, "sleep", sleeps.append)
+
+    response = request_json(
+        request=kev_module.Request("https://example.test/data"),
+        timeout=1,
+        max_retries=1,
+        backoff_seconds=0.5,
+        error_message="failed",
+        opener=reconnect,
+    )
+
+    assert response == {"ok": True}
+    assert calls == 2
+    assert sleeps == [0.5]
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_http_auth_and_permission_failures_are_terminal(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    calls = 0
+
+    def reject(request: Request, timeout: float) -> None:
+        nonlocal calls
+        del timeout
+        calls += 1
+        raise HTTPError(request.full_url, status, "access denied", {}, BytesIO(b"{}"))
+
+    monkeypatch.setattr(
+        http_module.time,
+        "sleep",
+        lambda _: (_ for _ in ()).throw(AssertionError("must not retry")),
+    )
+
+    with pytest.raises(HttpApiError) as raised:
+        request_json(
+            request=kev_module.Request("https://example.test/data"),
+            timeout=1,
+            max_retries=3,
+            backoff_seconds=0.5,
+            error_message="failed",
+            opener=reject,
+        )
+
+    assert calls == 1
+    assert raised.value.status == status
+
+
+def test_http_timeout_is_retried_with_bounded_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def timeout_once(request: Request, timeout: float) -> FakeResponse:
+        nonlocal calls
+        del request, timeout
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("timed out")
+        return FakeResponse({"ok": True})
+
+    monkeypatch.setattr(http_module.time, "sleep", sleeps.append)
+
+    assert request_json(
+        request=kev_module.Request("https://example.test/data"),
+        timeout=1,
+        max_retries=1,
+        backoff_seconds=0.5,
+        error_message="failed",
+        opener=timeout_once,
+    ) == {"ok": True}
+    assert calls == 2
+    assert sleeps == [0.5]
 
 
 def test_kev_client_reads_cve_ids(monkeypatch) -> None:
@@ -113,6 +427,169 @@ def test_kev_client_uses_fresh_cache_without_fetching(monkeypatch, tmp_path) -> 
     ).get_known_exploited_vulnerabilities()
 
     assert result == {"CVE-CACHED"}
+
+
+def test_kev_client_writes_versioned_integrity_metadata(monkeypatch, tmp_path) -> None:
+    cache = tmp_path / "kev.json"
+    calls = 0
+    monkeypatch.setattr(kev_module.time, "time", lambda: 4_000_000_000)
+
+    def feed(request, timeout):
+        nonlocal calls
+        calls += 1
+        return FakeResponse(
+            {"vulnerabilities": [{"cveID": "CVE-2026-0001"}]},
+            headers={"ETag": "etag-1"},
+        )
+
+    monkeypatch.setattr(kev_module, "urlopen", feed)
+
+    result = KevClient(
+        "https://cisa.example/feed",
+        cache_path=str(cache),
+    ).get_known_exploited_vulnerabilities()
+    record = json.loads(cache.read_text(encoding="utf-8"))
+
+    assert result == {"CVE-2026-0001"}
+    assert record["schema_version"] == 1
+    assert len(record["sha256"]) == 64
+    assert record["metadata"] == {"etag": "etag-1"}
+    assert (
+        KevClient(
+            "https://cisa.example/feed",
+            cache_path=str(cache),
+        ).get_known_exploited_vulnerabilities()
+        == result
+    )
+    assert calls == 1
+
+
+def test_kev_client_rejects_cache_with_invalid_integrity_digest(
+    monkeypatch, tmp_path
+) -> None:
+    cache = tmp_path / "kev.json"
+    client = KevClient(
+        "https://cisa.example/feed",
+        cache_path=str(cache),
+        cache_ttl_seconds=60,
+        allow_stale_cache=True,
+    )
+    monkeypatch.setattr(kev_module.time, "time", lambda: 4_000_000_000)
+    client._write_cache({"CVE-ORIGINAL"})
+    record = json.loads(cache.read_text(encoding="utf-8"))
+    record["cve_ids"] = ["CVE-TAMPERED"]
+    cache.write_text(json.dumps(record), encoding="utf-8")
+    monkeypatch.setattr(kev_module.time, "time", lambda: 4_000_000_001)
+    monkeypatch.setattr(
+        kev_module,
+        "request_json",
+        lambda *args, **kwargs: (_ for _ in ()).throw(HttpApiError("down")),
+    )
+
+    with pytest.raises(kev_module.KevApiError):
+        client.get_known_exploited_vulnerabilities()
+
+    assert client.used_stale_cache is False
+
+
+def test_concurrent_kev_clients_share_one_refresh(monkeypatch, tmp_path) -> None:
+    cache = tmp_path / "kev.json"
+    barrier = threading.Barrier(3)
+    calls = 0
+
+    def fetch(request, **kwargs):
+        nonlocal calls
+        calls += 1
+        time.sleep(0.05)
+        return {"vulnerabilities": [{"cveID": "CVE-REFRESHED"}]}, {"ETag": "v1"}
+
+    monkeypatch.setattr(kev_module, "request_json", fetch)
+
+    def run_client() -> set[str]:
+        client = KevClient(
+            "https://cisa.example/feed",
+            cache_path=str(cache),
+            cache_ttl_seconds=60,
+        )
+        barrier.wait(timeout=5)
+        return client.get_known_exploited_vulnerabilities()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(run_client)
+        second = executor.submit(run_client)
+        barrier.wait(timeout=5)
+        assert first.result(timeout=5) == {"CVE-REFRESHED"}
+        assert second.result(timeout=5) == {"CVE-REFRESHED"}
+
+    assert calls == 1
+
+
+def test_kev_cache_lock_timeout_fails_closed(monkeypatch, tmp_path) -> None:
+    cache = tmp_path / "kev.json"
+    lock_path = tmp_path / "kev.json.lock.sqlite3"
+    monkeypatch.setattr(kev_module, "request_json", lambda *args, **kwargs: None)
+    client = KevClient(
+        "https://cisa.example/feed",
+        cache_path=str(cache),
+        cache_lock_timeout_seconds=0.01,
+    )
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    release = context.Event()
+    process = context.Process(
+        target=_hold_kev_sqlite_lock,
+        args=(str(lock_path), ready, release),
+    )
+    process.start()
+    try:
+        assert ready.wait(timeout=5)
+        with pytest.raises(kev_module.KevApiError, match="cache lock timed out"):
+            client.get_known_exploited_vulnerabilities()
+    finally:
+        release.set()
+        process.join(timeout=5)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+    assert process.exitcode == 0
+
+
+def test_kev_client_force_refresh_checks_feed_even_with_fresh_cache(
+    monkeypatch, tmp_path
+) -> None:
+    cache = tmp_path / "kev.json"
+    cache.write_text(
+        json.dumps(
+            {
+                "fetched_at": 4_000_000_000,
+                "cve_ids": ["CVE-CACHED"],
+                "metadata": {"etag": "etag-cached"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(kev_module.time, "time", lambda: 4_000_000_001)
+    captured = {}
+
+    def fetch(request, **kwargs):
+        captured["request"] = request
+        captured["kwargs"] = kwargs
+        return {"vulnerabilities": [{"cveID": "CVE-REFRESHED"}]}, {
+            "ETag": "etag-refreshed"
+        }
+
+    monkeypatch.setattr(kev_module, "request_json", fetch)
+
+    result = KevClient(
+        "https://cisa.example/feed",
+        cache_path=str(cache),
+        cache_ttl_seconds=60,
+    ).get_known_exploited_vulnerabilities(force_refresh=True)
+
+    request = captured["request"]
+    assert result == {"CVE-REFRESHED"}
+    assert request.get_header("If-none-match") == "etag-cached"
+    assert captured["kwargs"]["allow_not_modified"] is True
 
 
 def test_kev_client_can_use_stale_cache_only_when_enabled(

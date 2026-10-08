@@ -20,11 +20,18 @@ class ScenarioCategory(StrEnum):
     PORTFOLIO = "portfolio"
     TRIAGE = "triage"
     ROBUSTNESS = "robustness"
+    CORPUS = "corpus"
 
 
 class ScenarioStatus(StrEnum):
     IMPLEMENTED = "implemented"
     PLANNED = "planned"
+
+
+class CorpusSourceKind(StrEnum):
+    RELEASE_ASSET = "release-asset"
+    VERIFIED_OCI_ATTESTATION = "verified-oci-attestation"
+    DERIVED = "derived"
 
 
 class Observation(StrEnum):
@@ -41,8 +48,50 @@ class Observation(StrEnum):
     VEX_EXPORT = "vex-export"
 
 
+class AnalysisState(StrEnum):
+    EXPLOITABLE = "EXPLOITABLE"
+    IN_TRIAGE = "IN_TRIAGE"
+    FALSE_POSITIVE = "FALSE_POSITIVE"
+    NOT_AFFECTED = "NOT_AFFECTED"
+    RESOLVED = "RESOLVED"
+    NOT_SET = "NOT_SET"
+
+
+class AnalysisJustification(StrEnum):
+    CODE_NOT_PRESENT = "CODE_NOT_PRESENT"
+    CODE_NOT_REACHABLE = "CODE_NOT_REACHABLE"
+    REQUIRES_CONFIGURATION = "REQUIRES_CONFIGURATION"
+    REQUIRES_DEPENDENCY = "REQUIRES_DEPENDENCY"
+    REQUIRES_ENVIRONMENT = "REQUIRES_ENVIRONMENT"
+    PROTECTED_BY_COMPILER = "PROTECTED_BY_COMPILER"
+    PROTECTED_AT_RUNTIME = "PROTECTED_AT_RUNTIME"
+    PROTECTED_AT_PERIMETER = "PROTECTED_AT_PERIMETER"
+    PROTECTED_BY_MITIGATING_CONTROL = "PROTECTED_BY_MITIGATING_CONTROL"
+    NOT_SET = "NOT_SET"
+
+
+class AnalysisResponse(StrEnum):
+    CAN_NOT_FIX = "CAN_NOT_FIX"
+    WILL_NOT_FIX = "WILL_NOT_FIX"
+    UPDATE = "UPDATE"
+    ROLLBACK = "ROLLBACK"
+    WORKAROUND_AVAILABLE = "WORKAROUND_AVAILABLE"
+    NOT_SET = "NOT_SET"
+
+
 @dataclass(frozen=True)
 class BomUpload:
+    token: str
+
+
+@dataclass(frozen=True)
+class BomUploadAttempt:
+    upload: BomUpload | None
+    observation: DependencyTrackObservation
+
+
+@dataclass(frozen=True)
+class VexUpload:
     token: str
 
 
@@ -55,6 +104,7 @@ class DependencyTrackObservation:
     headers: tuple[tuple[str, str], ...]
     duration_seconds: float
     payload: Any
+    request_payload: Any | None = None
 
 
 _SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -80,23 +130,326 @@ class LabTarget:
 
 
 @dataclass(frozen=True)
+class CorpusArtifact:
+    id: str
+    ecosystem: str
+    source_kind: CorpusSourceKind
+    source: str
+    release: str
+    license: str
+    integrity: str
+    sha256: str
+    local_path: str
+    cyclonedx_version: str
+    project_name: str
+    project_version: str
+    purpose: str
+    hypotheses: tuple[str, ...]
+    decision_questions: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _require_slug(self.id, "corpus artifact id")
+        required_values = {
+            "ecosystem": self.ecosystem,
+            "source": self.source,
+            "release": self.release,
+            "license": self.license,
+            "integrity": self.integrity,
+            "local_path": self.local_path,
+            "cyclonedx_version": self.cyclonedx_version,
+            "project_name": self.project_name,
+            "project_version": self.project_version,
+            "purpose": self.purpose,
+        }
+        for field_name, value in required_values.items():
+            if not value.strip():
+                raise LabManifestError(
+                    f"corpus artifact {self.id!r} requires {field_name}"
+                )
+        if not re.fullmatch(r"[0-9a-f]{64}", self.sha256):
+            raise LabManifestError(
+                f"corpus artifact {self.id!r} requires a lowercase SHA-256"
+            )
+        local_path_parts = self.local_path.replace("\\", "/").split("/")
+        if self.local_path.startswith(("/", "\\")) or ".." in local_path_parts:
+            raise LabManifestError(
+                f"corpus artifact {self.id!r} local_path must stay below the "
+                "artifact directory"
+            )
+        if not self.project_name.startswith("dt-lab-"):
+            raise LabManifestError(
+                f"corpus artifact {self.id!r} Project name must start with 'dt-lab-'"
+            )
+        if not self.hypotheses or any(
+            not hypothesis.strip() for hypothesis in self.hypotheses
+        ):
+            raise LabManifestError(f"corpus artifact {self.id!r} requires hypotheses")
+        if not self.decision_questions or any(
+            not question.strip() for question in self.decision_questions
+        ):
+            raise LabManifestError(
+                f"corpus artifact {self.id!r} requires decision questions"
+            )
+
+
+@dataclass(frozen=True)
+class CorpusCatalog:
+    schema_version: int
+    target: LabTarget
+    artifacts: tuple[CorpusArtifact, ...]
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise LabManifestError(
+                f"unsupported corpus catalog schema version: {self.schema_version}"
+            )
+        if not self.artifacts:
+            raise LabManifestError("corpus catalog requires at least one artifact")
+        artifact_ids = [artifact.id for artifact in self.artifacts]
+        if len(artifact_ids) != len(set(artifact_ids)):
+            raise LabManifestError("corpus catalog has duplicate artifact ids")
+
+
+@dataclass(frozen=True)
+class CorpusArtifactInspection:
+    artifact_id: str
+    path: str
+    byte_count: int
+    component_count: int
+    dependency_count: int
+    service_count: int
+    vulnerability_count: int
+
+
+@dataclass(frozen=True)
+class AnalysisAction:
+    id: str
+    component_purl: str
+    vulnerability_id: str
+    vulnerability_source: str
+    state: AnalysisState
+    justification: AnalysisJustification
+    response: AnalysisResponse
+    detail: str
+    comment: str
+    suppressed: bool
+
+    def __post_init__(self) -> None:
+        _require_slug(self.id, "analysis action id")
+        required_values = {
+            "component_purl": self.component_purl,
+            "vulnerability_id": self.vulnerability_id,
+            "vulnerability_source": self.vulnerability_source,
+            "detail": self.detail,
+            "comment": self.comment,
+        }
+        for field_name, value in required_values.items():
+            if not value.strip():
+                raise LabManifestError(
+                    f"analysis action {self.id!r} requires {field_name}"
+                )
+        if not isinstance(self.suppressed, bool):
+            raise LabManifestError(
+                f"analysis action {self.id!r} suppressed must be a boolean"
+            )
+
+
+@dataclass(frozen=True)
+class VexRoundTrip:
+    id: str
+    seed_analysis: AnalysisAction
+    replay_import: bool
+
+    def __post_init__(self) -> None:
+        _require_slug(self.id, "VEX round-trip id")
+        if self.seed_analysis.state is AnalysisState.NOT_SET:
+            raise LabManifestError(
+                f"VEX round-trip {self.id!r} seed state must not be NOT_SET"
+            )
+        if not isinstance(self.replay_import, bool):
+            raise LabManifestError(
+                f"VEX round-trip {self.id!r} replay_import must be a boolean"
+            )
+
+
+@dataclass(frozen=True)
+class VexTargetingProbe:
+    id: str
+    decision: AnalysisAction
+    control_component_purl: str
+    input_component_bom_ref: str
+    comparison_project_step: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_slug(self.id, "VEX targeting probe id")
+        if self.decision.state is AnalysisState.NOT_SET:
+            raise LabManifestError(
+                f"VEX targeting probe {self.id!r} decision must not be NOT_SET"
+            )
+        if not self.control_component_purl.strip():
+            raise LabManifestError(
+                f"VEX targeting probe {self.id!r} requires control_component_purl"
+            )
+        if self.control_component_purl == self.decision.component_purl:
+            raise LabManifestError(
+                f"VEX targeting probe {self.id!r} requires two Component PURLs"
+            )
+        if not self.input_component_bom_ref.strip():
+            raise LabManifestError(
+                f"VEX targeting probe {self.id!r} requires input_component_bom_ref"
+            )
+        if self.comparison_project_step is not None:
+            _require_slug(self.comparison_project_step, "comparison project step")
+
+
+@dataclass(frozen=True)
+class ExpectedBomRejection:
+    status: int
+    media_type: str
+    project_created: bool
+
+    def __post_init__(self) -> None:
+        if self.status < 400 or self.status > 499:
+            raise LabManifestError(
+                "expected BOM rejection status must be a client error"
+            )
+        if "/" not in self.media_type or ";" in self.media_type:
+            raise LabManifestError(
+                "expected BOM rejection media_type must be a base media type"
+            )
+        if not isinstance(self.project_created, bool):
+            raise LabManifestError(
+                "expected BOM rejection project_created must be a boolean"
+            )
+
+
+@dataclass(frozen=True)
 class ScenarioStep:
     id: str
     bom: str
     observations: tuple[Observation, ...]
+    project_name: str | None = None
     project_version: str | None = None
+    parent_step: str | None = None
+    project_tags: tuple[str, ...] = ()
+    probe_project_properties: bool = False
+    analysis_actions: tuple[AnalysisAction, ...] = ()
+    vex_round_trip: VexRoundTrip | None = None
+    vex_targeting_probe: VexTargetingProbe | None = None
+    expected_bom_rejection: ExpectedBomRejection | None = None
+    equivalent_to_step: str | None = None
 
     def __post_init__(self) -> None:
         _require_slug(self.id, "scenario step id")
         if not self.bom.strip():
             raise LabManifestError(f"scenario step {self.id!r} requires a BOM path")
-        if not self.observations:
+        if not self.observations and (
+            self.expected_bom_rejection is None
+            or self.expected_bom_rejection.project_created
+        ):
             raise LabManifestError(
                 f"scenario step {self.id!r} requires at least one observation"
             )
         if self.project_version is not None and not self.project_version.strip():
             raise LabManifestError(
                 f"scenario step {self.id!r} project_version must not be empty"
+            )
+        if self.project_name is not None:
+            if not self.project_name.strip():
+                raise LabManifestError(
+                    f"scenario step {self.id!r} project_name must not be empty"
+                )
+            if not self.project_name.startswith("dt-lab-"):
+                raise LabManifestError(
+                    f"scenario step {self.id!r} Project name must start with 'dt-lab-'"
+                )
+        if self.parent_step is not None:
+            _require_slug(self.parent_step, "parent step id")
+            if self.parent_step == self.id:
+                raise LabManifestError(
+                    f"scenario step {self.id!r} cannot parent itself"
+                )
+            required_observations = {Observation.PROJECT, Observation.METRICS}
+            if not required_observations.issubset(self.observations):
+                raise LabManifestError(
+                    f"scenario step {self.id!r} parent verification requires "
+                    "project and metrics observations"
+                )
+        if len(self.project_tags) != len(set(self.project_tags)):
+            raise LabManifestError(
+                f"scenario step {self.id!r} project_tags must be unique"
+            )
+        for tag in self.project_tags:
+            if not tag.strip() or tag != tag.strip():
+                raise LabManifestError(
+                    f"scenario step {self.id!r} project_tags must not be empty "
+                    "or padded"
+                )
+            if not tag.startswith("dt-lab-"):
+                raise LabManifestError(
+                    f"scenario step {self.id!r} Project tags must start with 'dt-lab-'"
+                )
+            if "," in tag:
+                raise LabManifestError(
+                    f"scenario step {self.id!r} Project tags must not contain commas"
+                )
+        if not isinstance(self.probe_project_properties, bool):
+            raise LabManifestError(
+                f"scenario step {self.id!r} probe_project_properties must be a boolean"
+            )
+        if (
+            self.probe_project_properties
+            and Observation.PROJECT not in self.observations
+        ):
+            raise LabManifestError(
+                f"scenario step {self.id!r} property probe requires a project "
+                "observation"
+            )
+        if self.equivalent_to_step is not None:
+            _require_slug(self.equivalent_to_step, "equivalent reference step id")
+            if self.equivalent_to_step == self.id:
+                raise LabManifestError(
+                    f"scenario step {self.id!r} cannot compare itself"
+                )
+        action_ids = [action.id for action in self.analysis_actions]
+        if len(action_ids) != len(set(action_ids)):
+            raise LabManifestError(
+                f"scenario step {self.id!r} has duplicate analysis action ids"
+            )
+        final_actions_by_target: dict[tuple[str, str, str], AnalysisAction] = {}
+        for action in self.analysis_actions:
+            final_actions_by_target[
+                (
+                    action.component_purl,
+                    action.vulnerability_source,
+                    action.vulnerability_id,
+                )
+            ] = action
+        unsafe_final_actions = [
+            action.id
+            for action in final_actions_by_target.values()
+            if action.state is not AnalysisState.NOT_SET
+            or action.justification is not AnalysisJustification.NOT_SET
+            or action.response is not AnalysisResponse.NOT_SET
+            or action.suppressed
+        ]
+        if unsafe_final_actions:
+            raise LabManifestError(
+                f"scenario step {self.id!r} must finish every Analysis target "
+                "with unsuppressed NOT_SET; unsafe final actions: "
+                + ", ".join(sorted(unsafe_final_actions))
+            )
+        mutation_modes = sum(
+            (
+                bool(self.analysis_actions),
+                self.vex_round_trip is not None,
+                self.vex_targeting_probe is not None,
+                self.expected_bom_rejection is not None,
+            )
+        )
+        if mutation_modes > 1:
+            raise LabManifestError(
+                f"scenario step {self.id!r} cannot combine special execution modes"
             )
 
 
@@ -108,6 +461,8 @@ class LabScenario:
     purpose: str
     project_name: str
     project_version: str
+    hypotheses: tuple[str, ...]
+    decision_questions: tuple[str, ...]
     steps: tuple[ScenarioStep, ...] = ()
 
     def __post_init__(self) -> None:
@@ -122,6 +477,22 @@ class LabScenario:
             raise LabManifestError(
                 f"scenario {self.id!r} Project name must start with 'dt-lab-'"
             )
+        if not self.hypotheses:
+            raise LabManifestError(
+                f"scenario {self.id!r} requires at least one hypothesis"
+            )
+        if any(not hypothesis.strip() for hypothesis in self.hypotheses):
+            raise LabManifestError(
+                f"scenario {self.id!r} hypotheses must not contain empty values"
+            )
+        if not self.decision_questions:
+            raise LabManifestError(
+                f"scenario {self.id!r} requires at least one decision question"
+            )
+        if any(not question.strip() for question in self.decision_questions):
+            raise LabManifestError(
+                f"scenario {self.id!r} decision questions must not contain empty values"
+            )
         if self.status is ScenarioStatus.IMPLEMENTED and not self.steps:
             raise LabManifestError(
                 f"implemented scenario {self.id!r} requires at least one step"
@@ -129,6 +500,52 @@ class LabScenario:
         step_ids = [step.id for step in self.steps]
         if len(step_ids) != len(set(step_ids)):
             raise LabManifestError(f"scenario {self.id!r} has duplicate step ids")
+        preceding_steps: dict[str, ScenarioStep] = {}
+        for step in self.steps:
+            if step.parent_step is not None and step.parent_step not in preceding_steps:
+                raise LabManifestError(
+                    f"scenario {self.id!r} step {step.id!r} parent reference "
+                    "must name an earlier step"
+                )
+            if (
+                step.equivalent_to_step is not None
+                and step.equivalent_to_step not in preceding_steps
+            ):
+                raise LabManifestError(
+                    f"scenario {self.id!r} step {step.id!r} equivalence reference "
+                    "must name an earlier step"
+                )
+            if step.equivalent_to_step is not None:
+                reference = preceding_steps[step.equivalent_to_step]
+                if step.observations != reference.observations:
+                    raise LabManifestError(
+                        f"scenario {self.id!r} step {step.id!r} equivalence "
+                        "observations must match its reference step"
+                    )
+                step_version = step.project_version or self.project_version
+                reference_version = reference.project_version or self.project_version
+                if step_version != reference_version:
+                    raise LabManifestError(
+                        f"scenario {self.id!r} step {step.id!r} equivalence "
+                        "comparison requires the same Project version"
+                    )
+            preceding_steps[step.id] = step
+        if self.category is not ScenarioCategory.TRIAGE and any(
+            step.analysis_actions
+            or step.vex_round_trip is not None
+            or step.vex_targeting_probe is not None
+            for step in self.steps
+        ):
+            raise LabManifestError(
+                f"scenario {self.id!r} triage mutations require triage category"
+            )
+        if self.category is not ScenarioCategory.ROBUSTNESS and any(
+            step.expected_bom_rejection is not None for step in self.steps
+        ):
+            raise LabManifestError(
+                f"scenario {self.id!r} expected BOM rejection requires "
+                "robustness category"
+            )
 
 
 @dataclass(frozen=True)
@@ -138,7 +555,7 @@ class LabManifest:
     scenarios: tuple[LabScenario, ...]
 
     def __post_init__(self) -> None:
-        if self.schema_version != 1:
+        if self.schema_version != 3:
             raise LabManifestError(
                 f"unsupported lab manifest schema version: {self.schema_version}"
             )
@@ -181,7 +598,7 @@ class OpenApiInventory:
 class LabStepResult:
     scenario_id: str
     step_id: str
-    project_uuid: str
+    project_uuid: str | None
     snapshot_directory: str
     observation_count: int
 

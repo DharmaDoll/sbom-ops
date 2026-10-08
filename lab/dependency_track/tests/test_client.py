@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from dt_lab import client as client_module
 from dt_lab.client import DependencyTrackLabApiError, DependencyTrackLabClient
-from dt_lab.domain import DependencyTrackObservation
+from dt_lab.domain import (
+    AnalysisAction,
+    AnalysisJustification,
+    AnalysisResponse,
+    AnalysisState,
+    BomUploadAttempt,
+    DependencyTrackObservation,
+)
 
 from sbom_ops.clients.http import HttpApiError, HttpJsonResponse
 
@@ -17,13 +26,25 @@ def test_bom_upload_by_project_coordinates_uses_auto_create(
 
     def fake_request_json(request, **kwargs):
         captured["request"] = request
-        return {"token": "token-2"}
+        assert kwargs["return_response"] is True
+        return HttpJsonResponse(
+            payload={"token": "token-2"},
+            status=200,
+            headers={"Content-Type": "application/json"},
+            duration_seconds=0.1,
+        )
 
     monkeypatch.setattr(client_module, "request_json", fake_request_json)
 
     result = DependencyTrackLabClient(
         "https://dtrack.example", "api-key"
-    ).upload_bom_by_project_coordinates("dt-lab", "1.0.0", bom_path)
+    ).upload_bom_by_project_coordinates(
+        "dt-lab",
+        "1.0.0",
+        bom_path,
+        parent_project_uuid="parent-project-1",
+        project_tags=("dt-lab-owner-alpha", "dt-lab-repository-alpha"),
+    )
 
     assert result.token == "token-2"
     body = captured["request"].data
@@ -33,6 +54,77 @@ def test_bom_upload_by_project_coordinates_uses_auto_create(
     assert b"dt-lab" in body
     assert b'name="projectVersion"' in body
     assert b"1.0.0" in body
+    assert b'name="parentUUID"' in body
+    assert b"parent-project-1" in body
+    assert b'name="projectTags"' in body
+    assert b"dt-lab-owner-alpha,dt-lab-repository-alpha" in body
+
+
+def test_bom_upload_attempt_preserves_expected_problem_response(
+    monkeypatch, tmp_path
+) -> None:
+    bom_path = tmp_path / "invalid.cdx.json"
+    bom_path.write_text('{"bomFormat":"CycloneDX"}')
+
+    def reject(request, **kwargs):
+        raise HttpApiError(
+            "invalid BOM",
+            status=400,
+            payload={"status": 400, "title": "The uploaded BOM is invalid"},
+            headers={
+                "Content-Type": "application/problem+json; charset=utf-8",
+                "Set-Cookie": "must-not-be-recorded",
+            },
+            duration_seconds=0.2,
+        )
+
+    monkeypatch.setattr(client_module, "request_json", reject)
+
+    attempt = DependencyTrackLabClient(
+        "https://dtrack.example", "api-key"
+    ).attempt_bom_upload_by_project_coordinates("dt-lab", "1.0.0", bom_path)
+
+    assert isinstance(attempt, BomUploadAttempt)
+    assert attempt.upload is None
+    assert attempt.observation.status == 400
+    assert attempt.observation.payload == {
+        "status": 400,
+        "title": "The uploaded BOM is invalid",
+    }
+    assert dict(attempt.observation.headers) == {
+        "Content-Type": "application/problem+json; charset=utf-8"
+    }
+    assert attempt.observation.request_payload["autoCreate"] is True
+    assert "api-key" not in json.dumps(attempt.observation.request_payload)
+
+
+def test_vex_upload_uses_existing_project_and_multipart_document(
+    monkeypatch, tmp_path
+) -> None:
+    vex_path = tmp_path / "decision.cdx.json"
+    vex_path.write_text('{"bomFormat":"CycloneDX","vulnerabilities":[]}')
+    captured = {}
+
+    def fake_request_json(request, **kwargs):
+        captured["request"] = request
+        return {"token": "vex-token-1"}
+
+    monkeypatch.setattr(client_module, "request_json", fake_request_json)
+
+    result = DependencyTrackLabClient(
+        "https://dtrack.example", "analysis-key"
+    ).upload_vex_for_project("project-1", vex_path)
+
+    request = captured["request"]
+    assert result.token == "vex-token-1"
+    assert request.method == "POST"
+    assert request.full_url.endswith("/api/v1/vex")
+    assert request.get_header("Content-type").startswith("multipart/form-data;")
+    assert b'name="project"' in request.data
+    assert b"project-1" in request.data
+    assert b'name="vex"; filename="decision.cdx.json"' in request.data
+    assert b"application/vnd.cyclonedx+json" in request.data
+    assert vex_path.read_bytes() in request.data
 
 
 def test_observation_records_safe_metadata(monkeypatch) -> None:
@@ -65,12 +157,33 @@ def test_observation_records_safe_metadata(monkeypatch) -> None:
     assert observation.duration_seconds == 0.25
 
 
+def test_project_property_probe_retains_forbidden_response(monkeypatch) -> None:
+    def forbidden(request, **kwargs):
+        raise HttpApiError(
+            "forbidden",
+            status=403,
+            payload={"status": 403},
+            headers={"Content-Type": "application/json"},
+            duration_seconds=0.03,
+        )
+
+    monkeypatch.setattr(client_module, "request_json", forbidden)
+
+    observation = DependencyTrackLabClient(
+        "https://dtrack.example", "read-key"
+    ).attempt_observe_project_properties("project-1")
+
+    assert observation.path == "/api/v1/project/project-1/property"
+    assert observation.status == 403
+    assert observation.payload == {"status": 403}
+
+
 def test_observes_direct_components_and_services() -> None:
     client = DependencyTrackLabClient("https://dtrack.example", "api-key")
-    requests: list[tuple[str, dict[str, str] | None]] = []
+    requests: list[tuple[str, str, dict[str, str] | None]] = []
 
     def fake_observe(path, params=None):
-        requests.append((path, params))
+        requests.append(("single", path, params))
         return DependencyTrackObservation(
             method="GET",
             path=path,
@@ -81,18 +194,87 @@ def test_observes_direct_components_and_services() -> None:
             payload={},
         )
 
+    def fake_paginated_observe(path, params=None):
+        requests.append(("paginated", path, params))
+        return DependencyTrackObservation(
+            method="GET",
+            path=path,
+            query=tuple(sorted((params or {}).items())),
+            status=200,
+            headers=(),
+            duration_seconds=0.01,
+            payload=[],
+        )
+
     client._observe_json = fake_observe  # type: ignore[method-assign]
+    client._observe_paginated_json = fake_paginated_observe  # type: ignore[method-assign]
 
     client.observe_project_direct_components("project-1")
     client.observe_project_services("project-1")
+    client.observe_project_children("project-1")
+    client.observe_projects_by_tag("dt-lab-owner-alpha")
 
     assert requests == [
         (
+            "paginated",
             "/api/v1/component/project/project-1",
             {"onlyDirect": "true"},
         ),
-        ("/api/v1/service/project/project-1", None),
+        ("single", "/api/v1/service/project/project-1", None),
+        ("paginated", "/api/v1/project/project-1/children", None),
+        ("paginated", "/api/v1/project/tag/dt-lab-owner-alpha", None),
     ]
+
+
+def test_observes_every_component_page() -> None:
+    client = DependencyTrackLabClient("https://dtrack.example", "api-key")
+    requests: list[dict[str, str]] = []
+
+    def fake_observe(path, params=None):
+        assert path == "/api/v1/component/project/project-1"
+        assert params is not None
+        requests.append(params)
+        page_number = int(params["pageNumber"])
+        start = (page_number - 1) * 100
+        stop = min(start + 100, 205)
+        return DependencyTrackObservation(
+            method="GET",
+            path=path,
+            query=tuple(sorted(params.items())),
+            status=200,
+            headers=(("X-Total-Count", "205"),),
+            duration_seconds=0.1,
+            payload=[{"index": index} for index in range(start, stop)],
+        )
+
+    client._observe_json = fake_observe  # type: ignore[method-assign]
+
+    observation = client.observe_project_components("project-1")
+
+    assert [item["index"] for item in observation.payload] == list(range(205))
+    assert [request["pageNumber"] for request in requests] == ["1", "2", "3"]
+    assert observation.query == (("pageSize", "100"),)
+    assert observation.duration_seconds == pytest.approx(0.3)
+
+
+def test_paginated_observation_rejects_incomplete_total() -> None:
+    client = DependencyTrackLabClient("https://dtrack.example", "api-key")
+
+    def fake_observe(path, params=None):
+        return DependencyTrackObservation(
+            method="GET",
+            path=path,
+            query=(),
+            status=200,
+            headers=(("x-total-count", "101"),),
+            duration_seconds=0.1,
+            payload=[{"index": index} for index in range(99)],
+        )
+
+    client._observe_json = fake_observe  # type: ignore[method-assign]
+
+    with pytest.raises(DependencyTrackLabApiError, match="ended before X-Total-Count"):
+        client.observe_project_components("project-1")
 
 
 def test_bom_export_requests_cyclonedx_json(monkeypatch) -> None:
@@ -119,6 +301,33 @@ def test_bom_export_requests_cyclonedx_json(monkeypatch) -> None:
     assert observation.payload == {"bomFormat": "CycloneDX"}
 
 
+def test_vex_export_requests_cyclonedx_json(monkeypatch) -> None:
+    captured = {}
+
+    def fake_request_json(request, **kwargs):
+        captured["request"] = request
+        return HttpJsonResponse(
+            payload={"bomFormat": "CycloneDX", "specVersion": "1.5"},
+            status=200,
+            headers={"Content-Type": "application/vnd.cyclonedx+json"},
+            duration_seconds=0.01,
+        )
+
+    monkeypatch.setattr(client_module, "request_json", fake_request_json)
+
+    observation = DependencyTrackLabClient(
+        "https://dtrack.example", "api-key"
+    ).observe_project_vex_export("project-1")
+
+    assert captured["request"].get_header("Accept") == (
+        "application/vnd.cyclonedx+json"
+    )
+    assert captured["request"].full_url.endswith(
+        "/api/v1/vex/cyclonedx/project/project-1?download=false&version=1.5"
+    )
+    assert observation.payload["specVersion"] == "1.5"
+
+
 def test_wait_for_bom_processing_polls_until_complete(monkeypatch) -> None:
     client = DependencyTrackLabClient("https://dtrack.example", "api-key")
     responses = iter([{"processing": True}, {"processing": False}])
@@ -126,6 +335,139 @@ def test_wait_for_bom_processing_polls_until_complete(monkeypatch) -> None:
     monkeypatch.setattr(client_module.time, "sleep", lambda _: None)
 
     client.wait_for_bom_processing("token-1", timeout=1, poll_interval=0)
+
+
+def test_records_analysis_decision_with_documented_payload(monkeypatch) -> None:
+    captured = {}
+
+    def fake_request_json(request, **kwargs):
+        captured["request"] = request
+        captured["kwargs"] = kwargs
+        return HttpJsonResponse(
+            payload={"analysisState": "IN_TRIAGE", "isSuppressed": False},
+            status=200,
+            headers={"Content-Type": "application/json"},
+            duration_seconds=0.01,
+        )
+
+    monkeypatch.setattr(client_module, "request_json", fake_request_json)
+    action = AnalysisAction(
+        id="begin-triage",
+        component_purl="pkg:maven/example/component@1.0.0",
+        vulnerability_id="CVE-2026-0001",
+        vulnerability_source="NVD",
+        state=AnalysisState.IN_TRIAGE,
+        justification=AnalysisJustification.NOT_SET,
+        response=AnalysisResponse.NOT_SET,
+        detail="Synthetic detail.",
+        comment="Synthetic comment.",
+        suppressed=False,
+    )
+
+    observation = DependencyTrackLabClient(
+        "https://dtrack.example", "analysis-key"
+    ).record_analysis_decision(
+        project_uuid="project-1",
+        component_uuid="component-1",
+        vulnerability_uuid="vulnerability-1",
+        action=action,
+    )
+
+    request = captured["request"]
+    payload = json.loads(request.data.decode("utf-8"))
+    assert request.method == "PUT"
+    assert request.full_url.endswith("/api/v1/analysis")
+    assert request.get_header("Content-type") == "application/json"
+    assert payload == {
+        "project": "project-1",
+        "component": "component-1",
+        "vulnerability": "vulnerability-1",
+        "analysisState": "IN_TRIAGE",
+        "analysisJustification": "NOT_SET",
+        "analysisResponse": "NOT_SET",
+        "analysisDetails": "Synthetic detail.",
+        "comment": "Synthetic comment.",
+        "isSuppressed": False,
+    }
+    assert captured["kwargs"]["return_response"] is True
+    assert observation.request_payload == payload
+
+
+def test_observes_analysis_trail_with_all_finding_coordinates() -> None:
+    client = DependencyTrackLabClient("https://dtrack.example", "read-key")
+    requests: list[tuple[str, dict[str, str] | None]] = []
+
+    def fake_observe(path, params=None):
+        requests.append((path, params))
+        return DependencyTrackObservation(
+            method="GET",
+            path=path,
+            query=tuple(sorted((params or {}).items())),
+            status=200,
+            headers=(),
+            duration_seconds=0.01,
+            payload={},
+        )
+
+    client._observe_json = fake_observe  # type: ignore[method-assign]
+
+    client.observe_analysis_trail("project-1", "component-1", "vulnerability-1")
+
+    assert requests == [
+        (
+            "/api/v1/analysis",
+            {
+                "project": "project-1",
+                "component": "component-1",
+                "vulnerability": "vulnerability-1",
+            },
+        )
+    ]
+
+
+def test_optional_analysis_trail_preserves_absent_row() -> None:
+    client = DependencyTrackLabClient("https://dtrack.example", "read-key")
+
+    def absent_trail(path, params=None):
+        raise DependencyTrackLabApiError("not found", status=404)
+
+    client._observe_json = absent_trail  # type: ignore[method-assign]
+
+    observation = client.observe_analysis_trail_if_present(
+        "project-1", "component-1", "vulnerability-1"
+    )
+
+    assert observation.status == 404
+    assert observation.path == "/api/v1/analysis"
+    assert dict(observation.query) == {
+        "component": "component-1",
+        "project": "project-1",
+        "vulnerability": "vulnerability-1",
+    }
+    assert observation.payload is None
+
+
+def test_observes_current_team_for_least_privilege_preflight() -> None:
+    client = DependencyTrackLabClient("https://dtrack.example", "analysis-key")
+    requests: list[str] = []
+
+    def fake_observe(path, params=None):
+        requests.append(path)
+        return DependencyTrackObservation(
+            method="GET",
+            path=path,
+            query=(),
+            status=200,
+            headers=(),
+            duration_seconds=0.01,
+            payload={"permissions": [{"name": "VULNERABILITY_ANALYSIS"}]},
+        )
+
+    client._observe_json = fake_observe  # type: ignore[method-assign]
+
+    client.observe_current_team()
+
+    assert requests == ["/api/v1/team/self"]
 
 
 def test_delete_project_requires_a_204_empty_response(monkeypatch) -> None:
