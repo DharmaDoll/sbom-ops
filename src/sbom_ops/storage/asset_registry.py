@@ -13,6 +13,7 @@ from sbom_ops.domain.asset_registry import (
     RegisteredService,
     ReportedDeployment,
     ReviewedProjectLink,
+    validate_deployment_supersession,
 )
 from sbom_ops.domain.assets import BusinessCriticality, DeploymentStatus
 
@@ -31,6 +32,16 @@ _DEPLOYMENT_REPORTS_SCHEMA = """
         expires_at TEXT NOT NULL,
         FOREIGN KEY (service_id, deployable_id)
             REFERENCES deployables(service_id, deployable_id)
+    )
+"""
+
+_DEPLOYMENT_SUPERSESSIONS_SCHEMA = """
+    CREATE TABLE deployment_report_supersessions (
+        superseded_report_id INTEGER PRIMARY KEY
+            REFERENCES deployment_reports(report_id),
+        successor_report_id INTEGER NOT NULL UNIQUE
+            REFERENCES deployment_reports(report_id),
+        CHECK (superseded_report_id != successor_report_id)
     )
 """
 
@@ -92,7 +103,7 @@ class AssetRegistry:
 
     def _initialize(self, *, create_if_missing: bool) -> None:
         version = self._db.execute("PRAGMA user_version").fetchone()[0]
-        if version in (1, 2):
+        if version in (1, 2, 3):
             self._schema_version = version
             return
         if version != 0:
@@ -145,21 +156,30 @@ class AssetRegistry:
                     FOREIGN KEY (service_id, deployable_id)
                         REFERENCES deployables(service_id, deployable_id)
                 );
-                PRAGMA user_version = 2;
+                CREATE TABLE deployment_report_supersessions (
+                    superseded_report_id INTEGER PRIMARY KEY
+                        REFERENCES deployment_reports(report_id),
+                    successor_report_id INTEGER NOT NULL UNIQUE
+                        REFERENCES deployment_reports(report_id),
+                    CHECK (superseded_report_id != successor_report_id)
+                );
+                PRAGMA user_version = 3;
                 """)
-        self._schema_version = 2
+        self._schema_version = 3
 
     def migrate(self) -> bool:
         """Explicitly upgrade v1 after the operator has taken a backup."""
         if self._read_only:
             raise ValueError("cannot migrate a read-only asset DB")
-        if self._schema_version == 2:
+        if self._schema_version == 3:
             return False
         self.check_integrity()
         with self._db:
-            self._db.execute(_DEPLOYMENT_REPORTS_SCHEMA)
-            self._db.execute("PRAGMA user_version = 2")
-        self._schema_version = 2
+            if self._schema_version == 1:
+                self._db.execute(_DEPLOYMENT_REPORTS_SCHEMA)
+            self._db.execute(_DEPLOYMENT_SUPERSESSIONS_SCHEMA)
+            self._db.execute("PRAGMA user_version = 3")
+        self._schema_version = 3
         self.check_integrity()
         return True
 
@@ -237,8 +257,15 @@ class AssetRegistry:
     def register_deployment(self, report: ReportedDeployment) -> ReportedDeployment:
         if self._schema_version < 2:
             raise ValueError("asset DB v1 requires an explicit backup and migration")
+        if report.supersedes_report_id is not None and self._schema_version < 3:
+            raise ValueError("asset DB v2 requires an explicit backup and migration")
         try:
             with self._db:
+                if report.supersedes_report_id is not None:
+                    previous = self._get_deployment_report(report.supersedes_report_id)
+                    if previous is None:
+                        raise ValueError("superseded deployment report does not exist")
+                    validate_deployment_supersession(previous, report)
                 cursor = self._db.execute(
                     "INSERT INTO deployment_reports (service_id, deployable_id, "
                     "environment, artifact_id, deployment_status, exposure_status, "
@@ -257,9 +284,14 @@ class AssetRegistry:
                         report.expires_at,
                     ),
                 )
+                if report.supersedes_report_id is not None:
+                    self._db.execute(
+                        "INSERT INTO deployment_report_supersessions VALUES (?, ?)",
+                        (report.supersedes_report_id, cursor.lastrowid),
+                    )
         except sqlite3.IntegrityError as exc:
             raise ValueError(
-                "deployment's service/deployable is not registered"
+                "deployment subject is not registered or report was already superseded"
             ) from exc
         return ReportedDeployment(
             service_id=report.service_id,
@@ -273,32 +305,54 @@ class AssetRegistry:
             observed_at=report.observed_at,
             expires_at=report.expires_at,
             report_id=cursor.lastrowid,
+            supersedes_report_id=report.supersedes_report_id,
         )
+
+    @staticmethod
+    def _report_from_row(row: tuple[object, ...]) -> ReportedDeployment:
+        return ReportedDeployment(
+            service_id=str(row[1]),
+            deployable_id=str(row[2]),
+            environment=str(row[3]),
+            artifact_id=str(row[4]),
+            deployment_status=DeploymentStatus(str(row[5])),
+            exposure_status=ExposureStatus(str(row[6])),
+            reviewer=str(row[7]),
+            evidence=str(row[8]),
+            observed_at=str(row[9]),
+            expires_at=str(row[10]),
+            report_id=int(row[0]),
+            supersedes_report_id=int(row[11]) if row[11] is not None else None,
+        )
+
+    def _get_deployment_report(self, report_id: int) -> ReportedDeployment | None:
+        row = self._db.execute(
+            "SELECT report_id, service_id, deployable_id, environment, artifact_id, "
+            "deployment_status, exposure_status, reviewer, evidence, observed_at, "
+            "expires_at FROM deployment_reports WHERE report_id = ?",
+            (report_id,),
+        ).fetchone()
+        return self._report_from_row((*row, None)) if row else None
 
     def list_deployment_reports(self) -> tuple[ReportedDeployment, ...]:
         if self._schema_version < 2:
             return ()
-        rows = self._db.execute(
-            "SELECT report_id, service_id, deployable_id, environment, artifact_id, "
-            "deployment_status, exposure_status, reviewer, evidence, observed_at, "
-            "expires_at FROM deployment_reports ORDER BY report_id"
-        ).fetchall()
-        return tuple(
-            ReportedDeployment(
-                service_id=row[1],
-                deployable_id=row[2],
-                environment=row[3],
-                artifact_id=row[4],
-                deployment_status=DeploymentStatus(row[5]),
-                exposure_status=ExposureStatus(row[6]),
-                reviewer=row[7],
-                evidence=row[8],
-                observed_at=row[9],
-                expires_at=row[10],
-                report_id=row[0],
+        if self._schema_version == 3:
+            suffix = (
+                "s.superseded_report_id FROM deployment_reports d "
+                "LEFT JOIN deployment_report_supersessions s "
+                "ON s.successor_report_id = d.report_id"
             )
-            for row in rows
-        )
+        else:
+            suffix = "NULL FROM deployment_reports d"
+        rows = self._db.execute(
+            "SELECT d.report_id, d.service_id, d.deployable_id, d.environment, "
+            "d.artifact_id, d.deployment_status, d.exposure_status, d.reviewer, "
+            "d.evidence, d.observed_at, d.expires_at, "
+            + suffix
+            + " ORDER BY d.report_id"
+        ).fetchall()
+        return tuple(self._report_from_row(row) for row in rows)
 
     def list_deployables(self) -> tuple[RegisteredDeployable, ...]:
         rows = self._db.execute(

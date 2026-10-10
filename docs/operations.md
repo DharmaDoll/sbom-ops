@@ -246,9 +246,10 @@ DT 4.14のBOM APIでは`BOM_UPLOAD`が必要で、`autoCreate=true`には追加�
 だけを表示する。版なし・同名同版の重複・既存承認とのUUID不一致は承認しない。
 `assets approve`は再度DTからProject一覧を読み、UUIDと名/版が一意に一致する
 場合だけ、承認者と時刻をSQLiteに保存する。DTへの書込みやIssueの変更はしない。
-人が申告した配布情報は、schema v2の台帳にサービス・配布単位・環境・成果物ID・
+人が申告した配布情報は、schema v3の台帳にサービス・配布単位・環境・成果物ID・
 稼働状態・公開状態・確認者・根拠・観測時刻・有効期限として追記できる。同じ対象の
-訂正も新たな申告として残し、古い記録を消さない。`sync --asset-db`は確認済みの
+訂正は旧申告IDを指定した新しい申告として残し、古い記録を消さない。
+`sync --asset-db`は確認済みの
 Project UUID・名・版がDTと一致し、その版と申告された成果物IDも完全一致する場合
 だけ、Project/環境ごとの申告状態を読み取り専用で表示する。未確認リンク、申告なし、
 別成果物、期限切れ、未来時刻、矛盾は別の状態として示す。矛盾する有効な申告を
@@ -324,9 +325,14 @@ CIの実行記録、手入力、将来のデプロイ観測が
   訂正履歴を残す。
 
 登録手段は現在CLIのみ。`assets report-deployment`は人の申告を追記し、
-`assets list`は履歴と期限状態を表示する。既存のschema v1 DBは読み取り可能で、
-新しい申告を記録する前に`assets migrate --backup PATH`でバックアップを作成し、
-明示的にv2へ移行する。新規DBはv2で作成する。レビュー済みJSONの取り込みは
+`assets list`は履歴と期限状態を表示する。申告を訂正する場合は、同じ
+サービス・配布単位・環境・成果物IDの新しい申告に`--supersedes-report 旧ID`を
+指定する。旧申告は削除されず、新申告の観測時刻までは有効である。
+以後は`assets list`で旧申告を`freshness=superseded`と表示する。
+指定しない相反する申告は引き続き`conflict`となる。既存のschema v1/v2 DBは
+読み取り可能で、訂正機能を使う前に`assets migrate --backup PATH`で
+バックアップを作成し、明示的にv3へ移行する。新規DBはv3で作成する。
+レビュー済みJSONの取り込みは
 未実装であり、
 既存の`sync --asset-inventory`は別の読み取り専用評価入力である。
 担当・重要度・公開状況は、AWSからの推測で決めない。手入力の稼働申告も
@@ -428,13 +434,59 @@ CycloneDX 1.6の3コンポーネント生成、DTによる同じ3件の取込、
 Project版と稼働イメージIDの一致、SQLiteの確認済み対応・稼働申告の表示を確認した。
 DTはGo標準ライブラリに47件のFindingを返したが、この検証はそれらの
 脆弱性評価やSBOM網羅性を判定するものではない。GitHub操作は0件だった。
-停止申告を追記すると、先の稼働申告と有効期間が重なるため、現行実装は
+停止申告を追記すると、先の稼働申告と有効期間が重なるため、当時の実装は
 `conflict`を返した。Findingと優先度は停止前後で同一だった。
-これは安全側の表示だが、通常の更新を解決するには明示的な訂正・継承手続きが
-必要である。ローカルの根拠は無視対象の
+これは安全側の表示である。2026-10-09には前申告のIDを明示した訂正を
+別DBで試した。旧申告が`superseded`になり、訂正後の同期は旧申告を選ばず
+`conflict`も出なかった。ただし確認時には2時間の有効期限を過ぎていたため
+`expired`だった。時刻を固定した読み取りでは、訂正時刻より前が`deployed`、
+後が`not_deployed`になった。停止直後の有効な申告をDT同期で表示する確認は
+まだ残る。短いTTLを使う場合は同期が期限内に終わることも確認する。
+ローカルの根拠は無視対象の
 `var/product-validation-20261007-identity-demo/`にあり、鍵・環境固有UUID・
 生の結果はGitへ入れない。本番のCIビルド由来、外部環境の実稼働、公開範囲は
 この演習では未検証である。
+
+### CIが作った成果物での確認（実行待ち）
+
+CIの`identity-demo-artifact`ジョブは、同じサンプルをテスト・ビルドし、
+Dockerイメージのアーカイブ、イメージID、ソースコミット、ファイルのSHA-256を
+7日間のGitHub Actions artifactとして保存する。DTキーはCIに渡さず、
+DTへのアップロードや資産DBの変更もしない。**まだGitHub上での実行結果は
+確認していない**ため、以下は次の受け入れ確認手順である。
+
+mainの成功した`ci`実行を選ぶ。PRやforkの実行結果を運用対象にしない。
+次の例では`RUN_ID`をその実行番号へ置き換え、`gh run view`の結果が
+`conclusion=success`、`headBranch=main`であることを目視確認する。
+
+```bash
+export RUN_ID=123456789
+gh run view "$RUN_ID" --repo DharmaDoll/sbom-ops \
+  --json conclusion,headSha,headBranch,workflowName
+export CI_DIR="var/identity-demo/ci/$RUN_ID"
+test ! -e "$CI_DIR"
+mkdir -p "$CI_DIR"
+gh run download "$RUN_ID" --repo DharmaDoll/sbom-ops \
+  --name identity-demo-image --dir "$CI_DIR"
+(cd "$CI_DIR" && sha256sum -c SHA256SUMS)
+export CI_SOURCE_SHA="$(gh run view "$RUN_ID" --repo DharmaDoll/sbom-ops \
+  --json headSha --jq .headSha)"
+test "$(cat "$CI_DIR/source-commit.txt")" = "$CI_SOURCE_SHA"
+docker load --input "$CI_DIR/image.tar"
+export CI_IMAGE_ID="$(cat "$CI_DIR/image-id.txt")"
+test "$(docker image inspect "sbom-ops/identity-demo:$CI_SOURCE_SHA" \
+  --format '{{.Id}}')" = "$CI_IMAGE_ID"
+```
+
+固定IDのイメージだけをlocalhostに起動して`/health`を確認する。そのIDを
+Trivyの`image --format cyclonedx`の対象、DT Project版、
+資産DBの申告成果物IDに同じ値で渡す。前節と同じくDT Projectを読み戻し、
+対応を承認して`sync --asset-db ... --dry-run --no-github`を確認する。
+停止時は新しい申告で`--supersedes-report 旧ID`を明示し、履歴と有効状態を確認する。
+
+この照合は「選んだCI実行から取得したアーカイブ」とローカルの稼働イメージの
+一致を確認するもので、署名付きのビルド証明や本番環境の稼働証明ではない。
+アーカイブ内のSHA-256一覧だけを独立した出所証明とみなさない。
 
 Daily
 

@@ -202,7 +202,12 @@ sbom-ops assets --db var/assets.sqlite3 report-deployment \
 sbom-ops assets --db var/assets.sqlite3 list
 ```
 
-Each report is appended with a new ID; an updated claim needs a new report.
+Each report is appended with a new ID. To correct one earlier claim for the
+same service, deployable, environment, and artifact, submit a new report with
+`--supersedes-report OLD_ID`; the old report remains visible in `assets list`.
+Once the successor's observation time arrives, the old row is marked
+`freshness=superseded` in that list.
+Without this explicit link, incompatible overlapping claims remain a conflict.
 The list shows whether each report is current, future-dated, or expired, but
 neither this report nor the reviewed Project link proves a running workload.
 `sync --asset-db` reports an exact artifact/version match only after the DT
@@ -212,9 +217,9 @@ Project UUID, name, and version match the reviewed link. It shows
 `reported` means only that a current human claim was found. Conflicting
 current claims remain unresolved. No claim changes a Finding, priority, DT
 Analysis, or GitHub Issue.
-For an existing schema-v1 registry, first take a non-overwriting backup and
+For an existing schema-v1 or v2 registry, first take a non-overwriting backup and
 explicitly migrate it with `sbom-ops assets --db PATH migrate --backup
-BACKUP_PATH`; new registries use schema v2. Keep evidence text free of secrets.
+BACKUP_PATH`; new registries use schema v3. Keep evidence text free of secrets.
 
 For a persistent registry, check it and take a non-overwriting online backup
 before making further changes:
@@ -268,6 +273,9 @@ For a deeper artifact-to-SBOM-to-deployment exercise, the repository also
 contains a tiny [Go container sample](examples/identity-demo/main.go). It
 requires Go, Docker, Trivy, and a local DT instance; see the
 [operator guide](docs/operations.md#固定成果物を使ったローカル通し検証).
+The CI workflow also packages this demo image as a short-lived artifact;
+the [CI artifact exercise](docs/operations.md#ciが作った成果物での確認実行待ち)
+explains how to verify and use it after a successful main run.
 
 ## Optional Evaluation Inputs
 

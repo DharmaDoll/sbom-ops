@@ -88,6 +88,35 @@ def test_asset_cli_registration_candidate_and_approval(tmp_path, monkeypatch, ca
         "2026-10-08T00:00:00Z",
     )
     assert "deployment_report=1" in run("list")
+    assert "deployment report=2" in run(
+        "report-deployment",
+        "--service",
+        "checkout-api",
+        "--deployable",
+        "web",
+        "--environment",
+        "production",
+        "--artifact",
+        "build-123",
+        "--status",
+        "not_deployed",
+        "--exposure",
+        "unknown",
+        "--reviewer",
+        "alice",
+        "--evidence",
+        "deployment stopped",
+        "--observed-at",
+        "2026-10-07T12:00:00Z",
+        "--expires-at",
+        "2026-10-09T00:00:00Z",
+        "--supersedes-report",
+        "1",
+    )
+    listed_reports = run("list")
+    assert "supersedes_report=1" in listed_reports
+    assert "freshness=superseded" in listed_reports
+    assert "superseded_by=2" in listed_reports
     assert "integrity OK" in run("check")
     backup_path = tmp_path / "backup.sqlite3"
     assert "backup created" in run("backup", "--output", str(backup_path))
@@ -115,6 +144,7 @@ def test_asset_cli_migrates_v1_after_backup(tmp_path, capsys) -> None:
     )
     cli.run_assets(service_args)
     with sqlite3.connect(db_path) as db:
+        db.execute("DROP TABLE deployment_report_supersessions")
         db.execute("DROP TABLE deployment_reports")
         db.execute("PRAGMA user_version = 1")
     backup_path = tmp_path / "backup-v1.sqlite3"
@@ -122,12 +152,12 @@ def test_asset_cli_migrates_v1_after_backup(tmp_path, capsys) -> None:
         ["assets", "--db", str(db_path), "migrate", "--backup", str(backup_path)]
     )
     assert cli.run_assets(migrate_args) == 0
-    assert "upgraded to schema v2" in capsys.readouterr().out
+    assert "upgraded to schema v3" in capsys.readouterr().out
     assert backup_path.is_file()
     with sqlite3.connect(backup_path) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 1
     with sqlite3.connect(db_path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_asset_cli_read_does_not_create_misspelled_db(tmp_path) -> None:

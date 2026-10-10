@@ -38,3 +38,42 @@ jobs:
       - run: ruff check lab/dependency_track
       - run: make dt-lab-validate
       - run: make dt-lab-test
+
+  identity-demo-artifact:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.24.4"
+          cache: false
+      - name: Test and build the demo application
+        run: |
+          cd examples/identity-demo
+          go test ./...
+          mkdir -p ../../var/identity-demo/ci
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -buildvcs=false -ldflags=-buildid= \
+            -o ../../var/identity-demo/ci/demo .
+      - name: Package the exact local image
+        run: |
+          docker build --network=none --pull=false \
+            -f examples/identity-demo/Dockerfile \
+            -t "sbom-ops/identity-demo:${GITHUB_SHA}" var/identity-demo/ci
+          docker image inspect "sbom-ops/identity-demo:${GITHUB_SHA}" \
+            --format '{{.Id}}' > var/identity-demo/ci/image-id.txt
+          docker save --output var/identity-demo/ci/image.tar \
+            "sbom-ops/identity-demo:${GITHUB_SHA}"
+          printf '%s\n' "${GITHUB_SHA}" > var/identity-demo/ci/source-commit.txt
+          cd var/identity-demo/ci
+          sha256sum demo image.tar > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: identity-demo-image
+          path: var/identity-demo/ci/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

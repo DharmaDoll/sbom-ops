@@ -186,12 +186,23 @@ Issue actions at zero. Its 47 Findings were all for the Go standard library
 and all P3 under current score rules; this is not a production risk verdict.
 After the disposable container was stopped, a second report produced
 `conflict`, not an automatic transition to `not_deployed`; Finding priorities
-remained unchanged. The DB and raw sync outputs remain ignored under
-`var/product-validation-20261007-identity-demo/`. This exercise validates
+remained unchanged. Schema v3 now supports an explicit, audited successor
+report for this transition; the 2026-10-08 live run predates that change.
+On 2026-10-09 a fresh DB and the same DT Project showed the successor excludes
+the old claim, but the post-stop live sync occurred after its two-hour TTL and
+returned `expired`, not an in-window `reported/not_deployed`. Fixed-time
+read-only evaluation showed the expected before/after transition. An in-window
+live check remains open. The DBs and raw sync outputs remain ignored under
+`var/product-validation-20261007-identity-demo/` and
+`var/product-validation-20261009-supersession/`. These exercises validate
 identity plumbing, not CI provenance, SBOM completeness, deployment discovery,
-or internet exposure. Next add an explicit supersession/correction workflow
-for human reports and repeat the chain with a real CI-built application
+or internet exposure. Next repeat the chain with a real CI-built application
 artifact before asset context can influence prioritization.
+The CI workflow now packages the representative image, its immutable image ID,
+and a checksum list without DT credentials or registry publishing. A successful
+main run and operator-side download, image-ID check, SBOM import, DT readback,
+deployment join, and stop/supersession check are still required before that
+gate can be marked complete. This artifact is not signed build provenance.
 The [target operating flow](docs/operations.md#sbomと稼働資産を結ぶ運用フロー一部実装)
 now assumes no external organizational asset register. A small, manual-first
 SQLite asset DB exists for one host with local persistent storage; it now
@@ -347,9 +358,10 @@ telemetry contract exists.
   enabling CI writes to this registry.
   The registry rejects missing DB paths on read/approval, exposes SQLite
   integrity/foreign-key checks, and creates non-overwriting online backups.
-  Schema v2 adds append-only human deployment declarations and an explicit,
-  backup-first v1 migration. Retention policy, resolved correction/conflict
-  audit, and production restore drills remain open.
+  Schema v2 added append-only human deployment declarations. Schema v3 adds
+  one-to-one, same-subject report supersession with a backup-first migration
+  from v1/v2. Retention policy, broader conflict resolution, and production
+  restore drills remain open.
 - Define the manual registration contract and CLI first. Register a stable
   service ID, owner, business criticality and rationale, and planned
   environments before any build or DT Project exists. A system grouping is
@@ -359,8 +371,8 @@ telemetry contract exists.
   append-only claims, not verified running state. The read-only sync now joins
   exact version-matching declarations to reviewed DT Project links while
   showing stale, missing, future, other-artifact, and conflicting claims.
-  Next verify one real immutable artifact chain and add an explicit correction
-  workflow; support reviewed JSON import through
+  Explicit one-to-one human-report correction is implemented. Next verify one
+  real immutable artifact chain; support reviewed JSON import through
   the same validation path. Preserve `unknown` for missing declarations and
   show conflicts; never silently replace a human declaration with collected
   data.

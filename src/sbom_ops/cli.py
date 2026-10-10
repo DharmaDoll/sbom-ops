@@ -117,6 +117,11 @@ def build_parser() -> argparse.ArgumentParser:
     deployment_parser.add_argument("--evidence", required=True)
     deployment_parser.add_argument("--observed-at", required=True)
     deployment_parser.add_argument("--expires-at", required=True)
+    deployment_parser.add_argument(
+        "--supersedes-report",
+        type=int,
+        help="replace an earlier report for the same artifact and environment",
+    )
     asset_commands.add_parser("list")
     asset_commands.add_parser("check")
     backup_parser = asset_commands.add_parser("backup")
@@ -442,6 +447,7 @@ def run_assets(args: argparse.Namespace) -> int:
                     evidence=args.evidence,
                     observed_at=args.observed_at,
                     expires_at=args.expires_at,
+                    supersedes_report_id=args.supersedes_report,
                 )
             )
             print(f"recorded human deployment report={report.report_id}")
@@ -460,8 +466,17 @@ def run_assets(args: argparse.Namespace) -> int:
                     f"version={link.project_version} reviewer={link.reviewer} "
                     f"reviewed_at={link.reviewed_at}"
                 )
-            for report in registry.list_deployment_reports():
-                if report.is_future():
+            reports = registry.list_deployment_reports()
+            successors = {
+                report.supersedes_report_id: report
+                for report in reports
+                if report.supersedes_report_id is not None
+            }
+            for report in reports:
+                successor = successors.get(report.report_id)
+                if successor is not None and not successor.is_future():
+                    freshness = "superseded"
+                elif report.is_future():
                     freshness = "future"
                 elif report.is_current():
                     freshness = "current"
@@ -475,7 +490,9 @@ def run_assets(args: argparse.Namespace) -> int:
                     f"exposure={report.exposure_status.value} "
                     f"freshness={freshness} "
                     f"reviewer={report.reviewer} evidence={report.evidence} "
-                    f"observed_at={report.observed_at} expires_at={report.expires_at}"
+                    f"observed_at={report.observed_at} expires_at={report.expires_at} "
+                    f"supersedes_report={report.supersedes_report_id or '-'} "
+                    f"superseded_by={successor.report_id if successor else '-'}"
                 )
         elif args.asset_command == "check":
             registry.check_integrity()
@@ -484,12 +501,12 @@ def run_assets(args: argparse.Namespace) -> int:
             output = registry.backup_to(args.output)
             print(f"asset DB backup created: {output}")
         elif args.asset_command == "migrate":
-            if registry.schema_version == 2:
-                print("asset DB already uses schema v2")
+            if registry.schema_version == 3:
+                print("asset DB already uses schema v3")
             else:
                 output = registry.backup_to(args.backup)
                 registry.migrate()
-                print(f"asset DB upgraded to schema v2; v1 backup: {output}")
+                print(f"asset DB upgraded to schema v3; backup: {output}")
         elif args.asset_command == "candidates":
             for item in discover_project_candidates(
                 registry, _asset_dt_client().list_projects()

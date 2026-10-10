@@ -251,6 +251,20 @@ def test_reviewed_registry_link_is_output_only_and_does_not_change_issues() -> N
                 "2099-10-07T00:00:00Z",
                 1,
             ),
+            ReportedDeployment(
+                "checkout-api",
+                "web",
+                "production",
+                "v1",
+                DeploymentStatus.NOT_DEPLOYED,
+                ExposureStatus.UNKNOWN,
+                "alice",
+                "reviewed stop record",
+                "2026-10-08T00:00:00Z",
+                "2099-10-08T00:00:00Z",
+                2,
+                supersedes_report_id=1,
+            ),
         ),
     )
     baseline_github = FakeGitHub()
@@ -269,6 +283,11 @@ def test_reviewed_registry_link_is_output_only_and_does_not_change_issues() -> N
     assert linked.registry_snapshot_status.value == "loaded"
     assert linked.registry_projects[0].status is RegistryProjectStatus.MATCHED
     assert linked.registry_deployments[0].status is RegistryDeploymentStatus.REPORTED
+    assert linked.registry_deployments[0].report_ids == (2,)
+    assert (
+        linked.registry_deployments[0].deployment_status
+        is DeploymentStatus.NOT_DEPLOYED
+    )
     assert linked.as_dict()["registry_deployments"][0]["source"] == "human_reported"
     assert linked.as_dict()["registry_projects"][0]["owner"] == "team-checkout"
     assert linked.asset_inventory_status.value == "not_requested"

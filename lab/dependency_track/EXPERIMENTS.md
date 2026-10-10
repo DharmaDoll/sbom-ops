@@ -1,5 +1,74 @@
 # Dependency-Track Lab Experiment Ledger
 
+## 2026-10-09 — Explicit deployment-report supersession against a live DT Project
+
+- Status: partial live verification; correction resolved the prior claim, but
+  the post-stop live sync occurred after the successor's expiry
+- Target: same local DT 4.14.3 instance identified in the 2026-10-08 run;
+  target version was not re-read during this run; uncommitted product schema v3
+- Safety: existing DT Project read only; new ignored SQLite DB; localhost-only
+  disposable container stopped and auto-removed; GitHub disabled; no DT
+  Analysis/VEX mutation or Project cleanup
+
+### Purpose and Performed Work
+
+Check whether an explicit, same-subject successor report resolves the
+`deployed`/`not_deployed` overlap found in the previous experiment without
+editing old audit records or changing vulnerability priority. The existing
+demo Project was read from DT and linked in a fresh schema-v3 registry. The
+previously built image was run as a read-only, capability-dropped container on
+localhost; Docker image identity and `/health` were checked. A time-limited
+`deployed` report was recorded, followed by a DT read-only product sync with
+`--dry-run --no-github`. The run-scoped container was then stopped and Docker
+showed no matching container. A `not_deployed` report explicitly superseded
+the first report, and a second product sync was performed. Finally, the same
+SQLite snapshot was evaluated read-only at fixed times on both sides of the
+successor observation and after its expiry.
+
+### Observed Facts
+
+- DT returned HTTP 200 for the existing Project. The running container's
+  image ID matched the Project version and report artifact ID; `/health`
+  returned `ok`. The first sync processed one Project and 47 Findings, showed
+  `matched` Project context and `reported/deployed` from report 1, and made
+  zero Issue changes.
+- The successor relation persisted as report 1 -> report 2. `assets list`
+  showed report 1 as `superseded` and report 2 as the current report immediately
+  after entry. The second DT-backed sync showed `expired` with only report 2
+  referenced, not `conflict`; it processed 47 Findings and made zero Issue
+  changes. The two-hour report TTL had elapsed before this sync completed.
+- Read-only evaluation of the saved registry at 01:30Z returned
+  `reported/deployed` from report 1; at 02:00Z it returned
+  `reported/not_deployed` from report 2; at 04:00Z it returned `expired` with
+  only report 2. These fixed-time results do not substitute for a live
+  in-window post-stop sync.
+- A 07:42Z follow-up could not reach the local Docker daemon, so the current
+  container state was not reverified and no fresh deployment claim was made.
+  This was an environmental stop, not a DT or product-sync result.
+- The schema-v3 DB passed SQLite integrity and foreign-key checks. A separate
+  non-overwriting online backup was created and opened successfully; it
+  retained both reports and their one supersession link.
+
+### Interpretation and Product Decision
+
+The explicit link preserves the old record while excluding it from effective
+claims at and after the successor observation time. The live read confirms
+that an expired successor does not reactivate the old `deployed` claim or
+produce a false conflict. The exact post-stop `reported/not_deployed` state
+was shown only in the deterministic historical evaluation, not in a live
+in-window sync. Keep asset context read-only and do not change Finding
+priority or Issue behavior based on this evidence.
+
+### Unverified and Local Evidence
+
+An in-window live post-stop sync, actual CI-produced image provenance,
+production deployment discovery, internet exposure, and target behavior after
+DT upgrades remain unverified. The existing DT Project and local image remain;
+the dedicated container was removed by Docker's `--rm` on stop. The fresh DB,
+its checked backup, and both sync records are under ignored
+`var/product-validation-20261009-supersession/`. No credentials, raw payloads,
+or environment-specific Project UUIDs are retained in this ledger.
+
 ## 2026-10-08 — Local built-image to SBOM to DT to asset-report chain
 
 - Status: live disposable Project import and product dry-run completed; temporary

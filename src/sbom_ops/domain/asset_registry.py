@@ -72,6 +72,7 @@ class ReportedDeployment:
     observed_at: str
     expires_at: str
     report_id: int | None = None
+    supersedes_report_id: int | None = None
 
     def __post_init__(self) -> None:
         validate_identifier(self.service_id, label="service_id")
@@ -114,6 +115,8 @@ class ReportedDeployment:
             and self.exposure_status is ExposureStatus.CONFIRMED
         ):
             raise ValueError("confirmed exposure requires a deployed artifact claim")
+        if self.supersedes_report_id is not None and self.supersedes_report_id <= 0:
+            raise ValueError("supersedes_report_id must be a positive report ID")
 
     def is_current(self, *, now: datetime | None = None) -> bool:
         current = now or datetime.now(UTC)
@@ -125,6 +128,57 @@ class ReportedDeployment:
         current = now or datetime.now(UTC)
         observed = datetime.fromisoformat(self.observed_at.replace("Z", "+00:00"))
         return observed > current
+
+
+def validate_deployment_supersession(
+    previous: ReportedDeployment, successor: ReportedDeployment
+) -> None:
+    """A correction may replace only an earlier claim for the same exact subject."""
+    if (
+        previous.report_id is None
+        or successor.supersedes_report_id != previous.report_id
+    ):
+        raise ValueError("superseded deployment report does not exist")
+    if (
+        previous.service_id,
+        previous.deployable_id,
+        previous.environment,
+        previous.artifact_id,
+    ) != (
+        successor.service_id,
+        successor.deployable_id,
+        successor.environment,
+        successor.artifact_id,
+    ):
+        raise ValueError("supersession must keep the exact deployment subject")
+    previous_time = datetime.fromisoformat(previous.observed_at.replace("Z", "+00:00"))
+    successor_time = datetime.fromisoformat(
+        successor.observed_at.replace("Z", "+00:00")
+    )
+    if successor_time <= previous_time:
+        raise ValueError("successor observation must follow the previous observation")
+
+
+def effective_deployment_reports(
+    reports: tuple[ReportedDeployment, ...], *, now: datetime
+) -> tuple[ReportedDeployment, ...]:
+    """Keep prior claims until their explicit successor's observation time."""
+    by_id = {
+        report.report_id: report for report in reports if report.report_id is not None
+    }
+    superseded: set[int] = set()
+    for report in reports:
+        if report.supersedes_report_id is None:
+            continue
+        previous = by_id.get(report.supersedes_report_id)
+        if previous is None:
+            raise ValueError("superseded deployment report is missing from snapshot")
+        validate_deployment_supersession(previous, report)
+        if report.supersedes_report_id in superseded:
+            raise ValueError("deployment report has multiple successors")
+        if not report.is_future(now=now):
+            superseded.add(report.supersedes_report_id)
+    return tuple(report for report in reports if report.report_id not in superseded)
 
 
 @dataclass(frozen=True)

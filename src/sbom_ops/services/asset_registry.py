@@ -17,6 +17,7 @@ from sbom_ops.domain.asset_registry import (
     RegistryProjectStatus,
     ReportedDeployment,
     ReviewedProjectLink,
+    effective_deployment_reports,
     project_candidate,
 )
 from sbom_ops.storage.asset_registry import AssetRegistry
@@ -96,7 +97,9 @@ def observe_registry_deployments(
     """Join human claims to reviewed immutable Project identities, read-only."""
     current_time = now or datetime.now(UTC)
     by_deployable: dict[tuple[str, str], list[ReportedDeployment]] = {}
-    for report in snapshot.deployment_reports:
+    for report in effective_deployment_reports(
+        snapshot.deployment_reports, now=current_time
+    ):
         by_deployable.setdefault((report.service_id, report.deployable_id), []).append(
             report
         )

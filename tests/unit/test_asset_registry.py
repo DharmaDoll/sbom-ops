@@ -124,7 +124,7 @@ def test_duplicate_registration_does_not_overwrite(tmp_path) -> None:
 def test_unknown_schema_is_rejected(tmp_path) -> None:
     db_path = tmp_path / "assets.sqlite3"
     with sqlite3.connect(db_path) as db:
-        db.execute("PRAGMA user_version = 3")
+        db.execute("PRAGMA user_version = 4")
     with pytest.raises(ValueError, match="unsupported"):
         AssetRegistry(db_path)
 
@@ -312,6 +312,7 @@ def test_v1_asset_db_requires_explicit_backed_up_migration(tmp_path: Path) -> No
     with AssetRegistry(db_path, create_if_missing=True) as registry:
         _register(registry)
     with sqlite3.connect(db_path) as db:
+        db.execute("DROP TABLE deployment_report_supersessions")
         db.execute("DROP TABLE deployment_reports")
         db.execute("PRAGMA user_version = 1")
     with AssetRegistry(db_path) as registry:
@@ -327,8 +328,112 @@ def test_v1_asset_db_requires_explicit_backed_up_migration(tmp_path: Path) -> No
         assert backup.schema_version == 1
         assert backup.list_deployables()[0].project_name == "checkout-api/web"
     with AssetRegistry(db_path, read_only=True) as registry:
-        assert registry.schema_version == 2
+        assert registry.schema_version == 3
         assert len(registry.list_deployment_reports()) == 1
+
+
+def test_explicit_deployment_supersession_preserves_history_and_time(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "assets.sqlite3"
+    with AssetRegistry(path, create_if_missing=True) as registry:
+        _register(registry)
+        first = registry.register_deployment(_deployment_report())
+        successor = registry.register_deployment(
+            replace(
+                _deployment_report(),
+                deployment_status=DeploymentStatus.NOT_DEPLOYED,
+                exposure_status=ExposureStatus.UNKNOWN,
+                observed_at="2026-10-07T12:00:00Z",
+                expires_at="2026-10-09T00:00:00Z",
+                evidence="container stopped and no longer listed",
+                supersedes_report_id=first.report_id,
+            )
+        )
+        assert successor.supersedes_report_id == first.report_id
+        with pytest.raises(ValueError, match="already superseded"):
+            registry.register_deployment(
+                replace(successor, report_id=None, observed_at="2026-10-07T13:00:00Z")
+            )
+        assert len(registry.list_deployment_reports()) == 2
+        registry.check_integrity()
+    with AssetRegistry(path, read_only=True) as registry:
+        reports = registry.list_deployment_reports()
+        assert reports[0].supersedes_report_id is None
+        assert reports[1].supersedes_report_id == 1
+        snapshot, projects = _reviewed_snapshot(reports)
+        observed_projects = observe_registry_projects(snapshot, projects, projects)
+        before = observe_registry_deployments(
+            snapshot, observed_projects, now=datetime(2026, 10, 7, 11, tzinfo=UTC)
+        )[0]
+        after = observe_registry_deployments(
+            snapshot, observed_projects, now=datetime(2026, 10, 7, 13, tzinfo=UTC)
+        )[0]
+        expired = observe_registry_deployments(
+            snapshot, observed_projects, now=datetime(2026, 10, 10, tzinfo=UTC)
+        )[0]
+        assert before.report_ids == (1,)
+        assert before.deployment_status is DeploymentStatus.DEPLOYED
+        assert after.report_ids == (2,)
+        assert after.deployment_status is DeploymentStatus.NOT_DEPLOYED
+        assert expired.status is RegistryDeploymentStatus.EXPIRED
+        assert expired.report_ids == (2,)
+
+
+def test_supersession_rejects_wrong_subject_and_backdated_observation(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "assets.sqlite3"
+    with AssetRegistry(path, create_if_missing=True) as registry:
+        _register(registry)
+        first = registry.register_deployment(_deployment_report())
+        candidate = replace(
+            _deployment_report(),
+            observed_at="2026-10-07T12:00:00Z",
+            supersedes_report_id=first.report_id,
+        )
+        with pytest.raises(ValueError, match="exact deployment subject"):
+            registry.register_deployment(replace(candidate, environment="staging"))
+        with pytest.raises(ValueError, match="successor observation"):
+            registry.register_deployment(
+                replace(candidate, observed_at="2026-10-07T00:00:00Z")
+            )
+        with pytest.raises(ValueError, match="does not exist"):
+            registry.register_deployment(replace(candidate, supersedes_report_id=99))
+        assert len(registry.list_deployment_reports()) == 1
+
+
+def test_v2_asset_db_needs_backup_before_supersession(tmp_path: Path) -> None:
+    path = tmp_path / "assets.sqlite3"
+    backup_path = tmp_path / "assets-v2.sqlite3"
+    with AssetRegistry(path, create_if_missing=True) as registry:
+        _register(registry)
+        first = registry.register_deployment(_deployment_report())
+    with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE deployment_report_supersessions")
+        db.execute("PRAGMA user_version = 2")
+    with AssetRegistry(path) as registry:
+        assert registry.schema_version == 2
+        with pytest.raises(ValueError, match="v2 requires"):
+            registry.register_deployment(
+                replace(_deployment_report(), supersedes_report_id=first.report_id)
+            )
+        registry.backup_to(backup_path)
+        assert registry.migrate() is True
+        assert registry.schema_version == 3
+        assert (
+            registry.register_deployment(
+                replace(
+                    _deployment_report(),
+                    observed_at="2026-10-07T12:00:00Z",
+                    supersedes_report_id=first.report_id,
+                )
+            ).report_id
+            == 2
+        )
+    with AssetRegistry(backup_path, read_only=True) as backup:
+        assert backup.schema_version == 2
+        assert len(backup.list_deployment_reports()) == 1
 
 
 def test_invalid_identifier_is_rejected() -> None:

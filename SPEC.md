@@ -76,12 +76,15 @@ The orchestrator runs as a stateless CLI job.
 This describes the process, not a guarantee that all future workflows can be
 implemented without durable shared state. The optional asset registry is a
 single-host SQLite DB for manually registered services and deployables plus
-reviewed DT Project links. Schema v2 also stores append-only human deployment
+reviewed DT Project links. Schema v2 stores append-only human deployment
 and exposure declarations by service, deployable, environment, and artifact ID,
 with reviewer, evidence, observation time, and expiry. These declarations are
-not verified runtime facts, are not joined to individual Findings, and do not
-resolve conflicting claims. The DB still does not store verified
-build/SBOM/deployment identity or a resolved correction history. Those
+not verified runtime facts and are not joined to individual Findings. Schema
+v3 adds an explicit, one-to-one supersession link between reports for the same
+exact subject. The older report stays in the audit history and ceases to be an
+effective claim only from its successor's observation time. Unlinked or
+otherwise contradictory live claims still remain `conflict`. The DB still
+does not store verified build/SBOM/deployment identity. Those
 remain in [`ROADMAP.md`](ROADMAP.md#phase-0-production-validation-p0). No
 external organizational asset register is assumed; platform discovery is
 optional evidence and must not silently override reviewed declarations.
@@ -94,14 +97,14 @@ they do not affect priority or Issue operations. The separate
 UUID/name/version still match DT and the declaration's artifact ID equals the
 reviewed Project version exactly. It reports `unverified_link`, `unreported`,
 `other_artifact`, `expired`, `future_observation`, `conflict`, or `reported`
-per Project/environment. Multiple live claims with incompatible deployment or
-exposure states remain `conflict`, without an effective verdict. An active
+per Project/environment. Multiple effective live claims with incompatible
+deployment or exposure states remain `conflict`, without an effective verdict. An active
 claim is still not an independent runtime observation. This is distinct from
 the legacy optional deployment-context JSON (`--asset-inventory`) and does not
 establish CI provenance or change priority or Issue operations.
-An existing schema-v1 DB remains readable. Adding declaration storage requires
+Existing schema-v1/v2 DBs remain readable. Adding declaration supersession requires
 an explicit `assets migrate --backup PATH`, which creates a checked,
-non-overwriting v1 backup before the v2 migration; it is never automatic on
+non-overwriting backup before the v3 migration; it is never automatic on
 `sync` or read. A deployment declaration is append-only and expiry is checked
 when listed. No report is treated as confirmed deployment merely because its
 artifact ID resembles a DT Project version.
