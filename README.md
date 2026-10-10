@@ -274,7 +274,7 @@ contains a tiny [Go container sample](examples/identity-demo/main.go). It
 requires Go, Docker, Trivy, and a local DT instance; see the
 [operator guide](docs/operations.md#固定成果物を使ったローカル通し検証).
 The CI workflow also packages this demo image as a short-lived artifact;
-the [CI artifact exercise](docs/operations.md#ciが作った成果物での確認実行待ち)
+the [CI artifact exercise](docs/operations.md#ciが作った成果物での確認)
 explains how to verify and use it after a successful main run.
 
 ## Optional Evaluation Inputs

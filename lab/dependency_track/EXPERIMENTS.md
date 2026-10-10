@@ -1,5 +1,54 @@
 # Dependency-Track Lab Experiment Ledger
 
+## 2026-10-10 — Main CI artifact identity and Docker-free SBOM check
+
+- Status: partial; CI artifact identity checked, but runtime and DT validation
+  could not run
+- Target: [main CI run](https://github.com/DharmaDoll/sbom-ops/actions/runs/38013801200)
+  at the schema-v3 product commit; Go 1.24.4 sample; local Trivy `dev` build;
+  local DT version not re-read because its API was unreachable
+- Safety: artifact and DT health/list checks only; no DT upload, Analysis/VEX
+  mutation, asset report, Project cleanup, or GitHub Issue change
+
+### Purpose and Performed Work
+
+Check whether the CI-produced image can be tied to its source commit and a
+CycloneDX SBOM before using it in the product's build-to-DT-to-asset chain.
+Read the successful main CI run and its three job results, downloaded its
+`identity-demo-image` artifact, checked the published file hashes and source
+commit, and compared the saved image ID with the archive's image-config
+digest. Generated a CycloneDX SBOM directly from `image.tar` using Trivy's
+offline license-only mode, then compared its `aquasecurity:trivy:ImageID`
+property with the artifact image ID. Tried read-only local Docker and DT
+connectivity checks before any runtime or upload step.
+
+### Observed Facts
+
+- All three CI jobs succeeded. The downloaded binary and image archive passed
+  their SHA-256 checks, and `source-commit.txt` equaled the run's head commit.
+- The archive's image-config digest matched `image-id.txt`. Trivy produced a
+  CycloneDX 1.6 SBOM with three components; its ImageID property matched the
+  same ID. This was not a vulnerability scan or a completeness assessment.
+- The local Docker daemon did not respond, and the local DT API request timed
+  out. No image was started, no BOM was uploaded, and no DT readback or asset
+  join was performed for this CI artifact.
+
+### Interpretation and Product Decision
+
+The CI artifact has a reproducible source-commit and image-ID handoff to a
+Docker-free SBOM generation step. This is useful input to the product's
+identity join, but it is not signed provenance, proof of runtime deployment,
+or proof that DT indexed the SBOM. Keep the asset/priority path unchanged.
+
+### Unverified and Local Evidence
+
+When Docker and DT are reachable, load and run this exact archive, verify its
+runtime ID, upload its SBOM to a disposable DT Project versioned by that ID,
+read back the indexed components, and then exercise the reviewed asset join
+and an in-window stop/supersession. The ignored local evidence path is
+`var/identity-demo/ci/<run-id>/`; no credentials, raw payloads, or
+environment-specific Project UUIDs are retained here.
+
 ## 2026-10-09 — Explicit deployment-report supersession against a live DT Project
 
 - Status: partial live verification; correction resolved the prior claim, but

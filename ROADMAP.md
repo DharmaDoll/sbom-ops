@@ -199,10 +199,14 @@ identity plumbing, not CI provenance, SBOM completeness, deployment discovery,
 or internet exposure. Next repeat the chain with a real CI-built application
 artifact before asset context can influence prioritization.
 The CI workflow now packages the representative image, its immutable image ID,
-and a checksum list without DT credentials or registry publishing. A successful
-main run and operator-side download, image-ID check, SBOM import, DT readback,
-deployment join, and stop/supersession check are still required before that
-gate can be marked complete. This artifact is not signed build provenance.
+and a checksum list without DT credentials or registry publishing. On
+2026-10-10, a successful main run was downloaded: checksums, source commit,
+archive image-config digest, and the image ID embedded in a Docker-free Trivy
+CycloneDX SBOM matched the artifact metadata. Runtime inspection, SBOM import,
+DT readback, deployment join, and in-window stop/supersession still require a
+reachable Docker daemon and DT before this gate can be marked complete. This
+artifact is not signed build provenance, and the offline license-only SBOM
+check does not establish vulnerability or dependency completeness.
 The [target operating flow](docs/operations.md#sbomと稼働資産を結ぶ運用フロー一部実装)
 now assumes no external organizational asset register. A small, manual-first
 SQLite asset DB exists for one host with local persistent storage; it now

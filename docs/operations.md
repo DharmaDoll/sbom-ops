@@ -447,13 +447,16 @@ DTはGo標準ライブラリに47件のFindingを返したが、この検証は�
 生の結果はGitへ入れない。本番のCIビルド由来、外部環境の実稼働、公開範囲は
 この演習では未検証である。
 
-### CIが作った成果物での確認（実行待ち）
+### CIが作った成果物での確認
 
 CIの`identity-demo-artifact`ジョブは、同じサンプルをテスト・ビルドし、
 Dockerイメージのアーカイブ、イメージID、ソースコミット、ファイルのSHA-256を
 7日間のGitHub Actions artifactとして保存する。DTキーはCIに渡さず、
-DTへのアップロードや資産DBの変更もしない。**まだGitHub上での実行結果は
-確認していない**ため、以下は次の受け入れ確認手順である。
+DTへのアップロードや資産DBの変更もしない。2026-10-10のmain実行では、
+CIの3ジョブが成功し、成果物の取得、チェックサム、ソースコミット、
+アーカイブ内のイメージ設定のダイジェスト、Trivy製SBOM内のイメージIDまで
+照合できた。DockerデーモンとDTに接続できなかったため、このCI成果物の
+起動、DT取込、資産DBとの照合は未確認である。
 
 mainの成功した`ci`実行を選ぶ。PRやforkの実行結果を運用対象にしない。
 次の例では`RUN_ID`をその実行番号へ置き換え、`gh run view`の結果が
@@ -472,8 +475,20 @@ gh run download "$RUN_ID" --repo DharmaDoll/sbom-ops \
 export CI_SOURCE_SHA="$(gh run view "$RUN_ID" --repo DharmaDoll/sbom-ops \
   --json headSha --jq .headSha)"
 test "$(cat "$CI_DIR/source-commit.txt")" = "$CI_SOURCE_SHA"
-docker load --input "$CI_DIR/image.tar"
 export CI_IMAGE_ID="$(cat "$CI_DIR/image-id.txt")"
+trivy image --input "$CI_DIR/image.tar" --format cyclonedx \
+  --output "$CI_DIR/demo.sbom.cdx.json" --offline-scan \
+  --scanners license --skip-java-db-update --cache-dir "$CI_DIR/trivy-cache"
+test "$(jq -r '.metadata.component.properties[] | select(.name=="aquasecurity:trivy:ImageID") | .value' \
+  "$CI_DIR/demo.sbom.cdx.json")" = "$CI_IMAGE_ID"
+```
+
+このTrivy実行はDockerデーモン不要である。オフライン・ライセンススキャンで
+作るSBOMなので、脆弱性検出や依存関係の網羅性まで確認したことにはならない。
+Dockerが使える環境では、続けてアーカイブを読み込み、IDと起動を確認する。
+
+```bash
+docker load --input "$CI_DIR/image.tar"
 test "$(docker image inspect "sbom-ops/identity-demo:$CI_SOURCE_SHA" \
   --format '{{.Id}}')" = "$CI_IMAGE_ID"
 ```
