@@ -36,7 +36,8 @@ Dependency-Track analysis state automatically.
 - Accepts an optional, reviewed Project/service/environment asset inventory;
   reports missing mappings and expired facts without changing priority
 - Stores human-registered services and deployables in a local SQLite DB; reads
-  DT Projects as association candidates and records explicit human approval
+  DT Projects as association candidates and records explicit human approval;
+  supports preview-first JSON registration of services and deployables
 - Can run with GitHub Issue operations disabled via `--no-github`
 - Supports YAML config, environment overrides, project-to-repository routing, JSON output, and optional JSONL sync logs
 - Uses safe, opt-in issue closure after verified consecutive absence observations
@@ -83,6 +84,17 @@ information, not an approved automatic priority rule. GitHub is disabled.
 This JSON is an older evaluation input for deployment context. It is **not**
 the SQLite registry used in the live exercise below, and its fictional UUIDs
 must not be copied into a real DT Project.
+
+For a network-free preview of a separate, fictional SQLite registration file:
+
+```bash
+sbom-ops assets --db var/assets.sqlite3 import \
+  --file examples/asset-registration.example.json
+```
+
+The preview writes nothing. See the [operator guide](docs/operations.md#sbomと稼働資産を結ぶ運用フロー一部実装)
+before applying it to a new DB; this sample must not be mixed into a real
+service registry.
 
 Run the local test suite:
 

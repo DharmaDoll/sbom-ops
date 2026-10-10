@@ -324,7 +324,26 @@ CIの実行記録、手入力、将来のデプロイ観測が
 - 公開状況を含む人の判断と機械観測を別々に保持し、矛盾、収集失敗、
   訂正履歴を残す。
 
-登録手段は現在CLIのみ。`assets report-deployment`は人の申告を追記し、
+登録手段は現在CLIのみ。サービスと配布単位は
+[`examples/asset-registration.example.json`](../examples/asset-registration.example.json)
+の形式でも登録できる。最初はプレビューだけを表示し、内容を確認してから
+`--apply`を指定する。JSONの全件を検証して1つのトランザクションで登録し、
+既存IDとの衝突時は全件を取り消す。`--apply`で新規DBを作る場合は、親ディレクトリを
+先に作成する。例のデータは架空であり、実環境の担当・重要度は人が確認する。
+
+```bash
+mkdir -p var/assets
+sbom-ops assets --db var/assets/assets.sqlite3 import \
+  --file examples/asset-registration.example.json
+sbom-ops assets --db var/assets/assets.sqlite3 import \
+  --file examples/asset-registration.example.json --apply
+sbom-ops assets --db var/assets/assets.sqlite3 list
+```
+
+JSON取込はサービス・配布単位だけに限定し、DT Project対応の承認や
+デプロイ申告は自動で作らない。既存の`register-service`と
+`register-deployable`と同じ入力モデルを通る。`assets report-deployment`は
+人の申告を追記し、
 `assets list`は履歴と期限状態を表示する。申告を訂正する場合は、同じ
 サービス・配布単位・環境・成果物IDの新しい申告に`--supersedes-report 旧ID`を
 指定する。旧申告は削除されず、新申告の観測時刻までは有効である。
@@ -332,9 +351,8 @@ CIの実行記録、手入力、将来のデプロイ観測が
 指定しない相反する申告は引き続き`conflict`となる。既存のschema v1/v2 DBは
 読み取り可能で、訂正機能を使う前に`assets migrate --backup PATH`で
 バックアップを作成し、明示的にv3へ移行する。新規DBはv3で作成する。
-レビュー済みJSONの取り込みは
-未実装であり、
-既存の`sync --asset-inventory`は別の読み取り専用評価入力である。
+既存の`sync --asset-inventory`は別の読み取り専用評価入力であり、
+このJSON取込で資産DBに登録する形式とは互換ではない。
 担当・重要度・公開状況は、AWSからの推測で決めない。手入力の稼働申告も
 「人が確認した情報」であって、実行中コンテナとの照合がない限り、
 技術的に検証された稼働事実とは区別する。

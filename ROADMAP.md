@@ -375,9 +375,11 @@ telemetry contract exists.
   append-only claims, not verified running state. The read-only sync now joins
   exact version-matching declarations to reviewed DT Project links while
   showing stale, missing, future, other-artifact, and conflicting claims.
-  Explicit one-to-one human-report correction is implemented. Next verify one
-  real immutable artifact chain; support reviewed JSON import through
-  the same validation path. Preserve `unknown` for missing declarations and
+  Explicit one-to-one human-report correction is implemented. A preview-first,
+  atomic JSON import now registers new services and deployables through the
+  same domain validation as individual CLI registration; it never creates
+  DT links or deployment claims. Next verify one real immutable artifact chain.
+  Preserve `unknown` for missing declarations and
   show conflicts; never silently replace a human declaration with collected
   data.
 - Prove a real build-to-SBOM-to-DT-Project chain and an operator-entered

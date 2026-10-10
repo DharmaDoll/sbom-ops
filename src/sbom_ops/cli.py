@@ -29,6 +29,7 @@ from sbom_ops.domain.assets import (
     DeploymentStatus,
 )
 from sbom_ops.services.advisory_snapshot import load_advisory_snapshot
+from sbom_ops.services.asset_import import load_asset_registration
 from sbom_ops.services.asset_inventory import load_asset_inventory
 from sbom_ops.services.asset_registry import (
     approve_project_link,
@@ -98,6 +99,13 @@ def build_parser() -> argparse.ArgumentParser:
     deployable_parser = asset_commands.add_parser("register-deployable")
     deployable_parser.add_argument("--service", required=True)
     deployable_parser.add_argument("--deployable", required=True)
+    import_parser = asset_commands.add_parser("import")
+    import_parser.add_argument("--file", required=True)
+    import_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="write the reviewed registration; default is preview only",
+    )
     deployment_parser = asset_commands.add_parser("report-deployment")
     deployment_parser.add_argument("--service", required=True)
     deployment_parser.add_argument("--deployable", required=True)
@@ -418,6 +426,27 @@ def _asset_dt_client() -> DependencyTrackClient:
 
 
 def run_assets(args: argparse.Namespace) -> int:
+    if args.asset_command == "import":
+        batch = load_asset_registration(args.file)
+        print(
+            f"asset registration: {len(batch.services)} services, "
+            f"{len(batch.deployables)} deployables"
+        )
+        for service in batch.services:
+            print(
+                f"service={service.service_id} owner={service.owner} "
+                f"criticality={service.criticality.value} "
+                f"reason={service.impact_reason}"
+            )
+        for deployable in batch.deployables:
+            print(f"deployable={deployable.project_name}")
+        if not args.apply:
+            print("preview only; rerun with --apply after review")
+            return 0
+        with AssetRegistry(args.db, create_if_missing=True) as registry:
+            registry.register_batch(batch)
+        print("asset registration applied")
+        return 0
     with AssetRegistry(
         args.db, create_if_missing=args.asset_command == "register-service"
     ) as registry:

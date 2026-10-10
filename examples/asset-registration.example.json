@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "services": [
+    {
+      "service_id": "checkout-api",
+      "owner": "team-checkout",
+      "criticality": "high",
+      "impact_reason": "Example service that handles checkout"
+    }
+  ],
+  "deployables": [
+    {
+      "service_id": "checkout-api",
+      "deployable_id": "web"
+    }
+  ]
+}

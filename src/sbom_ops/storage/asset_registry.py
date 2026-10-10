@@ -8,6 +8,7 @@ from tempfile import NamedTemporaryFile
 from types import TracebackType
 
 from sbom_ops.domain.advisory import ExposureStatus
+from sbom_ops.domain.asset_import import AssetRegistrationBatch
 from sbom_ops.domain.asset_registry import (
     RegisteredDeployable,
     RegisteredService,
@@ -235,6 +236,34 @@ class AssetRegistry:
         except sqlite3.IntegrityError as exc:
             raise ValueError(
                 f"service already registered: {service.service_id}"
+            ) from exc
+
+    def register_batch(self, batch: AssetRegistrationBatch) -> None:
+        """Apply one reviewed registration atomically; never alter existing rows."""
+        try:
+            with self._db:
+                for service in batch.services:
+                    self._db.execute(
+                        "INSERT INTO services VALUES (?, ?, ?, ?)",
+                        (
+                            service.service_id,
+                            service.owner.strip(),
+                            service.criticality.value,
+                            service.impact_reason.strip(),
+                        ),
+                    )
+                for deployable in batch.deployables:
+                    self._db.execute(
+                        "INSERT INTO deployables VALUES (?, ?, ?)",
+                        (
+                            deployable.service_id,
+                            deployable.deployable_id,
+                            deployable.project_name,
+                        ),
+                    )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                "asset registration conflicts with existing services or deployables"
             ) from exc
 
     def register_deployable(self, deployable: RegisteredDeployable) -> None:

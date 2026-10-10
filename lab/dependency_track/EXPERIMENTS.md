@@ -32,6 +32,9 @@ connectivity checks before any runtime or upload step.
 - The local Docker daemon did not respond, and the local DT API request timed
   out. No image was started, no BOM was uploaded, and no DT readback or asset
   join was performed for this CI artifact.
+- A later connection retry on 2026-10-10 again found Docker stopped and the
+  local DT API unreachable. Starting the Docker service required unavailable
+  administrator privileges, so the live chain was not retried.
 
 ### Interpretation and Product Decision
 
