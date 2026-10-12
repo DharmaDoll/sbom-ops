@@ -287,7 +287,10 @@ requires Go, Docker, Trivy, and a local DT instance; see the
 [operator guide](docs/operations.md#固定成果物を使ったローカル通し検証).
 The CI workflow also packages this demo image as a short-lived artifact;
 the [CI artifact exercise](docs/operations.md#ciが作った成果物での確認)
-explains how to verify and use it after a successful main run.
+explains how to verify and use it after a successful main run. A local
+2026-10-12 exercise completed the image-ID, SBOM-to-DT, asset-link, and
+deployed-to-stopped checks with GitHub Issues disabled. It does not establish
+signed provenance or production deployment coverage.
 
 ## Optional Evaluation Inputs
 

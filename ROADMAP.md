@@ -164,11 +164,10 @@ non-advisory Finding assessments matched the earlier run, and Issue actions
 remained zero. The synthetic input and result are ignored under
 `var/product-validation-20261004/`; they establish join behavior, not real
 ownership or exposure.
-Next validate one real build-to-SBOM-to-DT-Project-to-deployment chain, including
-the immutable artifact identity, Project UUID resolution, deployed version,
-environment, and ownership. A manual UUID entry is only a learning exercise:
-the current Project/version join cannot prove the deployed artifact matches the
-SBOM.
+The initial product gate was one CI build-to-SBOM-to-DT-Project-to-local-
+deployment chain, including immutable artifact identity, Project UUID
+resolution, environment, and a lab owner. A manual UUID entry alone cannot
+prove that the deployed artifact matches the SBOM.
 The 2026-10-07 local probe found only the Dependency-Track service container
 running, not a representative application deployment. Its fixed image ID was
 read from Docker and an OS-package-only CycloneDX SBOM with 103 Components was
@@ -191,30 +190,37 @@ report for this transition; the 2026-10-08 live run predates that change.
 On 2026-10-09 a fresh DB and the same DT Project showed the successor excludes
 the old claim, but the post-stop live sync occurred after its two-hour TTL and
 returned `expired`, not an in-window `reported/not_deployed`. Fixed-time
-read-only evaluation showed the expected before/after transition. An in-window
-live check remains open. The DBs and raw sync outputs remain ignored under
+read-only evaluation showed the expected before/after transition. The later
+2026-10-12 CI-artifact exercise completed an in-window live check. The earlier
+DBs and raw sync outputs remain ignored under
 `var/product-validation-20261007-identity-demo/` and
 `var/product-validation-20261009-supersession/`. These exercises validate
-identity plumbing, not CI provenance, SBOM completeness, deployment discovery,
-or internet exposure. Next repeat the chain with a real CI-built application
-artifact before asset context can influence prioritization.
+identity plumbing, not signed CI provenance, SBOM completeness, production
+deployment discovery, or internet exposure.
 The CI workflow now packages the representative image, its immutable image ID,
 and a checksum list without DT credentials or registry publishing. On
 2026-10-10, a successful main run was downloaded: checksums, source commit,
 archive image-config digest, and the image ID embedded in a Docker-free Trivy
-CycloneDX SBOM matched the artifact metadata. Runtime inspection, SBOM import,
-DT readback, deployment join, and in-window stop/supersession still require a
-reachable Docker daemon and DT before this gate can be marked complete. This
-artifact is not signed build provenance, and the offline license-only SBOM
-check does not establish vulnerability or dependency completeness.
+CycloneDX SBOM matched the artifact metadata. On 2026-10-12, the same image
+was loaded and run, its ID and health checked, its SBOM imported into DT 4.14.3,
+and its three Components read back. A separate lab asset DB matched the
+Project/version and reported the deployed image; after the disposable
+container stopped, an explicit successor yielded in-window
+`reported/not_deployed`. Both GitHub-disabled dry-runs read one Project and 60
+Findings with zero Issue changes. This completes the representative CI demo
+identity gate. The artifact is not signed build provenance, and the
+dependency-free demo and offline license-only SBOM do not establish real
+application dependency completeness or production runtime coverage.
 The [target operating flow](docs/operations.md#sbomと稼働資産を結ぶ運用フロー一部実装)
 now assumes no external organizational asset register. A small, manual-first
 SQLite asset DB exists for one host with local persistent storage; it now
 accepts append-only human deployment reports. A read-only, ambiguity-aware
 join to reviewed DT Project name/version and an exact declared artifact ID
-is implemented, but does not prove that the artifact is running or that the
-SBOM came from that build. The next product gate is an operator-verified real
-build-to-SBOM-to-DT-to-deployment chain. AWS or other platform discovery is
+is implemented. The local CI demo showed how to verify a running artifact
+separately, but a Project/version match or human report alone still proves
+neither runtime state nor SBOM provenance. The next product gate is to apply
+this procedure to a real service with reviewed owner, deployment, and exposure
+evidence. AWS or other platform discovery is
 optional later evidence,
 not a prerequisite for registration. A human-reported deployment is not
 verified runtime evidence. Only after the identity evidence should asset-based
