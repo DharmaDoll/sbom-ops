@@ -144,6 +144,9 @@ def test_asset_cli_migrates_v1_after_backup(tmp_path, capsys) -> None:
     )
     cli.run_assets(service_args)
     with sqlite3.connect(db_path) as db:
+        db.execute("DROP TABLE poc_observations")
+        db.execute("DROP TABLE asset_lifecycle_events")
+        db.execute("DROP TABLE service_changes")
         db.execute("DROP TABLE deployment_report_supersessions")
         db.execute("DROP TABLE deployment_reports")
         db.execute("PRAGMA user_version = 1")
@@ -152,12 +155,12 @@ def test_asset_cli_migrates_v1_after_backup(tmp_path, capsys) -> None:
         ["assets", "--db", str(db_path), "migrate", "--backup", str(backup_path)]
     )
     assert cli.run_assets(migrate_args) == 0
-    assert "upgraded to schema v3" in capsys.readouterr().out
+    assert "upgraded to schema v6" in capsys.readouterr().out
     assert backup_path.is_file()
     with sqlite3.connect(backup_path) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 1
     with sqlite3.connect(db_path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
 
 
 def test_asset_cli_read_does_not_create_misspelled_db(tmp_path) -> None:

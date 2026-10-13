@@ -156,3 +156,24 @@ def test_review_order_only_promotes_reported_poc_among_equal_risk() -> None:
         "same-after",
     ]
     assert [item.priority for item in ordered] == [Priority.P2] * 4
+
+
+def test_review_orders_priorities_before_poc_and_preserves_assessments() -> None:
+    items = (
+        replace(assessment("p3-poc", poc=True), priority=Priority.P3),
+        assessment("p2-no-poc"),
+        replace(assessment("p1"), priority=Priority.P1),
+        assessment("p2-poc", poc=True),
+        replace(assessment("p0"), priority=Priority.P0),
+    )
+    result = order_assessments_for_review(items)
+    assert [item.finding_key for item in result] == [
+        "p0",
+        "p1",
+        "p2-poc",
+        "p2-no-poc",
+        "p3-poc",
+    ]
+    assert {item.finding_key: item for item in result} == {
+        item.finding_key: item for item in items
+    }

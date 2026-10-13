@@ -6,6 +6,27 @@ import sys
 from pathlib import Path
 
 
+def test_asset_update_example_exercises_preview_apply_and_history() -> None:
+    scenario = Path(__file__).parents[2] / "examples" / "asset_update_scenario.py"
+    completed = subprocess.run(
+        [sys.executable, str(scenario)], check=True, capture_output=True, text=True
+    )
+    for expected in (
+        '"status": "preview"',
+        '"status": "applied"',
+        '"change_id": 1',
+        '"owner": "team-checkout"',
+        '"owner": "team-payments"',
+        "一時DBは削除済み",
+        "Projectの資産対応=revoked 担当=不明",
+        "Projectの資産対応=retired 担当=不明",
+        '"action": "retire_service"',
+        '"action": "retire_deployable"',
+    ):
+        assert expected in completed.stdout
+    assert completed.stderr == ""
+
+
 def test_fictional_dt_sample_matches_asset_scenario() -> None:
     examples = Path(__file__).parents[2] / "examples"
     dt_sample = json.loads(
@@ -64,3 +85,40 @@ def test_fictional_operations_scenario_runs_without_external_services() -> None:
     assert "Inventory projects absent from DT: 1" in lines
     assert lines[-1] == "Priority and Issue actions: unchanged by asset context"
     assert completed.stderr == ""
+
+
+def test_review_scenario_joins_fictional_registry_without_external_services() -> None:
+    scenario = Path(__file__).parents[2] / "examples" / "review_scenario.py"
+    completed = subprocess.run(
+        [sys.executable, str(scenario), "--output", "json"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    result = json.loads(completed.stdout)
+    rows = result["review_queue"]
+    assert len(rows) == result["findings_processed"] == 3
+    assert [row["priority"] for row in rows] == ["P1", "P2", "P2"]
+    assert rows[0]["vulnerability_id"].startswith("GHSA-")
+    assert rows[0]["is_suppressed"] is True
+    assert rows[0]["environments"][0]["status"] == "expired"
+    assert rows[1]["asset"]["owner"] == "team-checkout"
+    assert {env["status"] for env in rows[1]["environments"]} == {
+        "reported",
+        "conflict",
+    }
+    assert rows[2]["asset_status"] == "unlinked"
+    assert rows[2]["asset"] is None
+    assert result["actions"] == []
+    assert completed.stderr == ""
+    text_output = subprocess.run(
+        [sys.executable, str(scenario)], check=True, capture_output=True, text=True
+    ).stdout
+    for expected in (
+        "確認用一覧: 3件",
+        "担当=team-checkout",
+        "期限切れ",
+        "申告が矛盾",
+        "未紐付け",
+    ):
+        assert expected in text_output

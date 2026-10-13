@@ -6,6 +6,8 @@ import os
 import sqlite3
 import sys
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 from sbom_ops.clients.dependency_track import (
@@ -14,10 +16,16 @@ from sbom_ops.clients.dependency_track import (
 )
 from sbom_ops.clients.github import GitHubApiError
 from sbom_ops.clients.kev import KevApiError
+from sbom_ops.clients.vulnerability_lookup import (
+    DEFAULT_BASE_URL,
+    VulnerabilityLookupClient,
+    validate_base_url,
+)
 from sbom_ops.config import AppConfig, load_config
 from sbom_ops.domain.advisory import AdvisorySnapshotStatus, ExposureStatus
 from sbom_ops.domain.asset_registry import (
     AssetRegistrySnapshot,
+    LifecycleAction,
     ProjectLinkAuditStatus,
     RegisteredDeployable,
     RegisteredService,
@@ -28,6 +36,7 @@ from sbom_ops.domain.assets import (
     BusinessCriticality,
     DeploymentStatus,
 )
+from sbom_ops.domain.poc import select_poc_targets
 from sbom_ops.services.advisory_snapshot import load_advisory_snapshot
 from sbom_ops.services.asset_import import load_asset_registration
 from sbom_ops.services.asset_inventory import load_asset_inventory
@@ -36,14 +45,39 @@ from sbom_ops.services.asset_registry import (
     audit_reviewed_project_links,
     discover_project_candidates,
 )
-from sbom_ops.services.orchestrator import Orchestrator
+from sbom_ops.services.asset_updates import plan_lifecycle_change, plan_service_update
+from sbom_ops.services.orchestrator import Orchestrator, RunResult
+from sbom_ops.services.poc_refresh import collect_poc_snapshot
 from sbom_ops.services.sync_log import append_sync_event
-from sbom_ops.storage.asset_registry import AssetRegistry
+from sbom_ops.storage.asset_registry import CURRENT_SCHEMA_VERSION, AssetRegistry
+from sbom_ops.storage.poc import PocStore
+from sbom_ops.storage.poc_snapshot import save_poc_snapshot
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sbom-ops")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    poc_parser = subparsers.add_parser("poc-fetch")
+    poc_parser.add_argument(
+        "--findings", required=True, help="successful sync JSON file"
+    )
+    poc_parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    poc_parser.add_argument("--max-cves", type=int, default=25)
+    poc_parser.add_argument("--ttl-seconds", type=int, default=21600)
+    poc_parser.add_argument("--pacing-seconds", type=float, default=3.1)
+    poc_parser.add_argument(
+        "--db", default="var/assets.sqlite3", help="shared local SQLite DB"
+    )
+    poc_parser.add_argument("--refresh-seconds", type=int, default=3600)
+    poc_parser.add_argument(
+        "--output", help="optional JSON export in addition to SQLite; never overwrite"
+    )
+    poc_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="send CVEs to the provider; default is preview",
+    )
 
     sync_parser = subparsers.add_parser("sync")
     sync_parser.add_argument("--config")
@@ -56,7 +90,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="contact the CISA KEV feed even when the local cache is fresh",
     )
-    sync_parser.add_argument(
+    poc_input = sync_parser.add_mutually_exclusive_group()
+    poc_input.add_argument(
+        "--poc-db", help="SQLite PoC input; defaults to --asset-db when v6"
+    )
+    poc_input.add_argument(
         "--advisory-snapshot",
         help="attach a precomputed advisory evidence JSON snapshot (no fetching)",
     )
@@ -73,9 +111,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync_parser.add_argument(
         "--output",
-        choices=("text", "json"),
+        choices=("text", "json", "review"),
         default="text",
-        help="select human-readable or machine-readable output",
+        help="select detailed text, JSON, or a Japanese operator review queue",
     )
     sync_parser.add_argument("--sync-log-file")
 
@@ -96,6 +134,33 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
     service_parser.add_argument("--reason", required=True)
+    update_parser = asset_commands.add_parser("update-service")
+    update_parser.add_argument("--service", required=True)
+    update_parser.add_argument("--owner")
+    update_parser.add_argument(
+        "--criticality", choices=tuple(item.value for item in BusinessCriticality)
+    )
+    update_parser.add_argument(
+        "--impact-reason", help="new business impact explanation"
+    )
+    update_parser.add_argument("--actor", required=True)
+    update_parser.add_argument("--reason", required=True, help="reason for this change")
+    update_parser.add_argument(
+        "--apply", action="store_true", help="save the change; default is preview only"
+    )
+    history_parser = asset_commands.add_parser("history")
+    history_parser.add_argument("--service", required=True)
+    for command in ("retire-service", "retire-deployable", "revoke-link"):
+        lifecycle_parser = asset_commands.add_parser(command)
+        if command == "revoke-link":
+            lifecycle_parser.add_argument("--project", required=True)
+        else:
+            lifecycle_parser.add_argument("--service", required=True)
+            if command == "retire-deployable":
+                lifecycle_parser.add_argument("--deployable", required=True)
+        lifecycle_parser.add_argument("--actor", required=True)
+        lifecycle_parser.add_argument("--reason", required=True)
+        lifecycle_parser.add_argument("--apply", action="store_true")
     deployable_parser = asset_commands.add_parser("register-deployable")
     deployable_parser.add_argument("--service", required=True)
     deployable_parser.add_argument("--deployable", required=True)
@@ -189,6 +254,99 @@ def _append_sync_event_with_warning(path: str, payload: dict[str, object]) -> No
         )
 
 
+def print_review_queue(result: RunResult) -> None:
+    """Present existing assessments and human claims without making decisions."""
+    queue = result.review_queue()
+    print(
+        f"確認用一覧: {len(queue)}件（1件 = 1 Finding、環境は内訳） "
+        f"run_id={result.run_id}"
+    )
+    print("P0→P3順。資産・PoCは参考情報。稼働申告は実稼働の証明ではありません。")
+    print(
+        f"台帳={result.registry_snapshot_status.value} "
+        f"PoC入力={result.advisory_snapshot_status.value} "
+        f"解析待機={result.analysis_snapshot_status.value} "
+        f"KEV旧キャッシュ={result.kev_used_stale_cache}"
+    )
+    asset_labels = {
+        "matched": "紐付け確認済み",
+        "not_requested": "台帳未指定",
+        "unlinked": "未紐付け",
+        "identity_changed": "Project情報変更・再確認が必要",
+        "ambiguous": "紐付けが複数候補",
+        "retired": "台帳上で廃止（実停止は未確認）",
+        "revoked": "紐付け撤回済み",
+    }
+    poc_labels = {
+        "reported": "報告あり（有効性は未評価）",
+        "not_observed": "有効な観測で未検出（不存在の保証なし）",
+        "unknown": "不明",
+    }
+    deployment_labels = {
+        "unverified_link": "紐付け未確認",
+        "unreported": "未申告",
+        "other_artifact": "別の成果物の申告",
+        "expired": "期限切れ",
+        "future_observation": "未来日時",
+        "conflict": "申告が矛盾",
+        "reported": "期限内の申告",
+    }
+    for row in queue:
+        item = row.assessment
+        asset = row.asset
+        criticality = asset.criticality.value if asset and asset.criticality else "不明"
+        print(
+            f"\n[{item.priority.value}] {item.vulnerability_id} "
+            f"({item.vulnerability_source}) "
+            f"部品={item.component_name or '不明'}@{item.component_version or '不明'}"
+        )
+        print(f"  Project={item.project_uuid} Finding={item.finding_key}")
+        print(
+            f"  資産={asset_labels[row.asset_status]} "
+            f"サービス={asset.service_id if asset else '不明'} "
+            f"配布単位={asset.deployable_id if asset else '不明'} "
+            f"担当={asset.owner if asset and asset.owner else '不明'} "
+            f"重要度={criticality}"
+        )
+        if not row.environments:
+            print("  環境・稼働・外部公開=不明（確認済みの紐付け・申告が必要）")
+        for environment in row.environments:
+            fact = environment.as_dict()
+            print(
+                f"  環境={environment.environment or '不明'} "
+                f"確認状態={deployment_labels[environment.status.value]} "
+                f"成果物={environment.artifact_id or '不明'} "
+                f"稼働申告={fact['deployment_status'] or '不明'} "
+                f"外部公開申告={fact['exposure_status'] or '不明'} "
+                f"申告ID={','.join(map(str, environment.report_ids)) or 'なし'}"
+            )
+        poc = item.poc_reports
+        print(f"  PoC={poc_labels[poc.status.value]}")
+        for source in poc.sources:
+            count = source.record_count if source.record_count is not None else "不明"
+            print(
+                f"    情報源={source.source} ID={source.vulnerability_id} "
+                f"件数={count} "
+                f"取得状態={source.outcome.value} "
+                f"鮮度判定={source.effective_freshness().value} "
+                f"観測日時={source.observed_at} "
+                f"期限={source.expires_at or '不明'} "
+                f"最終取得試行={source.last_attempt_at or '不明'} "
+                f"取得エラー={source.last_error or 'なし'}"
+            )
+        print(
+            f"  DT分析={item.analysis_state.value} 抑制={item.is_suppressed} "
+            "（既存判断を維持）"
+        )
+        print(f"  優先度の理由={'; '.join(item.rationale)}")
+    print(
+        f"\nIssue操作: 作成={result.issues_created} 更新={result.issues_updated} "
+        f"終了={result.issues_closed} dry_run={result.dry_run}"
+    )
+    for action in result.actions:
+        print(f"  {action}")
+
+
 def run_sync(
     config: AppConfig,
     output_format: str = "text",
@@ -197,7 +355,10 @@ def run_sync(
     advisory_snapshot_path: str | None = None,
     asset_inventory_path: str | None = None,
     asset_db_path: str | None = None,
+    poc_db_path: str | None = None,
 ) -> int:
+    if advisory_snapshot_path and poc_db_path:
+        raise ValueError("choose either advisory snapshot or PoC DB")
     asset_registry = None
     if asset_db_path:
         with AssetRegistry(asset_db_path, read_only=True) as registry:
@@ -206,7 +367,10 @@ def run_sync(
                 services=registry.list_services(),
                 links=registry.list_links(),
                 deployment_reports=registry.list_deployment_reports(),
+                **registry.lifecycle_state(),
             )
+            if registry.schema_version >= 6 and not advisory_snapshot_path:
+                poc_db_path = poc_db_path or asset_db_path
     snapshot = None
     snapshot_error = None
     if advisory_snapshot_path:
@@ -218,6 +382,13 @@ def run_sync(
                 f"warning: advisory snapshot ignored: {snapshot_error}",
                 file=sys.stderr,
             )
+    elif poc_db_path:
+        try:
+            with PocStore(poc_db_path, read_only=True) as store:
+                snapshot = store.snapshot()
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            snapshot_error = str(exc)
+            print(f"warning: PoC DB ignored: {snapshot_error}", file=sys.stderr)
     asset_inventory = None
     asset_inventory_error = None
     if asset_inventory_path:
@@ -254,6 +425,9 @@ def run_sync(
         _append_sync_event_with_warning(config.runtime.sync_log_file, result.as_dict())
     if output_format == "json":
         print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
+        return 0
+    if output_format == "review":
+        print_review_queue(result)
         return 0
     print(
         "sync result: "
@@ -426,6 +600,98 @@ def _asset_dt_client() -> DependencyTrackClient:
 
 
 def run_assets(args: argparse.Namespace) -> int:
+    if args.asset_command in ("retire-service", "retire-deployable", "revoke-link"):
+        with AssetRegistry(args.db, read_only=not args.apply) as registry:
+            registry.check_integrity()
+            change = plan_lifecycle_change(
+                registry,
+                action=LifecycleAction(args.asset_command.replace("-", "_")),
+                service_id=getattr(args, "service", None),
+                deployable_id=getattr(args, "deployable", None),
+                project_uuid=getattr(args, "project", None),
+                actor=args.actor,
+                reason=args.reason,
+            )
+            result = (
+                registry.apply_lifecycle_change(change)
+                if args.apply
+                else change.as_dict()
+            )
+            print(
+                json.dumps(
+                    {"status": "applied" if args.apply else "preview", **result},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            if not args.apply:
+                print("確認のみ。保存する場合は --apply を追加してください。")
+                if registry.schema_version < 5:
+                    print(
+                        "保存前に assets migrate --backup PATH による移行が必要です。"
+                    )
+        return 0
+    if args.asset_command in ("update-service", "history"):
+        read_only = args.asset_command == "history" or not args.apply
+        with AssetRegistry(args.db, read_only=read_only) as registry:
+            registry.check_integrity()
+            if args.asset_command == "history":
+                print(
+                    json.dumps(
+                        {
+                            "service_id": args.service,
+                            "schema_version": registry.schema_version,
+                            "changes": [
+                                item.as_dict()
+                                for item in registry.list_service_changes(args.service)
+                            ],
+                            "lifecycle_events": list(
+                                registry.list_lifecycle_events(args.service)
+                            ),
+                            "note": (
+                                "更新はv4、廃止・撤回はv5以降。"
+                                "過去の履歴は補完しません。"
+                            ),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 0
+            update = plan_service_update(
+                registry,
+                service_id=args.service,
+                owner=args.owner,
+                criticality=(
+                    BusinessCriticality(args.criticality) if args.criticality else None
+                ),
+                impact_reason=args.impact_reason,
+                actor=args.actor,
+                reason=args.reason,
+            )
+            if args.apply:
+                change = registry.update_service(update)
+                print(
+                    json.dumps(
+                        {"status": "applied", **change.as_dict()},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            else:
+                print(
+                    json.dumps(
+                        {"status": "preview", **update.as_dict()},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                print("確認のみ。保存する場合は --apply を追加してください。")
+                if registry.schema_version < 4:
+                    print(
+                        "保存前に assets migrate --backup PATH による移行が必要です。"
+                    )
+        return 0
     if args.asset_command == "import":
         batch = load_asset_registration(args.file)
         print(
@@ -482,13 +748,24 @@ def run_assets(args: argparse.Namespace) -> int:
             print(f"recorded human deployment report={report.report_id}")
         elif args.asset_command == "list":
             for service in registry.list_services():
+                status = (
+                    "retired" if registry.is_retired(service.service_id) else "active"
+                )
                 print(
                     f"service={service.service_id} owner={service.owner} "
                     f"criticality={service.criticality.value} "
                     f"reason={service.impact_reason}"
+                    f" status={status}"
                 )
             for deployable in registry.list_deployables():
-                print(f"deployable={deployable.project_name}")
+                status = (
+                    "retired"
+                    if registry.is_retired(
+                        deployable.service_id, deployable.deployable_id
+                    )
+                    else "active"
+                )
+                print(f"deployable={deployable.project_name} status={status}")
             for link in registry.list_links():
                 print(
                     f"link={link.project_uuid} name={link.project_name} "
@@ -530,12 +807,15 @@ def run_assets(args: argparse.Namespace) -> int:
             output = registry.backup_to(args.output)
             print(f"asset DB backup created: {output}")
         elif args.asset_command == "migrate":
-            if registry.schema_version == 3:
-                print("asset DB already uses schema v3")
+            if registry.schema_version == CURRENT_SCHEMA_VERSION:
+                print(f"asset DB already uses schema v{CURRENT_SCHEMA_VERSION}")
             else:
                 output = registry.backup_to(args.backup)
                 registry.migrate()
-                print(f"asset DB upgraded to schema v3; backup: {output}")
+                print(
+                    f"asset DB upgraded to schema v{CURRENT_SCHEMA_VERSION}; "
+                    f"backup: {output}"
+                )
         elif args.asset_command == "candidates":
             for item in discover_project_candidates(
                 registry, _asset_dt_client().list_projects()
@@ -589,11 +869,91 @@ def run_assets(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_poc_fetch(args: argparse.Namespace) -> int:
+    base_url = validate_base_url(args.base_url)
+    if not 1 <= args.ttl_seconds <= 604800:
+        raise ValueError("ttl-seconds must be between 1 and 604800")
+    if not 3.1 <= args.pacing_seconds <= 3600:
+        raise ValueError("pacing-seconds must be between 3.1 and 3600")
+    if not 1 <= args.refresh_seconds <= 604800:
+        raise ValueError("refresh-seconds must be between 1 and 604800")
+    with Path(args.findings).open("rb") as stream:
+        raw = stream.read(20 * 1024 * 1024 + 1)
+    if len(raw) > 20 * 1024 * 1024:
+        raise ValueError("sync input exceeds 20 MiB")
+    targets = select_poc_targets(json.loads(raw), max_cves=args.max_cves)
+    db_path = Path(args.db)
+    if db_path.resolve() == Path(args.findings).resolve():
+        raise ValueError("PoC DB must not be the findings input")
+    if not args.execute:
+        due = list(targets.cves)
+        if db_path.exists():
+            with PocStore(db_path, read_only=True) as store:
+                due = [
+                    cve
+                    for cve in targets.cves
+                    if (record := store.get(cve, f"vulnerability-lookup:{base_url}"))
+                    is None
+                    or record.needs_refresh(
+                        datetime.now(UTC), timedelta(seconds=args.refresh_seconds)
+                    )
+                ]
+        print(
+            json.dumps(
+                {
+                    "status": "preview",
+                    "base_url": base_url,
+                    "cves": targets.cves,
+                    "update_cves": due,
+                    "db": str(db_path),
+                    "refresh_seconds": args.refresh_seconds,
+                    "unresolved_ids": targets.unresolved,
+                    "ttl_seconds": args.ttl_seconds,
+                    "pacing_seconds": args.pacing_seconds,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    output = Path(args.output) if args.output else None
+    if output and (
+        output.exists()
+        or output.is_symlink()
+        or not output.parent.is_dir()
+        or output.resolve() == db_path.resolve()
+    ):
+        raise ValueError("output must be a new file in an existing directory")
+    with AssetRegistry(db_path, create_if_missing=True) as registry:
+        if registry.schema_version < 6:
+            raise ValueError(
+                "PoC storage requires schema v6; back up and migrate the DB"
+            )
+    client = VulnerabilityLookupClient(
+        base_url, api_key=os.environ.get("SBOM_OPS_VULNERABILITY_LOOKUP_API_KEY")
+    )
+    with PocStore(db_path) as store:
+        snapshot = collect_poc_snapshot(
+            targets,
+            client,
+            ttl_seconds=args.ttl_seconds,
+            pacing_seconds=args.pacing_seconds,
+            refresh_seconds=args.refresh_seconds,
+            repository=store,
+        )
+    if output:
+        save_poc_snapshot(output, snapshot)
+    print(json.dumps(snapshot["collection"], ensure_ascii=False, indent=2))
+    return 0 if snapshot["collection"]["status"] == "succeeded" else 1
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     active_config: AppConfig | None = None
     try:
+        if args.command == "poc-fetch":
+            return run_poc_fetch(args)
         if args.command == "upload":
             return run_upload(args)
         if args.command == "assets":
@@ -610,6 +970,7 @@ def main() -> int:
                 advisory_snapshot_path=args.advisory_snapshot,
                 asset_inventory_path=args.asset_inventory,
                 asset_db_path=args.asset_db,
+                poc_db_path=args.poc_db,
             )
         parser.error(f"unsupported command: {args.command}")
     except (

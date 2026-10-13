@@ -30,7 +30,9 @@ class FictionalDependencyTrack:
         self._projects: list[DependencyTrackProject] = []
         self._findings: dict[str, list[DependencyTrackFinding]] = {}
         for entry in payload["projects"]:
-            project = DependencyTrackProject(entry["uuid"], entry["name"])
+            project = DependencyTrackProject(
+                entry["uuid"], entry["name"], entry.get("version")
+            )
             self._projects.append(project)
             self._findings[project.uuid] = [
                 DependencyTrackFinding(

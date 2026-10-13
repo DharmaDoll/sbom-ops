@@ -47,7 +47,11 @@ def observe_registry_projects(
                     project_uuid=project_uuid,
                     dt_name=current.name,
                     dt_version=current.version,
-                    status=RegistryProjectStatus.UNLINKED,
+                    status=(
+                        RegistryProjectStatus.REVOKED
+                        if project_uuid in snapshot.revoked_project_uuids
+                        else RegistryProjectStatus.UNLINKED
+                    ),
                 )
             )
             continue
@@ -63,6 +67,11 @@ def observe_registry_projects(
             status = RegistryProjectStatus.IDENTITY_CHANGED
         else:
             status = RegistryProjectStatus.MATCHED
+        if (
+            link.service_id in snapshot.retired_services
+            or (link.service_id, link.deployable_id) in snapshot.retired_deployables
+        ):
+            status = RegistryProjectStatus.RETIRED
         service = services.get(link.service_id)
         if service is None:
             raise ValueError(
@@ -255,6 +264,8 @@ def audit_reviewed_project_links(
                 status = ProjectLinkAuditStatus.IDENTITY_CHANGED
             else:
                 status = ProjectLinkAuditStatus.MATCHED
+        if registry.is_retired(link.service_id, link.deployable_id):
+            status = ProjectLinkAuditStatus.RETIRED
         results.append(ProjectLinkAudit(link, status, current_name, current_version))
     return tuple(results)
 
@@ -263,7 +274,11 @@ def discover_project_candidates(
     registry: AssetRegistry,
     projects: Sequence[DependencyTrackProject],
 ) -> tuple[ProjectCandidate, ...]:
-    deployables = {item.project_name: item for item in registry.list_deployables()}
+    deployables = {
+        item.project_name: item
+        for item in registry.list_deployables()
+        if not registry.is_retired(item.service_id, item.deployable_id)
+    }
     coordinates = Counter(
         (project.name, project.version)
         for project in projects

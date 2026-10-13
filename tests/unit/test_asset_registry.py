@@ -124,7 +124,7 @@ def test_duplicate_registration_does_not_overwrite(tmp_path) -> None:
 def test_unknown_schema_is_rejected(tmp_path) -> None:
     db_path = tmp_path / "assets.sqlite3"
     with sqlite3.connect(db_path) as db:
-        db.execute("PRAGMA user_version = 4")
+        db.execute("PRAGMA user_version = 999")
     with pytest.raises(ValueError, match="unsupported"):
         AssetRegistry(db_path)
 
@@ -312,6 +312,9 @@ def test_v1_asset_db_requires_explicit_backed_up_migration(tmp_path: Path) -> No
     with AssetRegistry(db_path, create_if_missing=True) as registry:
         _register(registry)
     with sqlite3.connect(db_path) as db:
+        db.execute("DROP TABLE poc_observations")
+        db.execute("DROP TABLE asset_lifecycle_events")
+        db.execute("DROP TABLE service_changes")
         db.execute("DROP TABLE deployment_report_supersessions")
         db.execute("DROP TABLE deployment_reports")
         db.execute("PRAGMA user_version = 1")
@@ -328,7 +331,7 @@ def test_v1_asset_db_requires_explicit_backed_up_migration(tmp_path: Path) -> No
         assert backup.schema_version == 1
         assert backup.list_deployables()[0].project_name == "checkout-api/web"
     with AssetRegistry(db_path, read_only=True) as registry:
-        assert registry.schema_version == 3
+        assert registry.schema_version == 6
         assert len(registry.list_deployment_reports()) == 1
 
 
@@ -410,6 +413,9 @@ def test_v2_asset_db_needs_backup_before_supersession(tmp_path: Path) -> None:
         _register(registry)
         first = registry.register_deployment(_deployment_report())
     with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE poc_observations")
+        db.execute("DROP TABLE asset_lifecycle_events")
+        db.execute("DROP TABLE service_changes")
         db.execute("DROP TABLE deployment_report_supersessions")
         db.execute("PRAGMA user_version = 2")
     with AssetRegistry(path) as registry:
@@ -420,7 +426,7 @@ def test_v2_asset_db_needs_backup_before_supersession(tmp_path: Path) -> None:
             )
         registry.backup_to(backup_path)
         assert registry.migrate() is True
-        assert registry.schema_version == 3
+        assert registry.schema_version == 6
         assert (
             registry.register_deployment(
                 replace(
@@ -434,6 +440,42 @@ def test_v2_asset_db_needs_backup_before_supersession(tmp_path: Path) -> None:
     with AssetRegistry(backup_path, read_only=True) as backup:
         assert backup.schema_version == 2
         assert len(backup.list_deployment_reports()) == 1
+
+
+def test_v3_migration_retains_links_and_deployment_corrections(tmp_path: Path) -> None:
+    path = tmp_path / "assets.sqlite3"
+    with AssetRegistry(path, create_if_missing=True) as registry:
+        deployable = _register(registry)
+        registry.link_project(
+            deployable=deployable,
+            project_uuid="uuid-1",
+            project_version="build-123",
+            reviewer="alice",
+        )
+        first = registry.register_deployment(_deployment_report())
+        registry.register_deployment(
+            replace(
+                _deployment_report(),
+                observed_at="2026-10-07T12:00:00Z",
+                supersedes_report_id=first.report_id,
+            )
+        )
+        links, reports = registry.list_links(), registry.list_deployment_reports()
+    with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE poc_observations")
+        db.execute("DROP TABLE asset_lifecycle_events")
+        db.execute("DROP TABLE service_changes")
+        db.execute("PRAGMA user_version = 3")
+    with AssetRegistry(path) as registry:
+        backup = registry.backup_to(tmp_path / "v3-backup.sqlite3")
+        assert registry.migrate() is True
+        assert registry.list_links() == links
+        assert registry.list_deployment_reports() == reports
+        assert registry.list_service_changes("checkout-api") == ()
+    with AssetRegistry(backup, read_only=True) as registry:
+        assert registry.schema_version == 3
+        assert registry.list_links() == links
+        assert registry.list_deployment_reports() == reports
 
 
 def test_invalid_identifier_is_rejected() -> None:

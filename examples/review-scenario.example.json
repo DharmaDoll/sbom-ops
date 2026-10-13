@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "description": "Entirely fictional normalized inputs, including simulated human-reviewed registry links. Not raw DT responses or a production import file.",
+  "projects": [
+    {
+      "uuid": "11111111-1111-4111-8111-111111111111",
+      "name": "checkout-api/web",
+      "version": "demo-v1",
+      "findings": [
+        {
+          "component_name": "example-library", "component_version": "1.0.0",
+          "component_purl": "pkg:generic/example-library@1.0.0",
+          "vulnerability_id": "CVE-2026-1000", "vulnerability_source": "NVD",
+          "severity": "HIGH", "cvss_score": 7.5, "epss_score": 0.1,
+          "analysis_state": "NOT_SET", "is_suppressed": false
+        }
+      ]
+    },
+    {
+      "uuid": "33333333-3333-4333-8333-333333333333",
+      "name": "reporting/batch",
+      "version": "demo-v2",
+      "findings": [
+        {
+          "component_name": "example-library", "component_version": "2.0.0",
+          "component_purl": "pkg:generic/example-library@2.0.0",
+          "vulnerability_id": "GHSA-abcd-1234-5678", "vulnerability_source": "GITHUB",
+          "severity": "CRITICAL", "cvss_score": 9.5, "epss_score": 0.1,
+          "analysis_state": "NOT_AFFECTED", "is_suppressed": true
+        }
+      ]
+    },
+    {
+      "uuid": "55555555-5555-4555-8555-555555555555",
+      "name": "unlinked/web",
+      "version": "demo-v3",
+      "findings": [
+        {
+          "component_name": "example-library", "component_version": "1.0.0",
+          "component_purl": "pkg:generic/example-library@1.0.0",
+          "vulnerability_id": "CVE-2026-1000", "vulnerability_source": "NVD",
+          "severity": "HIGH", "cvss_score": 7.5, "epss_score": 0.1,
+          "analysis_state": "NOT_SET", "is_suppressed": false
+        }
+      ]
+    }
+  ],
+  "services": [
+    {"service_id": "checkout-api", "owner": "team-checkout", "criticality": "critical", "impact_reason": "架空の決済サービス"},
+    {"service_id": "reporting", "owner": "team-reporting", "criticality": "high", "impact_reason": "架空の社内集計"}
+  ],
+  "links": [
+    {
+      "project_uuid": "11111111-1111-4111-8111-111111111111",
+      "project_name": "checkout-api/web", "project_version": "demo-v1",
+      "service_id": "checkout-api", "deployable_id": "web",
+      "reviewer": "fictional-operator", "reviewed_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "project_uuid": "33333333-3333-4333-8333-333333333333",
+      "project_name": "reporting/batch", "project_version": "demo-v2",
+      "service_id": "reporting", "deployable_id": "batch",
+      "reviewer": "fictional-operator", "reviewed_at": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "deployment_reports": [
+    {
+      "service_id": "checkout-api", "deployable_id": "web", "environment": "production", "artifact_id": "demo-v1",
+      "deployment_status": "deployed", "exposure_status": "confirmed", "report_id": 1,
+      "reviewer": "fictional-operator", "evidence": "架空の本番公開申告・実環境の証拠ではない",
+      "observed_at": "2026-01-01T00:00:00Z", "expires_at": "2099-01-01T00:00:00Z"
+    },
+    {
+      "service_id": "checkout-api", "deployable_id": "web", "environment": "development", "artifact_id": "demo-v1",
+      "deployment_status": "deployed", "exposure_status": "rejected", "report_id": 2,
+      "reviewer": "fictional-operator", "evidence": "架空の開発環境申告A",
+      "observed_at": "2026-01-01T00:00:00Z", "expires_at": "2099-01-01T00:00:00Z"
+    },
+    {
+      "service_id": "checkout-api", "deployable_id": "web", "environment": "development", "artifact_id": "demo-v1",
+      "deployment_status": "not_deployed", "exposure_status": "unknown", "report_id": 3,
+      "reviewer": "fictional-operator", "evidence": "架空の開発環境申告B・Aと矛盾",
+      "observed_at": "2026-01-01T00:00:00Z", "expires_at": "2099-01-01T00:00:00Z"
+    },
+    {
+      "service_id": "reporting", "deployable_id": "batch", "environment": "production", "artifact_id": "demo-v2",
+      "deployment_status": "deployed", "exposure_status": "rejected", "report_id": 4,
+      "reviewer": "fictional-operator", "evidence": "期限切れを表示する架空の申告",
+      "observed_at": "2026-01-01T00:00:00Z", "expires_at": "2026-01-02T00:00:00Z"
+    }
+  ]
+}

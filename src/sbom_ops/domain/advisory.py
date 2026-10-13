@@ -57,6 +57,9 @@ class PocReportSummary:
                     "effective_freshness": item.effective_freshness().value,
                     "expires_at": item.expires_at,
                     "complete": item.complete,
+                    "last_attempt_at": item.last_attempt_at,
+                    "last_error": item.last_error,
+                    "last_http_status": item.last_http_status,
                 }
                 for item in self.sources
             ],
@@ -96,13 +99,21 @@ class VulnerabilityEvidenceObservation:
     complete: bool
     references: tuple[AdvisoryReference, ...] = ()
     expires_at: str | None = None
+    last_attempt_at: str | None = None
+    last_error: str | None = None
+    last_http_status: int | None = None
 
     def effective_freshness(self, *, now: datetime | None = None) -> EvidenceFreshness:
+        current_time = now or datetime.now(UTC)
+        observed = datetime.fromisoformat(self.observed_at.replace("Z", "+00:00"))
+        if observed > current_time:
+            return EvidenceFreshness.UNKNOWN
+        if self.last_error:
+            return EvidenceFreshness.UNKNOWN
         if self.freshness is not EvidenceFreshness.FRESH:
             return self.freshness
         if self.expires_at is None:
             return EvidenceFreshness.UNKNOWN
-        current_time = now or datetime.now(UTC)
         expires = datetime.fromisoformat(self.expires_at.replace("Z", "+00:00"))
         if expires <= current_time:
             return EvidenceFreshness.STALE
@@ -122,6 +133,9 @@ class VulnerabilityEvidenceObservation:
             "retained_record_count": len(self.references),
             "complete": self.complete,
             "references": [reference.as_dict() for reference in self.references],
+            "last_attempt_at": self.last_attempt_at,
+            "last_error": self.last_error,
+            "last_http_status": self.last_http_status,
         }
 
 

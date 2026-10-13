@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 
@@ -31,6 +31,68 @@ class RegisteredService:
         if not self.impact_reason.strip():
             raise ValueError("impact_reason is required")
 
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "service_id": self.service_id,
+            "owner": self.owner,
+            "criticality": self.criticality.value,
+            "impact_reason": self.impact_reason,
+        }
+
+
+@dataclass(frozen=True)
+class ServiceUpdate:
+    before: RegisteredService
+    after: RegisteredService
+    actor: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        if self.before.service_id != self.after.service_id:
+            raise ValueError("service update cannot change service_id")
+        if self.before == self.after:
+            raise ValueError("service update has no changes")
+        for label, value, limit in (
+            ("actor", self.actor, 128),
+            ("change reason", self.reason, 1000),
+            ("owner", self.after.owner, 128),
+            ("impact reason", self.after.impact_reason, 1000),
+        ):
+            if (
+                not value.strip()
+                or len(value) > limit
+                or any(
+                    ord(character) < 32 or ord(character) == 127 for character in value
+                )
+            ):
+                raise ValueError(
+                    f"{label} must be non-empty printable text (max {limit})"
+                )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "action": "service_updated",
+            "service_id": self.before.service_id,
+            "actor": self.actor,
+            "reason": self.reason,
+            "before": self.before.as_dict(),
+            "after": self.after.as_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class ServiceChange:
+    change_id: int
+    changed_at: str
+    update: ServiceUpdate
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            **self.update.as_dict(),
+            "change_id": self.change_id,
+            "changed_at": self.changed_at,
+        }
+
 
 @dataclass(frozen=True)
 class RegisteredDeployable:
@@ -55,6 +117,78 @@ class ReviewedProjectLink:
     deployable_id: str
     reviewer: str
     reviewed_at: str
+
+
+class LifecycleAction(StrEnum):
+    RETIRE_SERVICE = "retire_service"
+    RETIRE_DEPLOYABLE = "retire_deployable"
+    REVOKE_LINK = "revoke_link"
+
+
+@dataclass(frozen=True)
+class LifecycleChange:
+    action: LifecycleAction
+    service_id: str
+    deployable_id: str | None
+    project_uuid: str | None
+    actor: str
+    reason: str
+    links: tuple[ReviewedProjectLink, ...]
+
+    def __post_init__(self) -> None:
+        validate_identifier(self.service_id, label="service_id")
+        if self.deployable_id is not None:
+            validate_identifier(self.deployable_id, label="deployable_id")
+        if self.action is LifecycleAction.RETIRE_SERVICE:
+            valid = self.deployable_id is None and self.project_uuid is None
+        elif self.action is LifecycleAction.RETIRE_DEPLOYABLE:
+            valid = self.deployable_id is not None and self.project_uuid is None
+        else:
+            valid = self.deployable_id is not None and bool(self.project_uuid)
+            valid = (
+                valid
+                and len(self.links) == 1
+                and self.links[0].project_uuid == self.project_uuid
+            )
+        if not valid:
+            raise ValueError("lifecycle action and target do not match")
+        if any(
+            link.service_id != self.service_id
+            or (
+                self.deployable_id is not None
+                and link.deployable_id != self.deployable_id
+            )
+            for link in self.links
+        ):
+            raise ValueError("lifecycle links do not match target")
+        for value, limit in ((self.actor, 128), (self.reason, 1000)):
+            if (
+                not value.strip()
+                or len(value) > limit
+                or any(ord(c) < 32 or ord(c) == 127 for c in value)
+            ):
+                raise ValueError("actor and reason must be non-empty printable text")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "action": self.action.value,
+            "service_id": self.service_id,
+            "deployable_id": self.deployable_id,
+            "project_uuid": self.project_uuid,
+            "actor": self.actor,
+            "reason": self.reason,
+            "before": {
+                "status": "active",
+                "links": [asdict(link) for link in self.links],
+            },
+            "after": {
+                "status": (
+                    "revoked"
+                    if self.action is LifecycleAction.REVOKE_LINK
+                    else "retired"
+                )
+            },
+        }
 
 
 @dataclass(frozen=True)
@@ -186,6 +320,9 @@ class AssetRegistrySnapshot:
     services: tuple[RegisteredService, ...]
     links: tuple[ReviewedProjectLink, ...]
     deployment_reports: tuple[ReportedDeployment, ...] = ()
+    retired_services: tuple[str, ...] = ()
+    retired_deployables: tuple[tuple[str, str], ...] = ()
+    revoked_project_uuids: tuple[str, ...] = ()
 
 
 class RegistrySnapshotStatus(StrEnum):
@@ -198,6 +335,8 @@ class RegistryProjectStatus(StrEnum):
     UNLINKED = "unlinked"
     IDENTITY_CHANGED = "identity_changed"
     AMBIGUOUS = "ambiguous"
+    RETIRED = "retired"
+    REVOKED = "revoked"
 
 
 @dataclass(frozen=True)
@@ -290,6 +429,7 @@ class ProjectCandidate:
 
 
 class ProjectLinkAuditStatus(StrEnum):
+    RETIRED = "retired"
     MATCHED = "matched"
     NOT_VISIBLE = "not_visible"
     IDENTITY_CHANGED = "identity_changed"

@@ -260,3 +260,76 @@ def test_expired_poc_report_does_not_win_review_order() -> None:
     summary = summarize_poc_reports((expired,), now=datetime(2026, 10, 9, tzinfo=UTC))
 
     assert summary.status is PocReportStatus.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("observed_at", "expires_at", "expected"),
+    [
+        ("2026-10-08T00:00:00.000001Z", "2026-10-09T00:00:00Z", "unknown"),
+        ("2026-10-08T00:00:00Z", "2026-10-09T00:00:00Z", "fresh"),
+        ("2026-10-08T09:00:00+09:00", "2026-10-09T09:00:00+09:00", "fresh"),
+        ("2026-10-07T19:00:00-05:00", "2026-10-08T19:00:00-05:00", "fresh"),
+        ("2026-10-08T09:00:01+09:00", "2026-10-09T09:00:00+09:00", "unknown"),
+        ("2026-10-07T00:00:00Z", "2026-10-08T00:00:00.000001Z", "fresh"),
+        ("2026-10-07T00:00:00Z", "2026-10-08T00:00:00Z", "stale"),
+        ("2026-10-07T00:00:00Z", "2026-10-07T23:59:59Z", "stale"),
+    ],
+)
+def test_poc_freshness_requires_observed_but_unexpired_evidence(
+    observed_at: str, expires_at: str, expected: str
+) -> None:
+    observation = replace(
+        poc_observation("source-a", EvidenceOutcome.AVAILABLE, 1),
+        observed_at=observed_at,
+        expires_at=expires_at,
+    )
+    now = datetime(2026, 10, 8, tzinfo=UTC)
+
+    assert observation.effective_freshness(now=now).value == expected
+
+
+@pytest.mark.parametrize("outcome", ["available", "not_observed"])
+def test_future_poc_is_retained_but_does_not_establish_presence_or_absence(
+    tmp_path: Path, outcome: str
+) -> None:
+    data = payload()
+    raw = data["vulnerability_observations"][0]
+    raw.update(
+        signal="published_poc",
+        outcome=outcome,
+        observed_at="2026-10-09T00:00:00Z",
+        expires_at="2026-10-10T00:00:00Z",
+        record_count=1 if outcome == "available" else 0,
+        references=[],
+    )
+    snapshot = load_advisory_snapshot(write_payload(tmp_path, data))
+    observation = snapshot.vulnerability_observations[0]
+    summary = summarize_poc_reports(
+        (observation,), now=datetime(2026, 10, 8, tzinfo=UTC)
+    )
+
+    assert observation.observed_at == raw["observed_at"]
+    assert observation.freshness is EvidenceFreshness.FRESH
+    assert summary.status is PocReportStatus.UNKNOWN
+    assert summary.sources == (observation,)
+
+    current_negative = replace(
+        poc_observation("current-source", EvidenceOutcome.NOT_OBSERVED, 0),
+        observed_at="2026-10-07T00:00:00Z",
+    )
+    assert (
+        summarize_poc_reports(
+            (current_negative, observation), now=datetime(2026, 10, 8, tzinfo=UTC)
+        ).status
+        is PocReportStatus.UNKNOWN
+    )
+
+    current_positive = replace(
+        current_negative, outcome=EvidenceOutcome.AVAILABLE, record_count=1
+    )
+    assert (
+        summarize_poc_reports(
+            (current_positive, observation), now=datetime(2026, 10, 8, tzinfo=UTC)
+        ).status
+        is PocReportStatus.REPORTED
+    )

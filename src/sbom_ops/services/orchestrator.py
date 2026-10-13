@@ -41,6 +41,7 @@ from sbom_ops.domain.models import (
     Severity,
 )
 from sbom_ops.domain.priority import order_assessments_for_review, prioritize_finding
+from sbom_ops.domain.review import FindingReview, build_review_queue
 from sbom_ops.domain.routing import ProjectRouter
 from sbom_ops.domain.workflow import MissingFindingAction, decide_missing_finding
 from sbom_ops.services.asset_registry import (
@@ -140,6 +141,14 @@ class RunResult:
     def review_assessments(self) -> tuple[FindingAssessment, ...]:
         return order_assessments_for_review(self.assessments)
 
+    def review_queue(self) -> tuple[FindingReview, ...]:
+        return build_review_queue(
+            self.assessments,
+            self.registry_snapshot_status,
+            self.registry_projects,
+            self.registry_deployments,
+        )
+
     def as_dict(self) -> dict[str, object]:
         """Return an enum-free payload for CLI and downstream adapters."""
         return {
@@ -177,6 +186,7 @@ class RunResult:
                 for observation in self.project_exposure_observations
             ],
             "actions": list(self.actions),
+            "review_queue": [item.as_dict() for item in self.review_queue()],
             "assessments": [
                 {
                     "project_uuid": item.project_uuid,

@@ -195,6 +195,15 @@ def load_advisory_snapshot(path: str | Path) -> AdvisorySnapshot:
                 f"{field}: not_observed requires complete=true, record_count=0, "
                 "and no references"
             )
+        last_attempt = item.get("last_attempt_at")
+        if last_attempt is not None:
+            last_attempt = _timestamp(last_attempt, f"{field}.last_attempt_at")
+        last_error = _optional_string(item.get("last_error"), f"{field}.last_error")
+        last_http_status = item.get("last_http_status")
+        if last_http_status is not None and (
+            type(last_http_status) is not int or not 100 <= last_http_status <= 599
+        ):
+            raise ValueError(f"{field}.last_http_status must be an HTTP status or null")
         observations.append(
             VulnerabilityEvidenceObservation(
                 vulnerability_id=vulnerability_id,
@@ -208,6 +217,9 @@ def load_advisory_snapshot(path: str | Path) -> AdvisorySnapshot:
                 complete=complete,
                 references=tuple(references),
                 expires_at=expires_at,
+                last_attempt_at=last_attempt,
+                last_error=last_error,
+                last_http_status=last_http_status,
             )
         )
 

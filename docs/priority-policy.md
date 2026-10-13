@@ -1,33 +1,13 @@
 # Priority Policy
 
-## P0
-Known Exploited Vulnerability
-Immediate response
+## 優先度と対応期限
 
-Example SLA (separate remediation policy)
-- 48 hours
+現在の計算ルールと閾値は[SPEC](../SPEC.md#priority-rules)に集約する。
+P0〜P3は設定されたルールの結果であり、P3でもスコア不足のHIGHが含まれ得る。
+「低リスク」「監視だけでよい」という結論にはしない。
 
----
-
-## P1
-Critical
-High EPSS
-
-Example SLA (separate remediation policy)
-- Next release
-
----
-
-## P2
-CVSS at or above the configured P2 threshold
-Planned remediation
-
----
-
-## P3
-Medium
-Low
-Monitor only
+対応期限（SLA）は別の運用方針であり、製品は現在期限を計算しない。
+資産重要度・公開範囲を使うルールも、人が確認してから別途導入する。
 
 ## Triage ownership
 
@@ -67,9 +47,10 @@ report merely because evidence is missing. A positive report can still move
 ahead of both. The number of reported PoCs is context, not a linear score.
 
 When a loaded advisory snapshot provides the explicit `published_poc` signal,
-JSON and text assessments apply this tie-break among Findings with identical
+JSON, text, and review output sort P0 through P3 first and apply this tie-break
+among Findings with identical
 Project, P0–P3 category, KEV status, severity, numeric CVSS, EPSS, Analysis
-state, and suppression state. Other assessments retain their previous relative
+state, and suppression state. Within a priority, other assessments retain their previous relative
 positions. The internal Finding order, priority engine, and Issue actions are
 unchanged. The Vuls lab exporter provides `exploit-record` (general public
 references), so its snapshot does not claim PoC presence or trigger this
@@ -78,9 +59,13 @@ PoC Sighting result to the explicit signal; product-runtime acquisition is
 still not implemented.
 
 The `published_poc` observation must be source-attributed, declared `fresh`,
-and unexpired at review time to count as current. Multiple provider counts
-remain separate. No report, expired/stale data, or an incomplete lookup stays
-`unknown` for ordering purposes.
+and satisfy `observed_at <= review time < expires_at`, comparing timezone-aware
+instants. Future observations are retained as reported data but have effective
+freshness `unknown`; they establish neither PoC presence nor source-scoped
+absence, and cannot promote a Finding in review order. Another current source
+may still establish presence. Multiple provider counts remain separate.
+No report, expired/stale data, or an incomplete lookup stays `unknown` for
+ordering purposes.
 Any rule that raises the P0–P3 category or changes a remediation deadline
 requires a separately reviewed policy, including asset context and the risk
 of counting a signal already reflected in EPSS. PoC presence is not equivalent

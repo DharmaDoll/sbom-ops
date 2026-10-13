@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from datetime import UTC, datetime
@@ -10,13 +11,18 @@ from types import TracebackType
 from sbom_ops.domain.advisory import ExposureStatus
 from sbom_ops.domain.asset_import import AssetRegistrationBatch
 from sbom_ops.domain.asset_registry import (
+    LifecycleAction,
+    LifecycleChange,
     RegisteredDeployable,
     RegisteredService,
     ReportedDeployment,
     ReviewedProjectLink,
+    ServiceChange,
+    ServiceUpdate,
     validate_deployment_supersession,
 )
 from sbom_ops.domain.assets import BusinessCriticality, DeploymentStatus
+from sbom_ops.storage.poc import POC_SCHEMA
 
 _DEPLOYMENT_REPORTS_SCHEMA = """
     CREATE TABLE deployment_reports (
@@ -45,6 +51,35 @@ _DEPLOYMENT_SUPERSESSIONS_SCHEMA = """
         CHECK (superseded_report_id != successor_report_id)
     )
 """
+
+_SERVICE_CHANGES_SCHEMA = """
+    CREATE TABLE service_changes (
+        change_id INTEGER PRIMARY KEY,
+        service_id TEXT NOT NULL REFERENCES services(service_id),
+        actor TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        changed_at TEXT NOT NULL,
+        before_json TEXT NOT NULL,
+        after_json TEXT NOT NULL
+    )
+"""
+
+_LIFECYCLE_SCHEMA = """
+    CREATE TABLE asset_lifecycle_events (
+        event_id INTEGER PRIMARY KEY,
+        action TEXT NOT NULL,
+        service_id TEXT NOT NULL REFERENCES services(service_id),
+        deployable_id TEXT,
+        project_uuid TEXT,
+        actor TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        changed_at TEXT NOT NULL,
+        before_json TEXT NOT NULL,
+        after_json TEXT NOT NULL
+    )
+"""
+
+CURRENT_SCHEMA_VERSION = 6
 
 
 class AssetRegistry:
@@ -104,7 +139,7 @@ class AssetRegistry:
 
     def _initialize(self, *, create_if_missing: bool) -> None:
         version = self._db.execute("PRAGMA user_version").fetchone()[0]
-        if version in (1, 2, 3):
+        if version in (1, 2, 3, 4, 5, 6):
             self._schema_version = version
             return
         if version != 0:
@@ -166,22 +201,35 @@ class AssetRegistry:
                 );
                 PRAGMA user_version = 3;
                 """)
-        self._schema_version = 3
+        with self._db:
+            self._db.execute("BEGIN IMMEDIATE")
+            self._db.execute(_SERVICE_CHANGES_SCHEMA)
+            self._db.execute(_LIFECYCLE_SCHEMA)
+            self._db.execute(POC_SCHEMA)
+            self._db.execute("PRAGMA user_version = 6")
+        self._schema_version = CURRENT_SCHEMA_VERSION
 
     def migrate(self) -> bool:
-        """Explicitly upgrade v1 after the operator has taken a backup."""
+        """Explicitly upgrade an old DB after the operator has taken a backup."""
         if self._read_only:
             raise ValueError("cannot migrate a read-only asset DB")
-        if self._schema_version == 3:
+        if self._schema_version == CURRENT_SCHEMA_VERSION:
             return False
         self.check_integrity()
         with self._db:
+            self._db.execute("BEGIN IMMEDIATE")
             if self._schema_version == 1:
                 self._db.execute(_DEPLOYMENT_REPORTS_SCHEMA)
-            self._db.execute(_DEPLOYMENT_SUPERSESSIONS_SCHEMA)
-            self._db.execute("PRAGMA user_version = 3")
-        self._schema_version = 3
-        self.check_integrity()
+            if self._schema_version < 3:
+                self._db.execute(_DEPLOYMENT_SUPERSESSIONS_SCHEMA)
+            if self._schema_version < 4:
+                self._db.execute(_SERVICE_CHANGES_SCHEMA)
+            if self._schema_version < 5:
+                self._db.execute(_LIFECYCLE_SCHEMA)
+            self._db.execute(POC_SCHEMA)
+            self._db.execute("PRAGMA user_version = 6")
+            self.check_integrity()
+        self._schema_version = CURRENT_SCHEMA_VERSION
         return True
 
     def check_integrity(self) -> None:
@@ -253,6 +301,10 @@ class AssetRegistry:
                         ),
                     )
                 for deployable in batch.deployables:
+                    if self.is_retired(deployable.service_id):
+                        raise ValueError(
+                            "cannot register a deployable under a retired service"
+                        )
                     self._db.execute(
                         "INSERT INTO deployables VALUES (?, ?, ?)",
                         (
@@ -269,6 +321,11 @@ class AssetRegistry:
     def register_deployable(self, deployable: RegisteredDeployable) -> None:
         try:
             with self._db:
+                self._db.execute("BEGIN IMMEDIATE")
+                if self.is_retired(deployable.service_id):
+                    raise ValueError(
+                        "cannot register a deployable under a retired service"
+                    )
                 self._db.execute(
                     "INSERT INTO deployables VALUES (?, ?, ?)",
                     (
@@ -366,7 +423,7 @@ class AssetRegistry:
     def list_deployment_reports(self) -> tuple[ReportedDeployment, ...]:
         if self._schema_version < 2:
             return ()
-        if self._schema_version == 3:
+        if self._schema_version >= 3:
             suffix = (
                 "s.superseded_report_id FROM deployment_reports d "
                 "LEFT JOIN deployment_report_supersessions s "
@@ -446,6 +503,9 @@ class AssetRegistry:
         )
         try:
             with self._db:
+                self._db.execute("BEGIN IMMEDIATE")
+                if self.is_retired(deployable.service_id, deployable.deployable_id):
+                    raise ValueError("cannot approve a link to a retired asset")
                 self._db.execute(
                     "INSERT INTO reviewed_project_links VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
@@ -471,3 +531,219 @@ class AssetRegistry:
             RegisteredService(row[0], row[1], BusinessCriticality(row[2]), row[3])
             for row in rows
         )
+
+    def get_service(self, service_id: str) -> RegisteredService | None:
+        row = self._db.execute(
+            "SELECT service_id, owner, criticality, impact_reason "
+            "FROM services WHERE service_id = ?",
+            (service_id,),
+        ).fetchone()
+        return (
+            RegisteredService(row[0], row[1], BusinessCriticality(row[2]), row[3])
+            if row
+            else None
+        )
+
+    def update_service(self, update: ServiceUpdate) -> ServiceChange:
+        """Persist the reviewed values and their audit entry in one transaction."""
+        if self._read_only:
+            raise ValueError("cannot update a read-only asset DB")
+        if self._schema_version < 4:
+            raise ValueError("service update requires an explicit backup and migration")
+        before, after = update.before, update.after
+        with self._db:
+            self._db.execute("BEGIN IMMEDIATE")
+            if self.get_service(before.service_id) != before:
+                raise ValueError(
+                    "service changed since review; review the update again"
+                )
+            changed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            self._db.execute(
+                "UPDATE services SET owner = ?, criticality = ?, impact_reason = ? "
+                "WHERE service_id = ?",
+                (
+                    after.owner,
+                    after.criticality.value,
+                    after.impact_reason,
+                    after.service_id,
+                ),
+            )
+            cursor = self._db.execute(
+                "INSERT INTO service_changes "
+                "(service_id, actor, reason, changed_at, before_json, after_json) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    after.service_id,
+                    update.actor,
+                    update.reason,
+                    changed_at,
+                    json.dumps(before.as_dict(), ensure_ascii=False, sort_keys=True),
+                    json.dumps(after.as_dict(), ensure_ascii=False, sort_keys=True),
+                ),
+            )
+        return ServiceChange(int(cursor.lastrowid), changed_at, update)
+
+    def list_service_changes(self, service_id: str) -> tuple[ServiceChange, ...]:
+        if self.get_service(service_id) is None:
+            raise ValueError(f"service is not registered: {service_id}")
+        if self._schema_version < 4:
+            return ()
+        rows = self._db.execute(
+            "SELECT change_id, changed_at, actor, reason, before_json, after_json "
+            "FROM service_changes WHERE service_id = ? ORDER BY change_id",
+            (service_id,),
+        ).fetchall()
+        changes = []
+        for change_id, changed_at, actor, reason, before_json, after_json in rows:
+            before, after = json.loads(before_json), json.loads(after_json)
+            before["criticality"] = BusinessCriticality(before["criticality"])
+            after["criticality"] = BusinessCriticality(after["criticality"])
+            changes.append(
+                ServiceChange(
+                    change_id,
+                    changed_at,
+                    ServiceUpdate(
+                        RegisteredService(**before),
+                        RegisteredService(**after),
+                        actor,
+                        reason,
+                    ),
+                )
+            )
+        return tuple(changes)
+
+    def is_retired(self, service_id: str, deployable_id: str | None = None) -> bool:
+        if self._schema_version < 5:
+            return False
+        return (
+            self._db.execute(
+                "SELECT 1 FROM asset_lifecycle_events WHERE service_id = ? AND "
+                "(action = 'retire_service' OR (action = 'retire_deployable' "
+                "AND deployable_id = ?)) LIMIT 1",
+                (service_id, deployable_id),
+            ).fetchone()
+            is not None
+        )
+
+    def list_lifecycle_events(
+        self, service_id: str | None = None
+    ) -> tuple[dict[str, object], ...]:
+        if self._schema_version < 5:
+            return ()
+        rows = self._db.execute(
+            "SELECT event_id, action, service_id, deployable_id, project_uuid, actor, "
+            "reason, changed_at, before_json, after_json FROM asset_lifecycle_events "
+            + ("WHERE service_id = ? " if service_id is not None else "")
+            + "ORDER BY event_id",
+            (service_id,) if service_id is not None else (),
+        ).fetchall()
+        return tuple(
+            {
+                "event_id": row[0],
+                "action": row[1],
+                "service_id": row[2],
+                "deployable_id": row[3],
+                "project_uuid": row[4],
+                "actor": row[5],
+                "reason": row[6],
+                "changed_at": row[7],
+                "before": json.loads(row[8]),
+                "after": json.loads(row[9]),
+            }
+            for row in rows
+        )
+
+    def lifecycle_state(self) -> dict[str, tuple]:
+        events = self.list_lifecycle_events()
+        active_uuids = {link.project_uuid for link in self.list_links()}
+        return {
+            "retired_services": tuple(
+                sorted(
+                    {
+                        item["service_id"]
+                        for item in events
+                        if item["action"] == "retire_service"
+                    }
+                )
+            ),
+            "retired_deployables": tuple(
+                sorted(
+                    {
+                        (item["service_id"], item["deployable_id"])
+                        for item in events
+                        if item["action"] == "retire_deployable"
+                    }
+                )
+            ),
+            "revoked_project_uuids": tuple(
+                sorted(
+                    {
+                        item["project_uuid"]
+                        for item in events
+                        if item["action"] == "revoke_link"
+                    }
+                    - active_uuids
+                )
+            ),
+        }
+
+    def apply_lifecycle_change(self, change: LifecycleChange) -> dict[str, object]:
+        if self._read_only:
+            raise ValueError("cannot change a read-only asset DB")
+        if self._schema_version < 5:
+            raise ValueError(
+                "lifecycle changes require an explicit backup and migration"
+            )
+        with self._db:
+            self._db.execute("BEGIN IMMEDIATE")
+            if self.get_service(change.service_id) is None:
+                raise ValueError("service is not registered")
+            if (
+                change.deployable_id is not None
+                and self.get_deployable(change.service_id, change.deployable_id) is None
+            ):
+                raise ValueError("deployable is not registered")
+            links = tuple(
+                link
+                for link in self.list_links()
+                if link.service_id == change.service_id
+                and (
+                    change.deployable_id is None
+                    or link.deployable_id == change.deployable_id
+                )
+                and (
+                    change.project_uuid is None
+                    or link.project_uuid == change.project_uuid
+                )
+            )
+            if links != change.links:
+                raise ValueError("Project links changed since review; review again")
+            if change.action is not LifecycleAction.REVOKE_LINK and self.is_retired(
+                change.service_id, change.deployable_id
+            ):
+                raise ValueError("asset is already retired")
+            payload = change.as_dict()
+            changed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            cursor = self._db.execute(
+                "INSERT INTO asset_lifecycle_events "
+                "(action, service_id, deployable_id, "
+                "project_uuid, actor, reason, changed_at, before_json, after_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    change.action.value,
+                    change.service_id,
+                    change.deployable_id,
+                    change.project_uuid,
+                    change.actor,
+                    change.reason,
+                    changed_at,
+                    json.dumps(payload["before"], ensure_ascii=False),
+                    json.dumps(payload["after"], ensure_ascii=False),
+                ),
+            )
+            if change.action is LifecycleAction.REVOKE_LINK:
+                self._db.execute(
+                    "DELETE FROM reviewed_project_links WHERE project_uuid = ?",
+                    (change.project_uuid,),
+                )
+        return {**payload, "event_id": cursor.lastrowid, "changed_at": changed_at}

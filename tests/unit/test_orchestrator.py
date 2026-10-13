@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime, tzinfo
 
 import pytest
 
@@ -215,7 +216,12 @@ def test_orchestrator_keeps_stale_issue_open_by_default() -> None:
     assert payload["actions"] == list(result.actions)
 
 
-def test_reviewed_registry_link_is_output_only_and_does_not_change_issues() -> None:
+def test_reviewed_registry_link_is_output_only_and_does_not_change_issues(
+    tmp_path,
+) -> None:
+    from sbom_ops.services.asset_updates import plan_service_update
+    from sbom_ops.storage.asset_registry import AssetRegistry
+
     class LinkedDependencyTrack(FakeDependencyTrack):
         def list_projects(self) -> list[DependencyTrackProject]:
             return [DependencyTrackProject("project-1", "checkout-api/web", "v1")]
@@ -281,6 +287,11 @@ def test_reviewed_registry_link_is_output_only_and_does_not_change_issues() -> N
     ).run()
 
     assert linked.registry_snapshot_status.value == "loaded"
+    review = linked.as_dict()["review_queue"]
+    assert len(review) == len(linked.assessments)
+    assert review[0]["asset"]["owner"] == "team-checkout"
+    assert review[0]["environments"][0]["deployment_status"] == "not_deployed"
+    assert baseline.as_dict()["review_queue"][0]["asset_status"] == "not_requested"
     assert linked.registry_projects[0].status is RegistryProjectStatus.MATCHED
     assert linked.registry_deployments[0].status is RegistryDeploymentStatus.REPORTED
     assert linked.registry_deployments[0].report_ids == (2,)
@@ -301,6 +312,64 @@ def test_reviewed_registry_link_is_output_only_and_does_not_change_issues() -> N
     assert linked_github.created == baseline_github.created
     assert linked_github.updated_bodies == baseline_github.updated_bodies
     assert linked_github.closed == baseline_github.closed
+
+    with AssetRegistry(tmp_path / "assets.sqlite3", create_if_missing=True) as registry:
+        registry.register_service(snapshot.services[0])
+        registry.update_service(
+            plan_service_update(
+                registry,
+                service_id="checkout-api",
+                owner="new-team",
+                criticality=BusinessCriticality.CRITICAL,
+                actor="alice",
+                reason="transfer",
+            )
+        )
+        updated_snapshot = replace(snapshot, services=registry.list_services())
+    updated_github = FakeGitHub()
+    updated = Orchestrator(
+        config(),
+        LinkedDependencyTrack(),
+        FakeKev(),
+        updated_github,
+        asset_registry=updated_snapshot,
+    ).run()
+    assert updated.as_dict()["review_queue"][0]["asset"]["owner"] == "new-team"
+    assert updated.as_dict()["review_queue"][0]["asset"]["criticality"] == "critical"
+    assert updated.assessments == linked.assessments
+    assert updated.registry_deployments == linked.registry_deployments
+    assert updated.actions == linked.actions
+    assert updated_github.created == linked_github.created
+    assert updated_github.updated_bodies == linked_github.updated_bodies
+    assert updated_github.closed == linked_github.closed
+    for state, disabled_snapshot in (
+        ("retired", replace(updated_snapshot, retired_services=("checkout-api",))),
+        (
+            "retired",
+            replace(updated_snapshot, retired_deployables=(("checkout-api", "web"),)),
+        ),
+        (
+            "revoked",
+            replace(updated_snapshot, links=(), revoked_project_uuids=("project-1",)),
+        ),
+    ):
+        lifecycle_github = FakeGitHub()
+        result = Orchestrator(
+            config(),
+            LinkedDependencyTrack(),
+            FakeKev(),
+            lifecycle_github,
+            asset_registry=disabled_snapshot,
+        ).run()
+        row = result.as_dict()["review_queue"][0]
+        assert row["asset_status"] == state
+        assert row["asset"] is None and row["environments"] == []
+        assert result.assessments == updated.assessments
+        assert result.findings_processed == updated.findings_processed
+        assert result.actions == updated.actions
+        assert lifecycle_github.created == updated_github.created
+        assert lifecycle_github.updated_bodies == updated_github.updated_bodies
+        assert lifecycle_github.closed == updated_github.closed
 
 
 def test_action_neutral_assessment_preserves_component_identity() -> None:
@@ -432,7 +501,31 @@ def test_advisory_snapshot_matches_explicit_cve_alias_without_changing_priority(
     assert assessment.priority == baseline.assessments[0].priority
 
 
-def test_explicit_poc_reports_order_equal_risk_output_without_workflow_change() -> None:
+@pytest.mark.parametrize(
+    ("observed_at", "expires_at", "freshness", "poc_status"),
+    [
+        ("2026-10-07T00:00:00Z", "2026-10-09T00:00:00Z", "fresh", "reported"),
+        ("2026-10-09T00:00:00Z", "2026-10-10T00:00:00Z", "unknown", "unknown"),
+        ("2026-10-07T00:00:00Z", "2026-10-08T00:00:00Z", "stale", "unknown"),
+    ],
+)
+def test_explicit_poc_reports_order_equal_risk_output_without_workflow_change(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    observed_at: str,
+    expires_at: str,
+    freshness: str,
+    poc_status: str,
+) -> None:
+    from sbom_ops import cli
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:
+            return datetime(2026, 10, 8, tzinfo=UTC).astimezone(tz)
+
+    monkeypatch.setattr("sbom_ops.domain.advisory.datetime", FixedDatetime)
+
     class EqualFindings(FakeDependencyTrack):
         def get_project_findings(
             self, project_uuid: str
@@ -456,43 +549,51 @@ def test_explicit_poc_reports_order_equal_risk_output_without_workflow_change() 
                 source="lookup",
                 signal="published_poc",
                 outcome=EvidenceOutcome.AVAILABLE,
-                observed_at="2026-10-07T00:00:00Z",
+                observed_at=observed_at,
                 source_revision=None,
                 freshness=EvidenceFreshness.FRESH,
                 record_count=2,
                 complete=True,
-                expires_at="2099-01-01T00:00:00Z",
+                expires_at=expires_at,
             ),
         ),
         project_exposure=(),
     )
     disabled_config = replace(config(), github=replace(config().github, enabled=False))
     baseline = Orchestrator(disabled_config, EqualFindings(), NoKev()).run()
-    result = Orchestrator(
+    orchestrator = Orchestrator(
         disabled_config, EqualFindings(), NoKev(), advisory_snapshot=snapshot
-    ).run()
+    )
+    result = orchestrator.run()
 
     assert [item.vulnerability_id for item in result.assessments] == [
         "CVE-2026-0001",
         "CVE-2026-0002",
     ]
-    assert [item["vulnerability_id"] for item in result.as_dict()["assessments"]] == [
-        "CVE-2026-0002",
-        "CVE-2026-0001",
-    ]
-    assert result.as_dict()["assessments"][0]["poc_reports"] == {
-        "status": "reported",
+    expected_order = ["CVE-2026-0001", "CVE-2026-0002"]
+    if poc_status == "reported":
+        expected_order.reverse()
+    output = result.as_dict()["assessments"]
+    assert [item["vulnerability_id"] for item in output] == expected_order
+    poc_assessment = next(
+        item for item in output if item["vulnerability_id"] == "CVE-2026-0002"
+    )
+    assert poc_assessment["poc_reports"] == {
+        "status": poc_status,
         "sources": [
             {
                 "vulnerability_id": "CVE-2026-0002",
                 "source": "lookup",
                 "outcome": "available",
                 "record_count": 2,
-                "observed_at": "2026-10-07T00:00:00Z",
+                "observed_at": observed_at,
                 "freshness": "fresh",
-                "effective_freshness": "fresh",
-                "expires_at": "2099-01-01T00:00:00Z",
+                "effective_freshness": freshness,
+                "expires_at": expires_at,
                 "complete": True,
+                "last_attempt_at": None,
+                "last_error": None,
+                "last_http_status": None,
             }
         ],
     }
@@ -500,6 +601,34 @@ def test_explicit_poc_reports_order_equal_risk_output_without_workflow_change() 
         item.priority for item in baseline.assessments
     ]
     assert result.actions == baseline.actions == ()
+
+    monkeypatch.setattr(cli, "Orchestrator", lambda **kwargs: orchestrator)
+    assert cli.run_sync(disabled_config) == 0
+    text = capsys.readouterr().out
+    lines = [line for line in text.splitlines() if line.startswith("finding ")]
+    assert len(lines) == 2
+    assert all(
+        f"vulnerability={cve}" in line
+        for cve, line in zip(expected_order, lines, strict=True)
+    )
+    poc_line = next(line for line in lines if "vulnerability=CVE-2026-0002" in line)
+    assert f"poc_reported={poc_status}" in poc_line
+    review = result.as_dict()["review_queue"]
+    assert [item["vulnerability_id"] for item in review] == expected_order
+    assert (
+        next(
+            item["poc_reports"]
+            for item in review
+            if item["vulnerability_id"] == "CVE-2026-0002"
+        )
+        == poc_assessment["poc_reports"]
+    )
+    assert cli.run_sync(disabled_config, "review") == 0
+    review_text = capsys.readouterr().out
+    assert review_text.index(expected_order[0]) < review_text.index(expected_order[1])
+    assert "情報源=lookup ID=CVE-2026-0002 件数=2" in review_text
+    assert f"鮮度判定={freshness}" in review_text
+    assert ("PoC=報告あり" in review_text) is (poc_status == "reported")
 
 
 def test_asset_inventory_keeps_project_scope_and_does_not_change_priority() -> None:

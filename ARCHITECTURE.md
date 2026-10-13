@@ -26,7 +26,7 @@ sbom-ops CLI
      │    └─ Project → service / environment / owner / deployed version
      │
      ├─ local SQLite asset registry (optional)
-     │    └─ registered service / deployable / reviewed DT Project link
+     │    └─ service / deployable / reviewed DT link / expiring deployment claim
      │
      ├─ advisory evidence JSON (optional)
      │
@@ -79,10 +79,18 @@ No external organizational asset register is assumed. The first SQLite asset
 registry now stores manually registered services and deployables and explicit
 human-approved DT Project links. Project names and versions read from DT are
 candidates, not proof of CI origin, SBOM provenance, or deployment.
+Schema v4 adds explicit service owner/criticality updates with before/after audit
+entries. Updates are previewed by default, then committed atomically with their
+actor, reason, and timestamp; they do not alter deployment claims or DT state.
+Schema v5 records retirement and link revocation events. Retirement is local
+registry state, not runtime absence. Revoked links are archived before removal
+from the current approval table; corrections require a fresh DT identity review.
+Neither state removes Findings or changes priority, Analysis, or Issue workflow.
 `sync --asset-db` projects matching reviewed links into read-only run output;
-it does not feed priority or Issue workflow. A later stage must connect an
-immutable built artifact and its SBOM to the reviewed
-DT Project and retain time-bounded deployment declarations.
+it does not feed priority or Issue workflow. Time-bounded human deployment
+declarations and explicit same-subject corrections are implemented. They join
+only to a matching reviewed Project identity and exact artifact/version.
+This is not independent proof of runtime deployment or SBOM provenance.
 ECS/EKS collectors would later add separate machine observations where useful,
 without silently replacing human records. It must retain provenance and
 unmatched/conflicting observations, plus reviewed owner and business metadata
@@ -96,11 +104,22 @@ multi-host deployment requires a server DB. See the
 ---
 
 ### Intelligence Layer
-Collect
+Collect directly
 - KEV
-- EPSS (prefer Dependency-Track-provided value)
-- NVD
-- GitHub Advisory
+
+Read through Dependency-Track
+- EPSS
+- Findings from configured vulnerability sources (for example NVD/GitHub)
+
+Local PoC evidence
+- Source-attributed PoC presence/counts in the shared SQLite file, in dedicated
+  schema v6 tables. Assets and PoC storage adapters remain separate.
+- Explicit `poc-fetch` acquisition is separate from sync. Reuse fresh successes,
+  retain last success and latest failure separately, and commit each CVE to
+  resume interrupted runs. JSON is optional import/export, not primary storage.
+- Scheduled refresh and cross-run rate-limit/backoff control remain planned.
+- Product adapter: `clients/vulnerability_lookup.py`; interpretation:
+  `domain/poc.py`; collection: `services/poc_refresh.py`. No lab imports.
 
 Normalize
 - Enrich findings
@@ -326,7 +345,9 @@ The reconciliation model keeps three state dimensions separate:
 - GitHub remediation state: open or closed workflow task
 
 An absent Finding is not automatically a resolved Finding. Automatic closure
-is opt-in and requires verified reads plus consecutive absence observations.
+is opt-in and currently uses stable reads plus consecutive absence observations.
+Stable reads do not prove analysis completion. Keep closure disabled until the
+[activation requirements](ROADMAP.md#github同期を有効にする前の必須事項) are met.
 
 An external EPSS adapter may be retained as an explicitly configured fallback
 or verification source. It must not silently replace Dependency-Track values.

@@ -1,7 +1,10 @@
-# Operations
+# 運用ガイド
 
-Detailed operational scenarios and acceptance conditions are defined in
-[`docs/use-cases.md`](use-cases.md).
+初回は[演習](#運用担当者向けの初回演習)を順に進める。
+普段は[日常運用・ログ・バックアップ](#日常の運用とログ)、
+[任意の評価入力](#任意の評価入力)、[GitHub同期](#github同期の確認)を参照する。
+登録単位の説明は[資産の運用フロー](#sbomと稼働資産を結ぶ運用フロー一部実装)、
+業務シナリオと受入条件は[ユースケース](use-cases.md)にある。
 
 Security teamはDependency-Trackのプロジェクト横断Findingを一元的に
 トリアージし、sbom-opsの優先度ルールとGitHub Issueの対応状況を管理する。
@@ -12,7 +15,7 @@ Security teamはDependency-Trackのプロジェクト横断Findingを一元的�
 
 目的は、一件のFindingについて「何がDT由来の事実で、どこまで資産との対応を
 確認でき、次に誰が何を調べるか」を説明できるようになること。目安は60〜90分。
-[READMEのQuick Start](../README.md#quick-start)と同じ順に進める。
+[READMEのQuick Start](../README.md#quick-start)でインストールした後、以下を順に進める。
 ローカルの使い捨てProjectを一つ作る演習であり、既存の本番ProjectへSBOMを
 再投入しない。DTのAnalysis、コメント、抑制、VEX、データソース設定は変更しない。
 GitHub Issueも作らない。CLIは`--dry-run --no-github`で実行する。
@@ -26,13 +29,15 @@ GitHub Issueも作らない。CLIは`--dry-run --no-github`で実行する。
 次を実行する。認証情報もネットワークも不要。
 
 ```bash
-python examples/asset_scenario.py
+python examples/review_scenario.py
 ```
 
-入力は[架空のDT Project/Finding](../examples/asset-scenario-dt.example.json)と
-[架空の資産台帳](../examples/asset-inventory.example.json)。前者は生のDT API応答ではない。
-同じCVEでも本番・開発・期限切れ・対応付けなしで、担当者が知りたいことが
-どう違うかを確認する。これは後で使うSQLite台帳とは別の、旧来の評価用JSON。
+入力は[架空のDT・資産データ](../examples/review-scenario.example.json)。
+生のDT API応答や本番用importファイルではなく、承認済みの台帳を模擬する専用サンプル。
+本番公開・開発環境の矛盾・期限切れ・対応付けなしを表示する。3件のFindingのまま、
+環境は内訳として示す。先頭のP1はDTでは抑制済みなので、優先度だけで対応を決めない。
+DB保存や実環境への承認は行わない。旧形式の資産JSONの比較例は
+`python examples/asset_scenario.py`で残している。
 架空のProject UUIDや稼働状況を実DTへコピーしない。
 
 **停止点A:** 「DTだけで分かること」と「人が資産として申告したこと」を
@@ -43,8 +48,32 @@ python examples/asset_scenario.py
 既存のローカルDTが`http://localhost:8080`で開ければ再起動しない。
 開けなければ[Quick Start](../README.md#quick-start)のCompose手順で起動し、
 `http://localhost:8080/api/openapi.json`が応答することを確認する。
-まず[Quick Start](../README.md#quick-start)どおり、`DEMO_SERVICE_ID`を作り、
-`assets register-service`と`register-deployable`でSQLite台帳へ登録する。
+DTの管理画面で、アップロード用と読み取り用のAPIキーを別チームに作る。
+
+| 用途 | 必要な権限 |
+| --- | --- |
+| SBOM投入と演習Projectの自動作成 | `BOM_UPLOAD`, `PROJECT_CREATION_UPLOAD` |
+| sbom-opsの読み取り | `VIEW_PORTFOLIO`, `VIEW_VULNERABILITY` |
+
+以下の値を置き換えて設定する。以後は同じシェルで実行する。
+`.env`は自動では読み込まれない。キー値はGitや実行結果の記録へ入れない。
+
+```bash
+export SBOM_OPS_DT_BASE_URL=http://localhost:8080
+export SBOM_OPS_DT_API_KEY=replace-with-orchestrator-read-key
+export SBOM_OPS_SBOM_UPLOAD_API_KEY=replace-with-upload-key
+mkdir -p var
+export DEMO_SERVICE_ID="operator-demo-$(date +%s)"
+export DEMO_PROJECT_NAME="$DEMO_SERVICE_ID/web"
+export DEMO_PROJECT_VERSION="training-$(date +%s)"
+sbom-ops assets --db var/assets.sqlite3 register-service \
+  --service "$DEMO_SERVICE_ID" --owner training-team --criticality standard \
+  --reason 'Local operator exercise; not a production deployment'
+sbom-ops assets --db var/assets.sqlite3 register-deployable \
+  --service "$DEMO_SERVICE_ID" --deployable web
+sbom-ops assets --db var/assets.sqlite3 list
+```
+
 `assets list`でサービス、担当、理由、配布単位を確認する。この時点でDT Project
 UUIDはなく、稼働環境や公開状況も登録していない。DBは`var/assets.sqlite3`に
 残るので、演習ごとに新しいサービスIDを使い、既存DBを消さない。
@@ -127,8 +156,7 @@ sbom-ops assets --db var/assets.sqlite3 audit-links
 
 ### 5. sbom-opsの結果と照合する（約20分）
 
-既存の読み取り用キーと`SBOM_OPS_DT_BASE_URL`を
-[Quick Start](../README.md#quick-start)に従って環境変数に設定する。
+手順2で読み取り用キーと`SBOM_OPS_DT_BASE_URL`を設定したシェルを使う。
 キー値は画面共有、記録、Issueへ載せない。DT画面で確認したUUIDを指定し、
 対象を一Projectに絞る。この同期にはCISA KEV feedへのアクセスまたは
 利用可能なローカルキャッシュも必要で、通信失敗はDTのFinding不足と区別する。
@@ -160,19 +188,49 @@ Finding一覧が本当に完全かまでは証明できないため、自動Issu
 環境、公開状況は証明されない。この表示は優先度やIssue操作に影響しない。
 台帳ファイルが無い・壊れている場合は同期を始めず失敗する。
 
+担当・環境とFindingを一緒に見るには、同じコマンドに`--output review`を付ける。
+P0→P3順の日本語一覧になり、優先度の理由・DT分析・抑制・PoCの有無を併記する。
+1項目は1 Findingで、複数環境はその内訳。抑制済みの行も表示するため、上から機械的に
+対応依頼を出さずDTの判断も確認する。期限切れ・矛盾・未紐付けは安全という意味ではない。
+PoC未取得は「不明」であり「なし」ではない。情報源別件数を合算して独自PoC数にしない。
+`--output json`の`review_queue`にも同じ内容を出し、従来の`assessments`等は残す。
+資産一覧はSQLiteの承認済み対応だけを使い、評価用の`--asset-inventory`とは混ぜない。
+外部接続なしの練習は`python examples/review_scenario.py`で試せる。
+
 **停止点F:** DT由来の事実、sbom-opsが計算した優先度、人が登録・承認した
 資産情報を区別して説明する。DTだけで担当者や稼働環境を知れるか。
 `sync --asset-db`では何が増え、何はまだ分からないか。
 
 ### 任意: 稼働環境の情報が必要になったら
 
-この初回演習では稼働版・公開状況を入力しない。SQLite台帳にはまだ環境・
-デプロイの登録機能がないため、`status=reviewed`を「本番稼働確認済み」と
-読まない。旧来の`sync --asset-inventory`は、環境・稼働・公開状況を別の
-レビュー済みJSONから表示する評価用入力であり、SQLite台帳との連携ではない。
-必要になったときだけ[READMEの任意入力](../README.md#optional-evaluation-inputs)と
-[SPEC](../SPEC.md#asset-inventory-context)に進む。架空の4件をそのまま実DTへ
-適用せず、根拠がない担当や稼働状態は`unknown`とする。
+SQLiteには期限付きの稼働・公開申告を登録できる。ここでは実際の稼働を
+確認していないので、どちらも`unknown`として操作を試す。
+`status=reviewed`はProject対応の承認であり「本番稼働確認済み」ではない。
+
+```bash
+export DEMO_OBSERVED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+export DEMO_EXPIRES_AT="$(python -c 'from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+sbom-ops assets --db var/assets.sqlite3 report-deployment \
+  --service "$DEMO_SERVICE_ID" --deployable web \
+  --environment training --artifact "$DEMO_PROJECT_VERSION" \
+  --status unknown --exposure unknown --reviewer your-name \
+  --evidence 'Training declaration; runtime was not checked' \
+  --observed-at "$DEMO_OBSERVED_AT" --expires-at "$DEMO_EXPIRES_AT"
+sbom-ops assets --db var/assets.sqlite3 list
+sbom-ops sync --config examples/config.yaml \
+  --project "$SBOM_OPS_DT_PROJECT_UUID" --asset-db var/assets.sqlite3 \
+  --wait-for-analysis --dry-run --no-github
+```
+
+`registry-deployment`の`reported`は期限内の申告が見つかった意味で、
+実稼働を検証した意味ではない。訂正には新しい申告で`--supersedes-report 旧ID`を
+指定する。旧申告は履歴に残り、新申告の観測時刻以降に有効対象から外れる。
+同じサービス・配布単位・環境・成果物IDだけを訂正できる。
+指定しない相反する有効申告は`conflict`のままにする。
+既存v1/v2 DBでは先に`assets migrate --backup 新規バックアップ先`を行う。
+
+旧来の`--asset-inventory`は別形式の評価用JSONで、SQLiteには登録されない。
+詳細は[任意の評価入力](#任意の評価入力)を参照する。
 
 ### 記録と完了条件
 
@@ -236,7 +294,7 @@ Project名/版/UUIDを確認し、候補を明示的に承認する。自動承�
 DT 4.14のBOM APIでは`BOM_UPLOAD`が必要で、`autoCreate=true`には追加で
 `PROJECT_CREATION_UPLOAD`（またはより広い`PORTFOLIO_MANAGEMENT`）が必要。
 このフローでは前者を使い、キーはCIの保護されたシークレットに置く。
-詳細なコマンドは[README](../README.md#quick-start)にある。DTの処理は非同期なので、
+詳細なコマンドは[初回演習](#運用担当者向けの初回演習)にある。DTの処理は非同期なので、
 アップロード受付だけで分析完了とみなさない。
 [DTのCI/CD連携](https://docs.dependencytrack.org/usage/cicd/)。
 
@@ -246,7 +304,7 @@ DT 4.14のBOM APIでは`BOM_UPLOAD`が必要で、`autoCreate=true`には追加�
 だけを表示する。版なし・同名同版の重複・既存承認とのUUID不一致は承認しない。
 `assets approve`は再度DTからProject一覧を読み、UUIDと名/版が一意に一致する
 場合だけ、承認者と時刻をSQLiteに保存する。DTへの書込みやIssueの変更はしない。
-人が申告した配布情報は、schema v3の台帳にサービス・配布単位・環境・成果物ID・
+人が申告した配布情報は、schema v3以降の台帳にサービス・配布単位・環境・成果物ID・
 稼働状態・公開状態・確認者・根拠・観測時刻・有効期限として追記できる。同じ対象の
 訂正は旧申告IDを指定した新しい申告として残し、古い記録を消さない。
 `sync --asset-db`は確認済みの
@@ -295,7 +353,8 @@ Project UUID・名・版がDTと一致し、その版と申告された成果物
    `申告`、独立して取得・照合した情報は`観測`と区別する。更新中に旧版と
    新版が同時稼働していれば両方を残す。Project UUIDだけ、または可変タグ
    だけの一致は稼働中の根拠にしない。
-5. 一致したProjectのFindingに、サービス・環境情報とその確認状態を別枠で示す。
+5. 一致したProjectのFindingに、サービス・環境情報とその確認状態を添える。
+   `--output review`では同じ項目、既定のtext出力では別枠で示す。
    未登録、複数候補、版の不一致、期限切れ、収集失敗は`unknown`/`conflict`として
    可視化し、勝手に「非稼働」や「安全」としない。資産情報による優先度やIssueの
    自動変更は、別途レビューされた判断ルールができるまで行わない。
@@ -312,7 +371,8 @@ ECSは実行タスクの`imageDigest`を、EKSではPodの実行状態の`imageI
 
 社内に別の資産台帳がない前提なので、**sbom-opsが小さな資産DBを持つ**。
 最初の実装は単一ホスト上のSQLiteを採用し、人によるサービス・配布単位登録と
-DT Project対応の承認を提供する。修正・履歴閲覧やデプロイ観測は後続の課題。
+DT Project対応の承認、稼働申告の履歴・訂正を提供する。
+サービスの更新・廃止、リンク撤回、独立したデプロイ観測は後続の課題。
 CIの実行記録、手入力、将来のデプロイ観測が
 別時刻・別プロセスから届くため、次を再起動後も保持する。
 
@@ -350,12 +410,109 @@ JSON取込はサービス・配布単位だけに限定し、DT Project対応の
 以後は`assets list`で旧申告を`freshness=superseded`と表示する。
 指定しない相反する申告は引き続き`conflict`となる。既存のschema v1/v2 DBは
 読み取り可能で、訂正機能を使う前に`assets migrate --backup PATH`で
-バックアップを作成し、明示的にv3へ移行する。新規DBはv3で作成する。
+バックアップを作成し、明示的にv6へ移行する。新規DBはv6で作成する。
 既存の`sync --asset-inventory`は別の読み取り専用評価入力であり、
 このJSON取込で資産DBに登録する形式とは互換ではない。
 担当・重要度・公開状況は、AWSからの推測で決めない。手入力の稼働申告も
 「人が確認した情報」であって、実行中コンテナとの照合がない限り、
 技術的に検証された稼働事実とは区別する。
+
+### 担当・重要度を変更する
+
+外部接続なしの練習は`python examples/asset_update_scenario.py`。
+保存済みの架空登録データを一時DBへ入れ、変更前後の確認・保存・履歴確認を行う。
+続けて、模擬DTデータで紐付け承認・撤回・再承認・資産廃止を試せる。
+終了時に一時DBを削除する。DT、GitHub、既存の資産台帳は変更しない。
+
+実台帳では、まず`assets --db var/assets.sqlite3 check`で対象パスを確認する。
+v1〜v3のDBは更新前に次を実行する。バックアップ先はまだ存在しないパスにする。
+バックアップや移行に失敗したら更新へ進まない。担当更新だけならv4以上で移行は不要。
+
+```bash
+sbom-ops assets --db var/assets.sqlite3 migrate --backup var/assets-before-update.sqlite3
+```
+
+以下は登録済みの`checkout-api`の変更例。自分のサービスID・担当・理由に置き換える。
+`--reason`は今回の変更理由、`--impact-reason`はサービスの事業影響の説明であり別項目。
+省略した更新項目は現在値を保つ。変更がない指定はエラーになる。
+
+```bash
+sbom-ops assets --db var/assets.sqlite3 update-service \
+  --service checkout-api --owner team-payments --criticality critical \
+  --impact-reason '決済停止が全店舗に影響' \
+  --actor your-name --reason '担当移管・影響範囲の見直し'
+```
+
+`before`と`after`、変更者・理由を確認する。まだ保存されていない。
+問題なければ同じコマンドに`--apply`を追加する。別コマンドでのプレビューは値を予約しないため、
+他の人が変更していれば再確認する。`--apply`はその実行時点の現在値を読み直す。
+同じ実行内で読取後に値が変わった場合や履歴を保存できない場合は更新全体を取り消す。
+履歴は次のコマンドで確認する。
+
+```bash
+sbom-ops assets --db var/assets.sqlite3 history --service checkout-api
+```
+
+変更前後・変更者・理由・UTC時刻をJSONで表示する。登録時や移行前の履歴はない。
+変更者名は入力された申告であり、本人認証・改ざん防止監査ログではない。
+次の`sync --asset-db ... --output review --no-github`には新しい担当・重要度を表示するが、
+優先度やDTの判断、稼働申告、Issue操作は変えない。履歴に個人情報を含める場合は
+DBとバックアップのアクセス権を管理する。
+
+v4を扱えない旧版へ戻す場合は更新を止め、移行前バックアップを別パスで検査して
+そのDBを使う。移行後の変更は移行前バックアップには含まれない。
+
+### 資産の廃止と紐付けの訂正
+
+これらの操作にはschema v5以上が必要。v1〜v4は先にバックアップ付きで移行する。
+旧版へ戻す場合は更新を止め、移行前バックアップを別パスで検査して使う。
+v5の廃止・撤回は旧DBに含まれないため、旧DBへ戻すと以前の対応も戻る点に注意する。
+
+```bash
+sbom-ops assets --db var/assets.sqlite3 migrate --backup var/assets-before-v6.sqlite3
+```
+
+配布単位だけを廃止する例。まず対象と`before.links`の影響範囲を確認する。
+保存には同じコマンドに`--apply`を追加する。廃止取消はまだないため対象を慎重に確認する。
+
+```bash
+sbom-ops assets --db var/assets.sqlite3 retire-deployable \
+  --service checkout-api --deployable web --actor your-name --reason 'この配布単位の管理を終了'
+```
+
+サービス全体なら`retire-service --service checkout-api --actor your-name --reason '廃止理由'`を使う。
+全配布単位が対象になる。どちらもデータは消さず、`assets list`と`history`で状態・履歴を確認できる。
+廃止後は新しい紐付け承認を拒否し、廃止サービスに配布単位を追加しない。
+`sync --output review`では「台帳上で廃止」と表示し、担当・環境を有効な情報として使わない。
+Findingは残り、優先度・Issue操作は変わらない。停止確認ができた場合の稼働申告は
+従来どおり別途行う。廃止だけで`not_deployed`や安全と判定しない。
+
+誤紐付けは撤回してから再承認する。撤回操作自体はDTへ接続しない。
+
+```bash
+sbom-ops assets --db var/assets.sqlite3 revoke-link \
+  --project "$SBOM_OPS_DT_PROJECT_UUID" --actor your-name --reason '誤紐付けの訂正'
+```
+
+プレビュー後、同じコマンドに`--apply`を追加する。旧リンクと理由を履歴へ残し、
+有効な承認から外す。以降のsyncは「紐付け撤回済み」を表示する。
+DTの対象を確認し、正しいProject UUIDで通常の承認をやり直す。
+
+```bash
+sbom-ops assets --db var/assets.sqlite3 candidates
+sbom-ops assets --db var/assets.sqlite3 approve \
+  --service checkout-api --deployable web \
+  --project "$SBOM_OPS_DT_PROJECT_UUID" --reviewer your-name
+sbom-ops assets --db var/assets.sqlite3 history --service checkout-api
+```
+
+UUID・名前・版・重複を再確認し、名前が合うだけで承認しない。再承認に失敗しても
+旧リンクを自動復活させず撤回済みのままにする。履歴の`lifecycle_events`に
+撤回前のUUID・名前・版・旧承認者・承認時刻と、撤回者・理由・時刻が残る。
+別コマンドのプレビューは値の予約ではない。実行中に対象リンクが変わった場合は再確認を要求する。
+これらの操作はDT Projectの削除、Analysis・抑制変更、GitHub Issue終了を行わない。
+
+### 将来の資産収集と台帳の保管
 
 将来AWS収集を追加する場合、デプロイ直後の通知だけに依存せず、設定された
 アカウントとクラスタを定期的に全件照合する。単発の収集失敗や一度の不在では
@@ -394,7 +551,7 @@ DBの配置、バックアップ、保存期間、収集権限と対象範囲は
 `examples/identity-demo/`は、外部依存のない小さなGo HTTPアプリである。
 本番アプリの代わりにはならないが、実際にビルド・起動したイメージの固定IDを
 SBOM、DT Project版、資産DBの申告へ一貫して渡せるかを試せる。Go 1.22以上、
-Docker、Trivy、ローカルDT、README記載のアップロード／読み取りキーが必要。
+Docker、Trivy、ローカルDT、本書の初回演習で設定したアップロード／読み取りキーが必要。
 作業ファイルはGit管理外の`var/`に置く。
 
 ```bash
@@ -421,7 +578,7 @@ trivy image --image-src docker --format cyclonedx \
 再実行時に同名コンテナが残っている場合は、先にそのIDと用途を確認し、
 この検証用コンテナだけを停止するか、別のコンテナ名を使う。
 ここでのTrivy実行はSBOM作成用であり、脆弱性DBを用いた評価ではない。
-READMEのQuick startと同じ手順でサービス・配布単位を登録し、
+本書の初回演習と同じ手順でサービス・配布単位を登録し、
 `Project名=service_id/web`、`Project版=$DEMO_IMAGE_ID`を指定して
 `scripts/upload_bom.sh var/identity-demo/demo.sbom.cdx.json`からDTへ直接送る。
 たとえば次のように、毎回異なる検証用サービスIDを使う。
@@ -447,40 +604,18 @@ BOM処理トークンの完了を確認し、DTのProject名・版・UUIDとコ�
 `--rm`でそのコンテナは自動削除されるが、ローカルイメージ、DT Project、
 SQLite DBは残る。別の実験対象を誤って削除しないこと。
 
-2026-10-08の実施では、Goテスト・固定イメージの起動・localhostのhealth応答、
-CycloneDX 1.6の3コンポーネント生成、DTによる同じ3件の取込、
-Project版と稼働イメージIDの一致、SQLiteの確認済み対応・稼働申告の表示を確認した。
-DTはGo標準ライブラリに47件のFindingを返したが、この検証はそれらの
-脆弱性評価やSBOM網羅性を判定するものではない。GitHub操作は0件だった。
-停止申告を追記すると、先の稼働申告と有効期間が重なるため、当時の実装は
-`conflict`を返した。Findingと優先度は停止前後で同一だった。
-これは安全側の表示である。2026-10-09には前申告のIDを明示した訂正を
-別DBで試した。旧申告が`superseded`になり、訂正後の同期は旧申告を選ばず
-`conflict`も出なかった。ただし確認時には2時間の有効期限を過ぎていたため
-`expired`だった。時刻を固定した読み取りでは、訂正時刻より前が`deployed`、
-後が`not_deployed`になった。当時残った「停止直後の有効な申告をDT同期で表示する」
-確認は、後述の2026-10-12のCI成果物による演習で完了した。短いTTLを使う場合は
-同期が期限内に終わることも確認する。
-ローカルの根拠は無視対象の
-`var/product-validation-20261007-identity-demo/`にあり、鍵・環境固有UUID・
-生の結果はGitへ入れない。本番のCIビルド由来、外部環境の実稼働、公開範囲は
-この演習では未検証である。
+実施済みの結果・制約・ローカル証拠パスは
+[DT検証記録](../lab/dependency_track/EXPERIMENTS.md)に残す。
+2026-10-08/09のローカル検証と2026-10-12のCI成果物検証で、
+稼働から停止への明示訂正を確認した。本番稼働・公開範囲・SBOM網羅性は未検証。
 
 ### CIが作った成果物での確認
 
 CIの`identity-demo-artifact`ジョブは、同じサンプルをテスト・ビルドし、
 Dockerイメージのアーカイブ、イメージID、ソースコミット、ファイルのSHA-256を
 7日間のGitHub Actions artifactとして保存する。DTキーはCIに渡さず、
-DTへのアップロードや資産DBの変更もしない。2026-10-10のmain実行では、
-CIの3ジョブが成功し、成果物の取得、チェックサム、ソースコミット、
-アーカイブ内のイメージ設定のダイジェスト、Trivy製SBOM内のイメージIDまで
-照合できた。2026-10-12には同じ成果物のイメージをlocalhost限定で起動し、
-稼働イメージIDと`/health`を確認した。専用DT ProjectへSBOMを投入し、
-処理完了後に版と3 Componentを読み戻した。別のSQLite DBではProject対応が
-`matched`、稼働申告が`reported/deployed`だった。専用コンテナを停止し、
-旧申告を明示的に訂正した後の期限内同期では`reported/not_deployed`となり、
-両同期とも60 Findings、Issue操作0件だった。根拠は
-[`EXPERIMENTS.md`](../lab/dependency_track/EXPERIMENTS.md)に記録した。
+DTへのアップロードや資産DBの変更もしない。
+2026-10-12の通し検証は[DT検証記録](../lab/dependency_track/EXPERIMENTS.md)を参照。
 このサンプルは外部依存がないため、SBOMの網羅性や本番稼働は証明しない。
 
 mainの成功した`ci`実行を選ぶ。PRやforkの実行結果を運用対象にしない。
@@ -528,103 +663,161 @@ Trivyの`image --format cyclonedx`の対象、DT Project版、
 一致を確認するもので、署名付きのビルド証明や本番環境の稼働証明ではない。
 アーカイブ内のSHA-256一覧だけを独立した出所証明とみなさない。
 
-Daily
+## 日常の運用とログ
 
-1. CI uploads the SBOM and waits for the Dependency-Track processing token to
-   report `processing=false` (the separate `sbom-ops upload` helper may do this).
-2. Orchestrator polls findings using `sync --wait-for-analysis`.
-3. Orchestrator confirms a stable project read.
-4. Orchestrator reads Dependency-Track EPSS/VEX analysis state.
-5. Orchestrator enriches findings with KEV.
-6. Priority calculation.
-7. GitHub Issue creation (optional final action).
-8. Developer remediation.
-9. CI verifies.
-10. First verified absence marks the Issue as missing and leaves it open.
-11. A later verified absence may close it only when automatic closure is
-    explicitly enabled and the configured confirmation count is met.
+1. CIがSBOMをDTへ直接送る。受付、処理token、Findingの状態を区別する。
+2. `sync --wait-for-analysis --asset-db PATH --no-github` で評価と資産対応を確認する。
+3. 担当者が対応対象・不足情報を判断し、修正後のSBOMで再確認する。
 
-`SBOM_OPS_CLOSE_MISSING_FINDINGS` defaults to `false`. Enabling it also requires
-`sync --wait-for-analysis`.
-`SBOM_OPS_MISSING_CONFIRMATION_RUNS` defaults to `2` and cannot be lower than 2.
+`--wait-for-analysis` は応答安定の確認であり、修正確認ではない。
+自動クローズは既定の無効を維持する。GitHub有効化は下記の別工程とする。
+出力仕様と制限は[SPEC](../SPEC.md#execution-model)を参照する。
 
-GitHub Issue operations can be disabled while retaining Dependency-Track
-collection and prioritization. Set `github.enabled: false`, export
-`SBOM_OPS_GITHUB_ENABLED=false`, or pass `sbom-ops sync --no-github` (the CLI
-flag takes precedence). `plan --no-github` displays the same mode.
-
-The sync result always includes the Finding key, vulnerability source, severity,
-numeric CVSS and EPSS values (including explicit `null` when unavailable),
-Priority, Dependency-Track Analysis/suppression state, and prioritization
-rationale before any external action is selected. This assessment output is
-therefore available for future Jira, notification, VEX, or reporting adapters
-without coupling them to GitHub. A `P3` result with `cvss_score: null` is not
-evidence of low severity; it means the configured numeric CVSS rule did not
-match the observed input.
-
-For downstream adapters, use machine-readable output:
+機械処理には `--output json`、記録には `--sync-log-file` を追加する。
 
 ```bash
-sbom-ops sync --no-github --output json
+mkdir -p var/operator-review
+sbom-ops sync --config examples/config.yaml \
+  --project "$SBOM_OPS_DT_PROJECT_UUID" --asset-db var/assets.sqlite3 \
+  --wait-for-analysis --dry-run --no-github --output json \
+  --sync-log-file var/operator-review/sync.jsonl
 ```
 
-Each result contains a unique `run_id` and `duration_seconds`, which can be
-used to correlate later audit events or persistent synchronization logs.
+ログには分析メモや担当情報も含まれる。Gitへ入れず、閲覧権限と保持期間を管理する。
+ログ書込失敗はstderrへ警告され、同期の終了コードはそのためには変更されない。
+失敗時の記録は実行済みの全操作を追跡できないため、書き込み運用前の改善課題である。
 
-To persist completed results as JSONL, set `runtime.sync_log_file` or
-`SBOM_OPS_SYNC_LOG_FILE`. The file is only written when explicitly configured;
-its parent directory must already exist.
-
-Successful records have `status: succeeded`. If the configured sync encounters
-a handled API, configuration, or client error, a `status: failed` record with
-an error type and message is appended as well. Log sink write failures do not
-replace the original sync result. They emit a warning on stderr, while JSON
-output on stdout and the primary command exit status remain unchanged. Monitor
-stderr because a successful synchronization without its configured audit record
-is an operational evidence gap.
-
-The JSONL sink is isolated from CLI and orchestration logic so it can later be
-replaced with a database or centralized logging adapter.
-
-For local GitHub authentication, keep the token in GitHub CLI's credential
-store and export it only for the process that runs sbom-ops:
+台帳は定期的に検査し、別の永続ストレージにもバックアップを保管する。
+次は上書きしないバックアップと、そのファイルを開けるかの検査例である。
 
 ```bash
+sbom-ops assets --db var/assets.sqlite3 check
+mkdir -p var/backups
+export ASSET_BACKUP="var/backups/assets-$(date +%Y%m%d-%H%M%S).sqlite3"
+sbom-ops assets --db var/assets.sqlite3 backup --output "$ASSET_BACKUP"
+sbom-ops assets --db "$ASSET_BACKUP" check
+```
+
+ファイル検査だけで業務復旧まで確認したとは扱わない。本番前に復元手順と訓練を決める。
+
+## 任意の評価入力
+
+PoCなどの事前生成JSONと、旧形式の資産JSONは別の任意入力である。
+syncはどちらもファイルから読むだけである。PoCの取得は下記の独立コマンドで行う。
+架空の例を実環境の事実と混ぜない。
+
+```bash
+sbom-ops sync --config examples/config.yaml \
+  --project "$SBOM_OPS_DT_PROJECT_UUID" --dry-run --no-github --output json \
+  --advisory-snapshot examples/advisory-snapshot.example.json
+```
+
+PoCはCVEまたはDTの明示aliasで結合し、情報源別件数を表示する。
+古い・取得不能・未解決の情報は「PoCなし」とみなさない。
+Vulsの一般公開参照はPoC件数ではない。
+[形式と制約](../SPEC.md#advisory-evidence-and-deployment-context)、
+[labでの変換手順](../lab/exploit_intelligence/README.md#product-snapshot-handoff)を参照する。
+観測日時が未来の場合、元の情報は保持するが、PoC判定はその情報を根拠にしない。
+JSONの`poc_reports.sources[].effective_freshness`で`unknown`を確認し、
+取得元の時計・入力日時を確認する。別の有効な情報源があれば、その観測で判定する。
+
+旧資産JSONを試す場合は `--asset-inventory path/to/reviewed-assets.json` を追加する。
+SQLiteへ取り込む `assets import` とは別形式で、DBへの登録や成果物同一性の確認は行わない。
+[資産JSONの仕様](../SPEC.md#asset-inventory-context)を参照する。
+
+### PoC報告を明示的に取得する
+
+まずは `python examples/poc_scenario.py` で、外部通信なしの演習を試せる。
+以下は実際に対象CVEを外部サービスへ送る手順。DTへの書込やGitHub操作は行わない。
+演習で使ったDT設定・Project UUIDを使い、対象を1サービスに絞る。
+PoCの保存先は資産と同じ `var/assets.sqlite3`（専用テーブル）で、JSONファイル管理は不要。
+既存DBがv1〜v5の場合だけ、先にバックアップ付きで移行する。自動移行はしない。
+
+```bash
+sbom-ops assets --db var/assets.sqlite3 migrate --backup var/assets-before-poc-v6.sqlite3
+```
+
+新規DBなら移行は不要。以下の `poc-fetch --execute` でv6を作成する。
+
+```bash
+mkdir -p var/poc
+sbom-ops sync --config examples/config.yaml \
+  --project "$SBOM_OPS_DT_PROJECT_UUID" --dry-run --no-github --output json \
+  > var/poc/findings.json
+# syncが成功したことを確認してから、送信先と対象CVEを確認する（通信なし）
+sbom-ops poc-fetch --findings var/poc/findings.json --db var/assets.sqlite3
+# 更新が必要なCVEだけを取得し、同じSQLiteに保存
+sbom-ops poc-fetch --findings var/poc/findings.json \
+  --db var/assets.sqlite3 --execute
+sbom-ops sync --config examples/config.yaml \
+  --project "$SBOM_OPS_DT_PROJECT_UUID" --asset-db var/assets.sqlite3 \
+  --dry-run --no-github --output review
+```
+
+- 送るのはCVEと検索条件だけ。資産名・担当・Project UUIDは送らない。
+  ただし問い合わせ先には関心のあるCVEが伝わるため、プレビューで確認する。
+- 既定の送信先は `https://vulnerability.circl.lu`。認証なしで読める。
+  キーがある場合だけ `SBOM_OPS_VULNERABILITY_LOOKUP_API_KEY` を環境変数に設定する。
+  DTのキーは流用しない。送信先は `--base-url` で変更できるが、キーの対応先も確認する。
+- `--max-cves 25`、`--pacing-seconds 3.1`、`--ttl-seconds 21600` が既定値。
+  対象数超過は一部を黙って省かずエラーにする。呼出間隔は3.1秒未満にできない。
+  期限は取得時点の情報を判断材料にする期間であり、データ自体の最新性の保証ではない。
+- `--refresh-seconds 3600` が既定の更新間隔。期限内で前回成功から1時間未満なら再利用する。
+  プレビューの `update_cves` は今回の取得予定。成功分を一件ずつ保存するので、
+  中断後は同じコマンドで再開できる。失敗分は次の明示実行で再取得する。
+  これは対象CVEの選別であり、PoC本文を差分ダウンロードする仕組みではない。
+- 終了コード0は取得・再利用完了、1は失敗・未解決IDを含む部分結果、2は入力・保存等のエラー。
+  どの終了コードでも既に確定したDB保存は残る。標準出力の `results` と `unresolved_ids` を確認する。
+  `error`・`http_status`・`attempted`・`cached` を区別する。
+  通信失敗で残りの通信を止め、未取得を未観測扱いにしない。429でも即時再試行しない。
+  制限解除を確認してから手動再実行する。実行間の待機制御は未実装で、高頻度の定期実行はまだ行わない。
+- PoC報告件数は投稿の重複を含み得る。有効性・独立した実装数・当該部品への適用性は評価しない。
+  先頭報告だけを確認した場合は `complete=false`。部分取得から「PoCなし」とは判断しない。
+- 失敗しても前回成功の件数・時刻・期限は消さない。直近の失敗を別に残し、syncでは
+  過去の件数を併記しつつPoC判定を「不明」にする。一度も成功していなければ件数も不明。
+  成功すると失敗表示を解消する。全試行の履歴を積む機能ではなく、最終成功と直近の試行を保存する。
+- syncはv6の `--asset-db` からPoCも読み、通信やDB更新はしない。
+  別パスなら `--poc-db PATH`。PoC読込の失敗だけでは通常のDT評価を止めない。
+  PoC更新もバックアップに含まれる。旧版へ戻す場合は更新を止め、移行前バックアップを使う。
+  移行後の資産変更・PoC取得結果は旧バックアップには入っていない。
+- JSONが必要な場合だけ取得時に `--output NEW_FILE.json` を追加する（既存ファイルは上書きしない）。
+  保存後のエクスポートに失敗してもDB確定分は残る。`--advisory-snapshot` でJSONを指定すると、
+  その同期ではDBのPoCよりJSONを優先する。黙って両者を混ぜない。
+  入力の `findings.json` は対象CVE選択のための一時的な同期結果で、PoCの保管先ではない。
+
+公式の[API仕様](https://www.vulnerability-lookup.org/documentation/api.html)と
+[アクセス方針](https://www.vulnerability-lookup.org/documentation/access-patterns.html)、
+[CIRCL instanceの方針](https://vulnerability.circl.lu/.well-known/api-policy.json)を確認した。
+2026-10-13確認時、instanceは匿名20件/分・認証あり40件/分を強制していた。
+共用IPや他ジョブのアクセスも考慮し、並列起動を避ける。運用前に最新の制限を再確認する。
+同日の製品クライアント確認では、公開CVE-2021-44228への匿名GET 1回で
+報告件数153と先頭報告のCVE/typeを取得できた（全件やPoC本体は取得していない）。
+最初のsandbox内の通信は失敗し、ネットワーク許可後に成功した。
+これは接続・応答形式の確認であり、継続更新や報告の有効性の実証ではない。
+
+## GitHub同期の確認
+
+当面は `--no-github` を使う。本文保存・ラベル更新・重複防止・途中失敗の監査など、
+[有効化前の必須事項](../ROADMAP.md#github同期を有効にする前の必須事項)が残っている。
+以下は書き込みをしない確認用である。
+
+```bash
+export SBOM_OPS_GITHUB_ENABLED=true
+export SBOM_OPS_GITHUB_OWNER=your-org
+export SBOM_OPS_GITHUB_REPO=your-repo
 export GH_TOKEN="$(gh auth token)"
-sbom-ops sync --dry-run
+sbom-ops sync --config examples/config.yaml \
+  --project "$SBOM_OPS_DT_PROJECT_UUID" --wait-for-analysis --dry-run
 ```
 
-`GH_TOKEN` is accepted when `SBOM_OPS_GITHUB_TOKEN` is not set. Never commit
-the token or put it in `.env.example`.
+`SBOM_OPS_GITHUB_TOKEN`がある場合はそちらが優先される。
+検証後は `SBOM_OPS_GITHUB_ENABLED=false` に戻すか、必ず `--no-github` を指定する。
+既知の問題の解消と対象・権限・経路の確認後に、限定した対象で書き込みを検証する。
 
 ## YAML configuration
 
-`sync` and `plan` accept a YAML configuration file with `--config PATH`. When
-the flag is omitted, `SBOM_OPS_CONFIG_FILE` is used. Environment variables
-override YAML values, and CLI flags override both. Secret values should use an
-environment reference such as `api_key: env:SBOM_OPS_DT_API_KEY` rather than
-being committed to the repository.
-
-The supported schema and validation rules are documented in [`SPEC.md`](../SPEC.md).
-An executable example is available at [`examples/config.yaml`](../examples/config.yaml).
-
-The KEV client can use an optional local TTL cache with
-`intelligence.kev_cache_file` and `intelligence.kev_cache_ttl_seconds` (or the
-corresponding `SBOM_OPS_KEV_CACHE_*` variables). Without a cache path, each
-sync fetches the feed normally. A stale or malformed cache is ignored rather
-than used as authoritative data.
-
-Set `intelligence.kev_cache_allow_stale: true` only when continued operation
-with an explicitly stale KEV snapshot is acceptable. The setting is also
-available as `SBOM_OPS_KEV_CACHE_ALLOW_STALE=true` and applies only after a
-fresh feed request fails.
-JSONL and JSON sync results expose `kev_used_stale_cache` so downstream
-consumers can distinguish current KEV data from an explicitly stale snapshot.
-When the cache has validators, refresh requests use `If-None-Match` and
-`If-Modified-Since`; a `304 Not Modified` response refreshes the cache timestamp
-without downloading the feed body.
-
-```bash
-export SBOM_OPS_DT_API_KEY=replace-me
-sbom-ops plan --config examples/config.yaml --no-github
-```
+設定例は[examples/config.yaml](../examples/config.yaml)、契約は
+[SPEC](../SPEC.md#configuration-contract)に集約する。
+CLI → 環境変数 → YAML → 既定値の順で、YAMLの秘密情報は `env:変数名` で参照する。
+KEVキャッシュは任意。`--refresh-kev` はTTL内でも再検証し、
+取得失敗時に古い値を使うには明示設定が必要。結果の `kev_used_stale_cache` を確認する。

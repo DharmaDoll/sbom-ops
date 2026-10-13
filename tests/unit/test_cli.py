@@ -82,6 +82,22 @@ class FakeOrchestrator:
         )
 
 
+def test_review_output_retains_non_cve_and_unknown_context(monkeypatch, capsys) -> None:
+    config = SimpleNamespace(runtime=SimpleNamespace(sync_log_file=None))
+    monkeypatch.setattr(cli, "Orchestrator", FakeOrchestrator)
+    assert (
+        cli.build_parser().parse_args(["sync", "--output", "review"]).output == "review"
+    )
+    assert cli.run_sync(config, "review") == 0
+    output = capsys.readouterr().out
+    assert "確認用一覧: 1件" in output
+    assert "GHSA-ABCD-1234-5678" in output
+    assert "台帳未指定" in output
+    assert "PoC=不明" in output
+    assert "DT分析=NOT_SET 抑制=False" in output
+    assert "優先度の理由=Default monitoring priority" in output
+
+
 def test_sync_log_failure_is_visible_without_breaking_json_result(
     monkeypatch, capsys
 ) -> None:
@@ -187,9 +203,17 @@ def test_sync_reads_asset_db_before_running_orchestrator(
     captured = {}
 
     class CapturingOrchestrator(FakeOrchestrator):
-        def __init__(self, config, *, force_refresh_kev=False, asset_registry=None):
+        def __init__(
+            self,
+            config,
+            *,
+            force_refresh_kev=False,
+            asset_registry=None,
+            advisory_snapshot=None,
+        ):
             super().__init__(config, force_refresh_kev=force_refresh_kev)
             captured["registry"] = asset_registry
+            captured["poc"] = advisory_snapshot
 
     config = SimpleNamespace(runtime=SimpleNamespace(sync_log_file=None))
     monkeypatch.setattr(cli, "Orchestrator", CapturingOrchestrator)
@@ -197,6 +221,7 @@ def test_sync_reads_asset_db_before_running_orchestrator(
     assert cli.run_sync(config, "json", asset_db_path=str(path)) == 0
     assert captured["registry"].services[0].owner == "team-checkout"
     assert captured["registry"].links == ()
+    assert captured["poc"].vulnerability_observations == ()
     assert captured["registry"].deployment_reports[0].artifact_id == "build-123"
     assert json.loads(capsys.readouterr().out)["status"] == "succeeded"
 

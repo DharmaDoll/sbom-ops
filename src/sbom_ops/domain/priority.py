@@ -80,8 +80,8 @@ def order_assessments_for_review(
 ) -> tuple[FindingAssessment, ...]:
     """Prefer reported PoCs only among otherwise equal risk assessments.
 
-    Keep unrelated assessments and the original DT order in their existing
-    positions. This order is for review output, not priority or Issue actions.
+    Show P0 through P3 first. Within a priority, keep unrelated assessments
+    in their existing positions. This is not priority calculation or Issue order.
     """
     groups: dict[tuple[object, ...], list[FindingAssessment]] = defaultdict(list)
     keys: list[tuple[object, ...]] = []
@@ -103,4 +103,6 @@ def order_assessments_for_review(
             key=lambda item: item.poc_reports.status is not PocReportStatus.REPORTED
         )
     positions = {key: iter(values) for key, values in groups.items()}
-    return tuple(next(positions[key]) for key in keys)
+    return tuple(
+        sorted((next(positions[key]) for key in keys), key=lambda item: item.priority)
+    )
