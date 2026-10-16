@@ -16,6 +16,7 @@ from sbom_ops.clients.dependency_track import (
 )
 from sbom_ops.clients.github import GitHubApiError
 from sbom_ops.clients.kev import KevApiError
+from sbom_ops.clients.osv import OsvClient
 from sbom_ops.clients.vulnerability_lookup import (
     DEFAULT_BASE_URL,
     VulnerabilityLookupClient,
@@ -36,7 +37,9 @@ from sbom_ops.domain.assets import (
     BusinessCriticality,
     DeploymentStatus,
 )
-from sbom_ops.domain.poc import select_poc_targets
+from sbom_ops.domain.identifier_candidates import select_identifier_targets
+from sbom_ops.domain.poc import PocRunBusy, select_poc_targets
+from sbom_ops.domain.poc_retry import PocRetryPolicy
 from sbom_ops.services.advisory_snapshot import load_advisory_snapshot
 from sbom_ops.services.asset_import import load_asset_registration
 from sbom_ops.services.asset_inventory import load_asset_inventory
@@ -46,17 +49,63 @@ from sbom_ops.services.asset_registry import (
     discover_project_candidates,
 )
 from sbom_ops.services.asset_updates import plan_lifecycle_change, plan_service_update
+from sbom_ops.services.identifier_candidates import collect_identifier_candidates
+from sbom_ops.services.identifier_review import (
+    list_identifier_reviews,
+    review_identifier,
+)
 from sbom_ops.services.orchestrator import Orchestrator, RunResult
 from sbom_ops.services.poc_refresh import collect_poc_snapshot
 from sbom_ops.services.sync_log import append_sync_event
 from sbom_ops.storage.asset_registry import CURRENT_SCHEMA_VERSION, AssetRegistry
+from sbom_ops.storage.identifier_candidates import IdentifierStore
 from sbom_ops.storage.poc import PocStore
 from sbom_ops.storage.poc_snapshot import save_poc_snapshot
+from sbom_ops.storage.run_lock import exclusive_run, poc_lock_path
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sbom-ops")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    review = subparsers.add_parser("id-review")
+    review.add_argument("--db", default="var/assets.sqlite3")
+    actions = review.add_subparsers(dest="review_action", required=True)
+    show = actions.add_parser("show")
+    show.add_argument("--limit", type=int, default=100)
+    for action in ("approve", "revoke"):
+        change = actions.add_parser(action)
+        change.add_argument("--observation", required=True, type=int)
+        change.add_argument("--dt-source", required=True)
+        change.add_argument("--cve", required=True)
+        change.add_argument("--actor", required=True)
+        change.add_argument("--reason", required=True)
+        change.add_argument("--execute", action="store_true")
+        if action == "approve":
+            change.add_argument("--expires-at", required=True)
+            change.add_argument("--max-age-hours", type=float, default=24)
+
+    identifiers = subparsers.add_parser("id-candidates")
+    inputs = identifiers.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--findings", help="successful sync JSON; default is preview")
+    inputs.add_argument(
+        "--show", action="store_true", help="read saved observations only"
+    )
+    identifiers.add_argument("--db", default="var/assets.sqlite3")
+    identifiers.add_argument("--max-ids", type=int, default=25)
+    identifiers.add_argument(
+        "--id",
+        action="append",
+        dest="identifiers",
+        default=[],
+        help="select an exact unresolved input ID; repeatable",
+    )
+    identifiers.add_argument("--limit", type=int, default=100)
+    identifiers.add_argument(
+        "--execute",
+        action="store_true",
+        help="query OSV and save unapproved candidates",
+    )
 
     poc_parser = subparsers.add_parser("poc-fetch")
     poc_parser.add_argument(
@@ -70,6 +119,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--db", default="var/assets.sqlite3", help="shared local SQLite DB"
     )
     poc_parser.add_argument("--refresh-seconds", type=int, default=3600)
+    poc_parser.add_argument("--retry-base-seconds", type=int, default=60)
+    poc_parser.add_argument("--retry-max-seconds", type=int, default=3600)
     poc_parser.add_argument(
         "--output", help="optional JSON export in addition to SQLite; never overwrite"
     )
@@ -869,7 +920,103 @@ def run_assets(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_identifier_review(args: argparse.Namespace) -> int:
+    execute = getattr(args, "execute", False)
+    with IdentifierStore(args.db, read_only=not execute) as store:
+        if args.review_action == "show":
+            result = {"reviews": list_identifier_reviews(store, limit=args.limit)}
+        else:
+            result = review_identifier(
+                store,
+                observation_id=args.observation,
+                dt_source=args.dt_source,
+                cve=args.cve,
+                action=args.review_action,
+                actor=args.actor,
+                reason=args.reason,
+                expires_at=getattr(args, "expires_at", None),
+                max_age_hours=getattr(args, "max_age_hours", 24),
+                execute=execute,
+            )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def run_identifier_candidates(args: argparse.Namespace) -> int:
+    if args.show:
+        if args.execute:
+            raise ValueError("--show cannot be combined with --execute")
+        with IdentifierStore(args.db, read_only=True) as store:
+            print(
+                json.dumps(
+                    {"observations": store.recent(limit=args.limit)},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        return 0
+    with Path(args.findings).open("rb") as stream:
+        raw = stream.read(20 * 1024 * 1024 + 1)
+    if len(raw) > 20 * 1024 * 1024:
+        raise ValueError("sync input exceeds 20 MiB")
+    targets, unsupported = select_identifier_targets(
+        json.loads(raw), max_ids=args.max_ids, only_ids=tuple(args.identifiers)
+    )
+    if Path(args.db).resolve() == Path(args.findings).resolve():
+        raise ValueError("candidate DB must not be the findings input")
+    if not args.execute:
+        print(
+            json.dumps(
+                {
+                    "status": "preview",
+                    "source": "https://api.osv.dev",
+                    "ids": [t.original_id for t in targets],
+                    "unsupported_ids": unsupported,
+                    "automatic_approval": False,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    with exclusive_run(Path(f"{Path(args.db).resolve()}.identifiers.lock")):
+        with AssetRegistry(args.db, create_if_missing=True) as registry:
+            if registry.schema_version < 8:
+                raise ValueError(
+                    "identifier candidates require schema v8; back up and migrate"
+                )
+        with IdentifierStore(args.db) as store:
+            results, skipped = collect_identifier_candidates(
+                targets, OsvClient(), store
+            )
+    partial = bool(
+        unsupported or skipped or any(r["status"] == "error" for r in results)
+    )
+    print(
+        json.dumps(
+            {
+                "status": "partial" if partial else "succeeded",
+                "observations": results,
+                "unsupported_ids": unsupported,
+                "not_attempted_ids": skipped,
+                "automatic_approval": False,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 1 if partial else 0
+
+
 def run_poc_fetch(args: argparse.Namespace) -> int:
+    if not args.execute:
+        return _run_poc_fetch(args)
+    with exclusive_run(poc_lock_path(args.db)):
+        return _run_poc_fetch(args)
+
+
+def _run_poc_fetch(args: argparse.Namespace) -> int:
+    retry_policy = PocRetryPolicy(args.retry_base_seconds, args.retry_max_seconds)
     base_url = validate_base_url(args.base_url)
     if not 1 <= args.ttl_seconds <= 604800:
         raise ValueError("ttl-seconds must be between 1 and 604800")
@@ -887,8 +1034,11 @@ def run_poc_fetch(args: argparse.Namespace) -> int:
         raise ValueError("PoC DB must not be the findings input")
     if not args.execute:
         due = list(targets.cves)
+        source_state = None
         if db_path.exists():
             with PocStore(db_path, read_only=True) as store:
+                state = store.source_state(f"vulnerability-lookup:{base_url}")
+                source_state = state.as_dict()
                 due = [
                     cve
                     for cve in targets.cves
@@ -898,15 +1048,19 @@ def run_poc_fetch(args: argparse.Namespace) -> int:
                         datetime.now(UTC), timedelta(seconds=args.refresh_seconds)
                     )
                 ]
+                if state.blocked(datetime.now(UTC)):
+                    due = []
         print(
             json.dumps(
                 {
                     "status": "preview",
                     "base_url": base_url,
                     "cves": targets.cves,
+                    "selection": targets.summary(),
                     "update_cves": due,
                     "db": str(db_path),
                     "refresh_seconds": args.refresh_seconds,
+                    "source_state": source_state,
                     "unresolved_ids": targets.unresolved,
                     "ttl_seconds": args.ttl_seconds,
                     "pacing_seconds": args.pacing_seconds,
@@ -925,9 +1079,9 @@ def run_poc_fetch(args: argparse.Namespace) -> int:
     ):
         raise ValueError("output must be a new file in an existing directory")
     with AssetRegistry(db_path, create_if_missing=True) as registry:
-        if registry.schema_version < 6:
+        if registry.schema_version < 7:
             raise ValueError(
-                "PoC storage requires schema v6; back up and migrate the DB"
+                "PoC updates require schema v7; back up and migrate the DB"
             )
     client = VulnerabilityLookupClient(
         base_url, api_key=os.environ.get("SBOM_OPS_VULNERABILITY_LOOKUP_API_KEY")
@@ -940,6 +1094,7 @@ def run_poc_fetch(args: argparse.Namespace) -> int:
             pacing_seconds=args.pacing_seconds,
             refresh_seconds=args.refresh_seconds,
             repository=store,
+            retry_policy=retry_policy,
         )
     if output:
         save_poc_snapshot(output, snapshot)
@@ -952,6 +1107,10 @@ def main() -> int:
     args = parser.parse_args()
     active_config: AppConfig | None = None
     try:
+        if args.command == "id-review":
+            return run_identifier_review(args)
+        if args.command == "id-candidates":
+            return run_identifier_candidates(args)
         if args.command == "poc-fetch":
             return run_poc_fetch(args)
         if args.command == "upload":
@@ -973,6 +1132,14 @@ def main() -> int:
                 poc_db_path=args.poc_db,
             )
         parser.error(f"unsupported command: {args.command}")
+    except PocRunBusy:
+        error = (
+            "identifier_update_already_running"
+            if args.command == "id-candidates"
+            else "poc_update_already_running"
+        )
+        print(json.dumps({"status": "busy", "error": error}))
+        return 3
     except (
         DependencyTrackApiError,
         GitHubApiError,

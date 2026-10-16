@@ -113,11 +113,25 @@ Read through Dependency-Track
 
 Local PoC evidence
 - Source-attributed PoC presence/counts in the shared SQLite file, in dedicated
-  schema v6 tables. Assets and PoC storage adapters remain separate.
+  tables (PoC writes support v7 through v9). Assets and PoC storage adapters remain separate.
+- Schema v8 adds append-only identifier candidate observations, isolated from
+  approved DT aliases and PoC evidence. `id-candidates` calls the OSV adapter only
+  on explicit execution; sync and priority calculation never consume candidates.
+- Schema v9 records explicit expiring approvals and revocations separately from
+  immutable observations. Latest-observation checks and decision writes share a
+  transaction. PoC acquisition and evaluation are not connected to these decisions yet.
 - Explicit `poc-fetch` acquisition is separate from sync. Reuse fresh successes,
   retain last success and latest failure separately, and commit each CVE to
   resume interrupted runs. JSON is optional import/export, not primary storage.
-- Scheduled refresh and cross-run rate-limit/backoff control remain planned.
+- Provider-wide retry deadlines and failure counts persist in SQLite, atomically
+  with failed observations. Retry policy lives in `domain/poc_retry.py`, not the
+  HTTP client. Waiting runs don't make requests or extend deadlines.
+- `storage/run_lock.py` serializes fetches for the same canonical DB path on a
+  single Unix host with local storage. Busy runs exit with code 3.
+- `scripts/refresh_poc.py` composes read-only target sync, PoC refresh, and review
+  under a separate job lock. Failed sync never falls back to stale input. External
+  schedulers invoke it explicitly; live scheduled operation is not yet verified.
+  Do not bypass state/locks with another DB or use shared storage for this setup.
 - Product adapter: `clients/vulnerability_lookup.py`; interpretation:
   `domain/poc.py`; collection: `services/poc_refresh.py`. No lab imports.
 

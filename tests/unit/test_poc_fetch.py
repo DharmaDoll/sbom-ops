@@ -84,6 +84,62 @@ def test_target_selection_explicit_aliases_and_unresolved() -> None:
 
 
 @pytest.mark.parametrize(
+    "ids,status,cves,unresolved",
+    [
+        ((), "no_findings", 0, 0),
+        (("GO-2026-10001", "GO-2026-10001"), "no_resolvable_cves", 0, 1),
+        ((CVE, CVE), "resolved", 1, 0),
+        ((CVE, "GHSA-unresolved"), "partially_resolved", 1, 1),
+    ],
+)
+def test_target_summary_distinguishes_empty_from_unresolved(
+    ids, status, cves, unresolved
+):
+    targets = select_poc_targets(findings(*ids), max_cves=25)
+    assert targets.summary() == {
+        "status": status,
+        "cve_count": cves,
+        "unresolved_id_count": unresolved,
+    }
+
+
+@pytest.mark.parametrize("field", ["description", "references", "related", "upstream"])
+def test_cve_mentions_outside_explicit_aliases_do_not_resolve_id(field):
+    payload = findings("GO-2026-10001")
+    payload["assessments"][0][field] = CVE if field == "description" else [CVE]
+    assert select_poc_targets(payload, max_cves=25) == PocTargets(
+        (), ("GO-2026-10001",)
+    )
+
+
+@pytest.mark.parametrize("identifier", [None, "GO-2026-10001"])
+def test_no_cve_cli_makes_no_request_and_explains_why(
+    tmp_path, monkeypatch, capsys, identifier
+):
+    input_path = tmp_path / "findings.json"
+    input_path.write_text(json.dumps(findings(*([identifier] if identifier else []))))
+    monkeypatch.setattr(
+        VulnerabilityLookupClient,
+        "get_poc_sightings",
+        lambda *a, **k: pytest.fail("unresolved ID sent to PoC provider"),
+    )
+    args = cli.build_parser().parse_args(
+        ["poc-fetch", "--findings", str(input_path), "--db", str(tmp_path / "db")]
+    )
+    assert cli.run_poc_fetch(args) == 0
+    preview = json.loads(capsys.readouterr().out)
+    args.execute = True
+    assert cli.run_poc_fetch(args) == (1 if identifier else 0)
+    result = json.loads(capsys.readouterr().out)
+    assert result["selection"] == preview["selection"]
+    assert result["selection"]["status"] == (
+        "no_resolvable_cves" if identifier else "no_findings"
+    )
+    assert result["results"] == []
+    assert result["unresolved_ids"] == ([identifier] if identifier else [])
+
+
+@pytest.mark.parametrize(
     "payload",
     [
         {},

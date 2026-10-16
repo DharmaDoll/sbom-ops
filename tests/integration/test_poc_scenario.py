@@ -13,10 +13,14 @@ def test_offline_poc_scenario() -> None:
     assert completed.stderr == ""
     for expected in (
         "外部通信なし",
+        "架空の対応を期限付き採用→期限切れ確認→取消。PoCとの接続はまだ行いません。",
+        "架空のCVE候補をSQLiteへ保存。未採用のためPoC紐付け・優先度は変更しません。",
+        "CVE対応なし: 脆弱性は1件、取得対象CVEは0件。PoCなしとは判断しません。",
         "取得時=reported 件数=2 6時間後=unknown",
         "取得時=not_observed 件数=0 6時間後=unknown",
         "取得時=unknown 件数=None 6時間後=unknown",
         "未解決ID: GHSA-unresolved",
         "SQLiteから再読込済み。再実行で成功済み2件の取得を省略。",
+        "再試行の待機中は通信なし。次回可能時刻:",
     ):
         assert expected in completed.stdout

@@ -410,7 +410,7 @@ JSON取込はサービス・配布単位だけに限定し、DT Project対応の
 以後は`assets list`で旧申告を`freshness=superseded`と表示する。
 指定しない相反する申告は引き続き`conflict`となる。既存のschema v1/v2 DBは
 読み取り可能で、訂正機能を使う前に`assets migrate --backup PATH`で
-バックアップを作成し、明示的にv6へ移行する。新規DBはv6で作成する。
+バックアップを作成し、明示的にv9へ移行する。新規DBはv9で作成する。
 既存の`sync --asset-inventory`は別の読み取り専用評価入力であり、
 このJSON取込で資産DBに登録する形式とは互換ではない。
 担当・重要度・公開状況は、AWSからの推測で決めない。手入力の稼働申告も
@@ -469,7 +469,7 @@ v4を扱えない旧版へ戻す場合は更新を止め、移行前バックア
 v5の廃止・撤回は旧DBに含まれないため、旧DBへ戻すと以前の対応も戻る点に注意する。
 
 ```bash
-sbom-ops assets --db var/assets.sqlite3 migrate --backup var/assets-before-v6.sqlite3
+sbom-ops assets --db var/assets.sqlite3 migrate --backup var/assets-before-v9.sqlite3
 ```
 
 配布単位だけを廃止する例。まず対象と`before.links`の影響範囲を確認する。
@@ -731,13 +731,14 @@ SQLiteへ取り込む `assets import` とは別形式で、DBへの登録や成�
 以下は実際に対象CVEを外部サービスへ送る手順。DTへの書込やGitHub操作は行わない。
 演習で使ったDT設定・Project UUIDを使い、対象を1サービスに絞る。
 PoCの保存先は資産と同じ `var/assets.sqlite3`（専用テーブル）で、JSONファイル管理は不要。
-既存DBがv1〜v5の場合だけ、先にバックアップ付きで移行する。自動移行はしない。
+既存DBがv1〜v6の場合だけ、先にバックアップ付きで移行する。自動移行はしない。
 
 ```bash
-sbom-ops assets --db var/assets.sqlite3 migrate --backup var/assets-before-poc-v6.sqlite3
+sbom-ops assets --db var/assets.sqlite3 migrate --backup var/assets-before-poc-v9.sqlite3
 ```
 
-新規DBなら移行は不要。以下の `poc-fetch --execute` でv6を作成する。
+新規DBなら移行は不要。以下の `poc-fetch --execute` でv9を作成する。
+v6はsyncでの読取、v7はPoCの読取・更新を継続できる。
 
 ```bash
 mkdir -p var/poc
@@ -756,6 +757,16 @@ sbom-ops sync --config examples/config.yaml \
 
 - 送るのはCVEと検索条件だけ。資産名・担当・Project UUIDは送らない。
   ただし問い合わせ先には関心のあるCVEが伝わるため、プレビューで確認する。
+- 最初に `selection` の取得対象CVE数と未解決ID数を確認する。
+  `no_resolvable_cves` は脆弱性があるのにCVEへ結び付けられない状態で、
+  脆弱性0件の `no_findings` や「PoCなし」とは異なる。取得要求は送らず終了コード1になる。
+  `partially_resolved` は一部だけ対応できた状態。DTの主ID・明示aliasを確認し、
+  名前や説明文から推測してCVEを補わない。件数はそれぞれの重複排除後で、解決率ではない。
+- CVE対応がない場合もDTの設定を安易に変更しない。
+  [DT公式のOSV alias説明](https://docs.dependencytrack.org/datasources/osv/#vulnerability-aliases)は、
+  誤った同一視の可能性から一括同期を非推奨としている。設定読取の403は権限不足であり、
+  alias無効の証拠ではない。通常のPoC取得に `SYSTEM_CONFIGURATION` 権限は不要。
+  現在の製品は外部のID対応候補を自動採用しない。未解決は不明のまま残す。
 - 既定の送信先は `https://vulnerability.circl.lu`。認証なしで読める。
   キーがある場合だけ `SBOM_OPS_VULNERABILITY_LOOKUP_API_KEY` を環境変数に設定する。
   DTのキーは流用しない。送信先は `--base-url` で変更できるが、キーの対応先も確認する。
@@ -764,19 +775,29 @@ sbom-ops sync --config examples/config.yaml \
   期限は取得時点の情報を判断材料にする期間であり、データ自体の最新性の保証ではない。
 - `--refresh-seconds 3600` が既定の更新間隔。期限内で前回成功から1時間未満なら再利用する。
   プレビューの `update_cves` は今回の取得予定。成功分を一件ずつ保存するので、
-  中断後は同じコマンドで再開できる。失敗分は次の明示実行で再取得する。
+  中断後は同じコマンドで再開できる。失敗分は待機時間経過後の明示実行で再取得する。
   これは対象CVEの選別であり、PoC本文を差分ダウンロードする仕組みではない。
-- 終了コード0は取得・再利用完了、1は失敗・未解決IDを含む部分結果、2は入力・保存等のエラー。
+- 終了コード0は取得・再利用完了、1は失敗・未解決IDを含む部分結果、2は入力・保存等のエラー、
+  3は同じDBで取得が進行中のための見送り（`poc_update_already_running`）。
   どの終了コードでも既に確定したDB保存は残る。標準出力の `results` と `unresolved_ids` を確認する。
   `error`・`http_status`・`attempted`・`cached` を区別する。
   通信失敗で残りの通信を止め、未取得を未観測扱いにしない。429でも即時再試行しない。
-  制限解除を確認してから手動再実行する。実行間の待機制御は未実装で、高頻度の定期実行はまだ行わない。
+  `source_state.retry_at`（タイムゾーン付き）以降に手動再実行する。早く実行しても追加通信はしない。
+  待機中は対象CVEを変えても取得を見送り、`error=source_cooldown` と次回可能時刻を表示する。
+  スキップしただけで待機時刻を延ばしたり、過去の成功・失敗記録を上書きしたりしない。
+- 待機は既定で60秒→120秒→240秒と増え、設定上限3600秒。
+  `--retry-base-seconds / --retry-max-seconds` で変更できるが、既に保存済みの待機は短縮しない。
+  取得先のRetry-After指定が長い場合はそちらを優先し、ローカル上限で切り詰めない。
+  待機時刻は情報源別にDBへ残るため、再起動しても有効。成功した通信で連続失敗を解消する。
+  401/403はキー・権限、404は送信先、通信失敗は接続を確認する。異常に遠い待機時刻は取得先の応答を調査する。
+  同じ情報源には同じURL表記・DBを使うこと。別DBや並列起動で制限を回避しない。
+  同じDBでの重複取得は自動で止める。定期運用の実環境での通し確認は残っている。
 - PoC報告件数は投稿の重複を含み得る。有効性・独立した実装数・当該部品への適用性は評価しない。
   先頭報告だけを確認した場合は `complete=false`。部分取得から「PoCなし」とは判断しない。
 - 失敗しても前回成功の件数・時刻・期限は消さない。直近の失敗を別に残し、syncでは
   過去の件数を併記しつつPoC判定を「不明」にする。一度も成功していなければ件数も不明。
   成功すると失敗表示を解消する。全試行の履歴を積む機能ではなく、最終成功と直近の試行を保存する。
-- syncはv6の `--asset-db` からPoCも読み、通信やDB更新はしない。
+- syncはv6以降の `--asset-db` からPoCも読み、通信やDB更新はしない。
   別パスなら `--poc-db PATH`。PoC読込の失敗だけでは通常のDT評価を止めない。
   PoC更新もバックアップに含まれる。旧版へ戻す場合は更新を止め、移行前バックアップを使う。
   移行後の資産変更・PoC取得結果は旧バックアップには入っていない。
@@ -794,6 +815,146 @@ sbom-ops sync --config examples/config.yaml \
 報告件数153と先頭報告のCVE/typeを取得できた（全件やPoC本体は取得していない）。
 最初のsandbox内の通信は失敗し、ネットワーク許可後に成功した。
 これは接続・応答形式の確認であり、継続更新や報告の有効性の実証ではない。
+
+2026-10-14の待機制御は、[RFC 9110のRetry-After仕様](https://www.rfc-editor.org/rfc/rfc9110.html#name-retry-after)
+を根拠に、模擬429/503・固定時計・一時DBで検証した。再起動・別CVE・長い待機・再取得成功を確認し、
+実サービスへ大量アクセスして429を発生させる実験は行っていない。
+
+### PoC更新を定期実行する
+
+リポジトリの `scripts/refresh_poc.py` を外部のタイマーから呼び出せる。
+新たな常駐サーバは不要。まず資産を登録し、DBをv7以降にしてから、1 Projectで手動確認する。
+このスクリプト自体はタイマーの登録・DBの作成や移行を行わない。
+
+```bash
+# 実行内容の確認だけ。通信・DB変更なし
+.venv/bin/python scripts/refresh_poc.py --config examples/config.yaml \
+  --project "$SBOM_OPS_DT_PROJECT_UUID" --db var/assets.sqlite3
+# DT用の環境変数を設定した環境で、1回実行
+.venv/bin/python scripts/refresh_poc.py --config examples/config.yaml \
+  --project "$SBOM_OPS_DT_PROJECT_UUID" --db var/assets.sqlite3 --execute
+```
+
+処理順は「対象の同期 → PoC更新 → 確認用一覧」。DTは読み取りのみ、GitHubは常に無効。
+対象一覧は実行ごとの専用一時ディレクトリに作り、終了時に削除する。
+最初の同期が失敗した場合や入力が不正な場合は止め、前回の対象一覧を流用しない。
+PoCが部分失敗しても通常の確認用一覧は表示する。
+各段階に既定900秒の制限があり、`--stage-timeout`で変更可能（1〜3600秒）。
+時間切れではその段階のプロセスを停止するが、既に保存したPoCは残る。
+
+終了コードは0が完了、1がPoC部分結果（待機中を含む）、2がエラー・時間切れ、3が重複起動による見送り。
+ログの `stage` と `status` で失敗箇所を確認する。1なら取得結果と次回可能時刻を確認し、
+2なら設定・接続・DBを修正して同じコマンドを実行する。3が続く場合は先行プロセスを調べる。
+待機を回避するためにDBや取得先URLの表記を変更しない。
+
+同じDB実体パスの `.poc.lock` が手動を含む取得を、`.poc-job.lock` がスクリプト全体を保護する。
+空のロックファイルが残るのは正常。終了・強制停止時にOSがロックを解放するため、
+運用中にファイルを削除しない。対象は単一ホストのUnix系OS・ローカルストレージ。
+NFS等の共有ストレージ、DBのハードリンクや別コピー、複数ホスト間の排他は保証しない。
+
+手動で結果を確認した後、例えばcronで毎時17分に起動できる。以下は配置先が
+`/opt/sbom-ops` の例で、実環境のパスへ変更する。自動登録はしない。
+
+```cron
+SHELL=/bin/bash
+17 * * * * umask 077; cd /opt/sbom-ops && set -a && . /etc/sbom-ops/runtime.env && set +a && .venv/bin/python scripts/refresh_poc.py --config examples/config.yaml --project "$SBOM_OPS_DT_PROJECT_UUID" --db var/assets.sqlite3 --execute >> var/poc-refresh.log 2>&1
+```
+
+環境変数は自動では読み込まない。この例の `runtime.env` には既存のDT用設定とProject UUID、
+必要な場合だけVulnerability-Lookup専用キーを用意する。実行ユーザー所有・権限600とし、
+信頼できる管理者だけが編集する。キーをcron行やGitへ書かない。
+手動実行と同じDB・設定・Python環境を使い、ログには資産名やCVEが含まれるため、
+閲覧権限とログローテーション・保存期間も設定する。起動間隔とは別に、DB内の更新間隔と待機時刻が有効。
+
+重複起動と強制終了後の解放は実プロセスで検証済み。
+処理順、同期失敗、時間切れ、PoC部分失敗は一時DB・模擬コマンドで検証した。
+2026-10-15（日本時間）に実DTのGoデモで単発処理を確認した。60件すべてCVE対応なしのため
+PoCは部分結果となったが、確認済み担当と期限切れの稼働申告を含む一覧は表示できた。
+別のQuick Start用Projectも77件すべてCVE対応なしだった。
+同日の追加確認では、別の既存NVD検証Projectの10 CVEで実API取得→SQLite保存→一覧表示に成功。
+4 CVEは報告あり、6 CVEは取得先で未検出。別プロセスで再実行すると10件すべてをDBから再利用し、
+PoCへの追加通信は0件、取得時刻も変わらなかった（DT等への読取通信はある）。
+このProjectの資産は未紐付けのままで、実サービスの担当・稼働まで確認したことにはならない。
+自動運用の前に対象のCVE対応を確認する。GO/GHSA等の未解決IDの補完は残課題。
+検証用コピーだけを移行し、元のDB・DT設定・cronは変更していない。
+詳細と未確認事項は[検証記録](../lab/dependency_track/EXPERIMENTS.md)を参照。
+
+### CVE対応候補を確認する
+
+`poc-fetch` の未解決IDに対して、OSVが明示するCVE候補を調べる補助機能。
+**候補は未採用**であり、保存しても通常のsync・PoC検索・優先度・DT分析には反映しない。
+採用・取消は下記の別操作で記録できるが、PoCへの接続は今後の作業。
+先に次の通信なし演習で候補保存・期限付き採用・期限切れ・取消と境界を確認できる。
+
+```bash
+python examples/poc_scenario.py
+```
+
+実データでは、上記の成功したsync JSONを入力する。プレビューは通信・DB作成なし。
+既定でGO・GHSA・PYSECの未解決IDを最大25件まで対象にする。超過時は黙って間引かず停止する。
+`--id` を繰り返して対象を限定できるが、入力JSONにある未解決IDとの完全一致が必要。
+
+```bash
+sbom-ops id-candidates --findings var/poc/findings.json --db var/assets.sqlite3
+# 多い場合は、一覧で確認したIDを1件選ぶ
+sbom-ops id-candidates --findings var/poc/findings.json --id "$DT_VULNERABILITY_ID"
+# 候補取得はv8でも動作する。採用・取消も使うならv9へ明示移行する
+sbom-ops assets --db var/assets.sqlite3 migrate --backup var/assets-before-identifiers-v9.sqlite3
+# 送るIDを確認してから実行。DBがなければv9を作成する
+sbom-ops id-candidates --findings var/poc/findings.json \
+  --id "$DT_VULNERABILITY_ID" --db var/assets.sqlite3 --execute
+# 保存済み履歴の直近100件を表示（通信・DB変更なし）
+sbom-ops id-candidates --db var/assets.sqlite3 --show --limit 100
+```
+
+送信先は `https://api.osv.dev/v1/vulns/{id}` 固定、APIキー不要。
+送るのは脆弱性IDだけで、資産名・DTのURL・Project UUID・担当は送らない。
+GHSAはOSVの大小文字に合わせて送るが、元IDとDT情報源は保存する。
+明示aliasから候補を取り、応答ID・更新日時を確認する。説明文・related・upstreamは使わない。
+状態は `candidate`（1候補）、`ambiguous`（複数）、`unresolved`（候補なし）、
+`withdrawn`（撤回済み）、`error`（取得・形式エラー）。候補なしや404はPoCなしの証拠ではない。
+
+保存先は同じDBの `identifier_observations`。出典・観測日時・元データ更新日時・候補・失敗を
+1件ずつ履歴として追加し、再実行で過去の成功や失敗を消さない。`--show`は履歴であり、
+古い候補が今も正しい保証ではない。生のOSV本文や関連URL先は保存・取得しない。
+通信間隔は3.1秒、各要求のタイムアウトは30秒。最初の取得・形式エラーで残りを止める。
+終了コード0は取得処理完了で採用完了ではない。1は一部失敗・未対応IDあり、2は入力等のエラー、
+3は同じDBでの重複起動。専用ロックファイルは運用中に削除しない。
+手動確認用であり、キャッシュ・情報源別待機の永続化・自動更新はまだない。
+429等の失敗後に繰り返し実行したり、定期ジョブへ追加したりしない。
+DB移行前バックアップに戻す場合、移行後の資産・PoC・候補追加は引き継がれない。
+
+2026-10-17に保存済みのDT同期結果からGO/GHSA各1 IDを選び、製品コマンドでOSVへ問い合わせた。
+両方のCVE候補を保存でき、最初の接続失敗も履歴に残った。実候補の採用・PoC取得は行っていない。
+詳細は[検証記録](../lab/exploit_intelligence/EXPERIMENTS.md)を参照。
+
+### CVE対応候補の採用・取消を記録する
+
+同一の脆弱性を指す対応かを確認した人が、`id-candidates --show`の観測IDとDT情報源を指定する。
+これはPoCの有効性のレビューではない。変更者・理由・期限を記録する機能で、
+**現時点では採用してもPoC取得や表示にはつながらない**（`poc_connected=false`）。
+候補観測の`approved=false`は取得時点の記録であり、現在の採用状態は`id-review show`で確認する。
+
+```bash
+# 以下の変数は、確認した観測・CVE・変更者・理由・期限を指定する
+sbom-ops id-review --db var/assets.sqlite3 approve \
+  --observation "$OBSERVATION_ID" --dt-source "$DT_SOURCE" --cve "$CVE_ID" \
+  --actor "$REVIEWER" --reason "$REVIEW_REASON" --expires-at "$EXPIRES_AT"
+# プレビューを確認後、同じコマンドに --execute を付けて保存
+sbom-ops id-review --db var/assets.sqlite3 show
+# 取消も既定はプレビュー。内容確認後に --execute を付ける
+sbom-ops id-review --db var/assets.sqlite3 revoke \
+  --observation "$OBSERVATION_ID" --dt-source "$DT_SOURCE" --cve "$CVE_ID" \
+  --actor "$REVIEWER" --reason "$REVOCATION_REASON"
+```
+
+期限はtimezone付き日時で指定する。既定では観測後24時間以内の候補だけを採用でき、
+期限もその範囲内とする。`--max-age-hours`で運用方針に応じて変更可能。
+古い観測・未来日時・候補にないCVE・情報源不一致は拒否する。
+同じ元ID・DT情報源の最新採用だけが有効。取消で履歴やPoC観測は削除しない。
+新しい候補観測が追加されると、同じ内容でも既存採用は`observation_changed`となり再確認が必要。
+このほか`active`・`expired`・`future`・`revoked`・`superseded`を表示する。
+変更者は申告名で、本人認証ではない。DBとバックアップのアクセス権を管理する。
 
 ## GitHub同期の確認
 

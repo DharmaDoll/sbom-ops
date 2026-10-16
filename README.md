@@ -27,7 +27,9 @@ CI → CycloneDX SBOM → Dependency-Track → sbom-ops → 対応判断 → Git
 - GitHubを無効にしたまま、テキスト・JSON・任意のJSONLログで結果を確認する。
 
 資産情報は判断の参考として表示し、優先度を自動変更しません。
-PoCの自動定期実行と通信制限後の再試行制御は今後の実装です。通常のsyncは取得を行いません。
+PoC取得の失敗後は、SQLiteに残した待機時刻まで再取得を見送ります。
+定期実行用の[更新スクリプトと運用手順](docs/operations.md#poc更新を定期実行する)を用意しています。
+通常のsyncは取得を行いません。
 PoCの動作検証は本PJでは行いません。DTの分析判断・抑制・例外承認も自動変更しません。
 現在の制限と実装順序は[ROADMAP](ROADMAP.md)を参照してください。
 
@@ -59,8 +61,11 @@ JSON出力は `python examples/review_scenario.py --output json` で確認でき
 既存の資産台帳は変更しません。実台帳の操作は[担当変更](docs/operations.md#担当重要度を変更する)・[廃止と紐付け訂正](docs/operations.md#資産の廃止と紐付けの訂正)を参照してください。
 
 `python examples/poc_scenario.py` では架空のPoC報告を使い、SQLiteへの保存・読込・再利用と、
-報告あり／未観測／取得失敗／期限切れの違いを外部接続なしで試せます（一時DBのみ）。
+報告あり／未観測／取得失敗／期限切れと、再試行の待機を外部接続なしで試せます（一時DBのみ）。
 実際の取得は[PoC取得手順](docs/operations.md#poc報告を明示的に取得する)を参照してください。
+CVE対応がないIDは、[対応候補の取得手順](docs/operations.md#cve対応候補を確認する)で
+OSVの候補をSQLiteに保存・確認できます。期限付きの採用・取消も記録できますが、
+まだPoCへの紐付けや優先度変更には使いません。
 
 SQLiteへの登録例も、書き込まずに確認できます。
 

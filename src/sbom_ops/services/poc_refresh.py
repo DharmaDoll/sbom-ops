@@ -19,6 +19,7 @@ from sbom_ops.domain.poc import (
     PocTargets,
     interpret_poc_sightings,
 )
+from sbom_ops.domain.poc_retry import PocRetryPolicy, PocSourceState
 
 
 class PocSource(Protocol):
@@ -30,7 +31,9 @@ class PocSource(Protocol):
 class PocRepository(Protocol):
     def get(self, cve: str, source: str) -> PocRecord | None: ...
 
-    def save(self, record: PocRecord) -> None: ...
+    def save(self, record: PocRecord, state: PocSourceState | None = None) -> None: ...
+
+    def source_state(self, source: str) -> PocSourceState: ...
 
 
 def collect_poc_snapshot(
@@ -43,7 +46,9 @@ def collect_poc_snapshot(
     sleep: Callable[[float], None] = time.sleep,
     repository: PocRepository | None = None,
     refresh_seconds: int = 3600,
+    retry_policy: PocRetryPolicy | None = None,
 ) -> dict[str, object]:
+    retry_policy = retry_policy or PocRetryPolicy()
     if not 1 <= ttl_seconds <= 604800:
         raise ValueError("ttl_seconds must be between 1 and 604800")
     if not 3.1 <= pacing_seconds <= 3600:
@@ -54,6 +59,12 @@ def collect_poc_snapshot(
     observations: list[dict[str, object]] = []
     diagnostics: list[dict[str, object]] = []
     stopped = False
+    state = (
+        repository.source_state(client.source)
+        if repository
+        else PocSourceState(client.source)
+    )
+    cooling_down = state.blocked(clock())
     calls = 0
     for cve in targets.cves:
         previous = repository.get(cve, client.source) if repository else None
@@ -74,11 +85,13 @@ def collect_poc_snapshot(
             continue
         error: str | None = None
         status: int | None = None
-        attempted = not stopped
+        attempted = not stopped and not cooling_down
         if attempted and calls:
             sleep(pacing_seconds)
         observed_at = clock()
         try:
+            if cooling_down:
+                raise PocFetchError("source_cooldown")
             if stopped:
                 raise PocFetchError("not_attempted_after_transport_failure")
             calls += 1
@@ -88,12 +101,21 @@ def collect_poc_snapshot(
                 payload, cve=cve, source=client.source, observed_at=observed_at, ttl=ttl
             )
         except (PocFetchError, ValueError) as exc:
-            # Stop network calls on transport/HTTP failures, including 429. Never
-            # retry earlier than Retry-After, or classify a 404 as a negative.
+            observed_at = clock()
             if isinstance(exc, PocFetchError):
                 error, status, stopped = exc.code, exc.status, True
             else:
-                error = "invalid_response"
+                error, stopped = "invalid_response", True
+            if attempted:
+                state = retry_policy.failure(
+                    state,
+                    now=observed_at,
+                    error=error,
+                    status=status,
+                    retry_after=(
+                        exc.retry_after if isinstance(exc, PocFetchError) else None
+                    ),
+                )
             observation = VulnerabilityEvidenceObservation(
                 vulnerability_id=cve,
                 source=client.source,
@@ -109,11 +131,13 @@ def collect_poc_snapshot(
         success = (
             observation if error is None else previous.success if previous else None
         )
+        if attempted and error is None:
+            state = PocSourceState(client.source)
         if repository and attempted:
             record = PocRecord(
                 cve, client.source, observed_at.isoformat(), success, error, status
             )
-            repository.save(record)
+            repository.save(record, state)
             observation = record.observation()
         elif repository and previous:
             observation = previous.observation()
@@ -135,6 +159,8 @@ def collect_poc_snapshot(
         "vulnerability_observations": observations,
         "project_exposure": [],
         "collection": {
+            "selection": targets.summary(),
+            "source_state": state.as_dict(),
             "status": (
                 "partial"
                 if targets.unresolved or any(row["error"] for row in diagnostics)

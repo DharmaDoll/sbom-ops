@@ -1,5 +1,102 @@
 # Dependency-Track Lab Experiment Ledger
 
+## 2026-10-15 — 主CVE 10件のPoC取得・SQLite保存・別プロセス再利用
+
+- 結果: CVEが主IDの経路は実環境で確認済み。非CVEの対応付けと1サービス全体の運用は未完了。
+- 対象: ローカルDT 4.14.3の既存NVD検証Project、log4j-core 2.14.1の10 Findings。
+  バージョンは同日の直前確認による。時刻はUTCでは2026-10-14、日本時間では2026-10-15。
+- 安全策: DT読取のみ、GitHub同期無効。前項の検証DBコピーだけを使い、元DB・DT設定・
+  Analysis/VEX・cronは変更しなかった。PoC本文・リンク先を取得・実行しなかった。
+
+### 目的と実施内容
+
+非CVEの対応不足とPoC更新処理自体の成否を切り分ける。まず既存labクライアントで
+設定の安全な4項目を選択表示しようとした。sandbox内は接続失敗、許可後はHTTP 403だった。
+管理用設定キーも設定されていないため、別キーを順番に試したり設定を書き換えたりしなかった。
+現在のalias設定は未確認。公式のOSV説明ではalias同期は既定無効・有効化非推奨と確認した。
+
+既存Projectを読み取り、主IDがすべてCVEの10件を選択。製品の単発スクリプトを
+`--max-cves 10 --stage-timeout 120 --execute` で2回実行した。
+保存したログとSQLiteを読み取り、各段階の終了、結果、件数、観測時刻を照合した。
+
+### 分かった事実
+
+- 初回は10 CVEを取得し、SQLiteに10行保存。4 CVEが報告あり、6 CVEが取得先で未検出。
+  報告件数はCVE-2021-44228が153、CVE-2021-44832が3、CVE-2021-45046が32、
+  CVE-2021-45105が16。独立したPoC実装数や有効性を示す数字ではない。
+- 別プロセスの2回目は10件すべて `cached=true`、`attempted=false`。
+  PoC取得は追加0件で、最終成功時刻は初回と一致した。DT/KEV等への同期読取は行っている。
+- 両回とも対象同期・PoC取得・一覧表示の終了コードは0、ジョブも0。
+  一覧は報告あり4件と未検出6件を区別した。Issue作成・更新・終了はすべて0件。
+- SQLiteは10観測・取得エラー0件、integrity checkは正常。
+  資産未紐付けは担当・環境・稼働不明のままで、検証用の担当を作って補完していない。
+
+### 製品判断と残り
+
+主CVEの取得・保存・再利用の実環境確認は完了。非CVEの不足を取得処理全体の故障とは扱わない。
+OSV aliasの一括同期を回避策にせず、外部の対応候補を扱う最小の製品機能を次の作業とする。
+[既存のID対応付け検証](../exploit_intelligence/EXPERIMENTS.md)では、Vulnerability-Lookupだけで
+GO IDを十分に解決できず、OSVの明示aliasが補完候補になることが分かっている。
+候補は採用済み対応と区別する。説明文・related・upstreamは同一性の根拠にしない。
+この境界を製品テストへ追加し、通信なし演習にも「脆弱性あり・取得対象CVEなし」の説明を加えた。
+
+現在のDT設定値・今回のalias欠落の原因、非CVE補完の製品実装、期限切れ後の実API再取得、
+長期定期運用、資産・担当・稼働まで含む1サービスでの通し確認は未完了。
+期限切れ・障害時の処理は固定時計と模擬応答による既存テストで確認する。
+証拠: `var/product-validation-20261015-poc/nvd-job-{first,cached}.log`、同ディレクトリの
+検証DBと `nvd-summary.json`（ignored）。認証情報・環境固有UUIDは記録へ転載しない。
+設定読取で生の設定一覧は保存していない。
+公式根拠: [OSV aliasの注意点](https://docs.dependencytrack.org/datasources/osv/#vulnerability-aliases)。
+
+## 2026-10-15 — 製品PoC更新の実DT通し確認（CVE対応なしで部分完了）
+
+- 日付は日本時間。取得ログのUTC日付は2026-10-14。
+- 対象: ローカルDT 4.14.3、既存Goデモ・Quick Start用Project。
+- 結果: 未解決時の処理継続は確認済み。PoC取得成功の通し確認は未完了。
+- 安全策: 元の資産DBからCLIでバックアップを作成し、検証用コピーだけをv7へ移行。
+  DT読取のみ、GitHub同期無効。Analysis/VEX・DT設定・元DB・cronは変更していない。
+
+### 目的と実施内容
+
+製品の `scripts/refresh_poc.py` で対象同期→PoC更新→確認用一覧を実環境で確認する。
+最初のsandbox内接続はlocalhost到達・外部DNSとも失敗し、許可後に接続できた。
+DTのバージョンとCIRCLの公開API利用方針を再確認。匿名20件/分・認証40件/分という
+制限を確認したが、この検証ではPoC検索要求自体を送っていない。
+Goデモの同期結果をプレビューした後、単発更新処理を実行。
+さらに既存Quick Start用Projectを同期・プレビューし、過去のAirflow/n8n検証Projectも
+既存製品クライアントでFindingの主ID・aliasを読み取った。新しいSBOMの投入はしていない。
+
+### 分かった事実
+
+- Goデモ: OSVの60 Findings。主IDはGO形式、aliasはすべて空で取得対象CVEは0件。
+  単発処理の対象同期は終了コード0、PoC取得段階は1、最後の一覧表示は0。
+  一覧に確認済み担当を表示し、過去の稼働申告は期限切れ・稼働不明・公開不明として残った。
+  PoCは不明。検証DBのPoC観測テーブルは0行だった。
+- Quick Start用Project: 77 Findings（GITHUB 45、OSV 32）、aliasはすべて空。
+  取得対象CVEは0件、未解決IDは77件。プレビューまでで取得は実行していない。
+- 追加の読取: Airflowは60 Findings（GITHUB 31、OSV 29）、n8nは139 Findings
+  （GITHUBのみ）。両者とも主ID・aliasから取得できるCVEは0件だった。
+  他の全Projectについて同じとは確認していない。
+- コピー元DBはそれぞれschema v3/v1のまま。コピーはv7で、いずれもintegrity checkは正常。
+
+### 解釈と製品への反映
+
+取得頻度を上げても、CVE対応のない対象には現在のCVEベースPoC取得は働かない。
+これはPoCが存在しない証拠ではない。未解決を隠さず一覧を続ける動作は適切だが、
+この結果だけでPoCの実運用開始を完了扱いにはしない。
+製品のプレビュー・取得結果に対象CVE数、未解決ID数、`no_resolvable_cves`を追加し、
+Finding自体が0件の状態と区別する。合成入力で重複排除・無通信・終了コードをテストする。
+次はDTの既存alias機能を優先して、設定と実データを確認する。明示的な対応情報を得る前に
+説明文からCVEを推測したり、製品へ別の巨大な脆弱性DBを追加したりしない。
+
+### 未確認と証拠
+
+今回の主ID/alias欠落の原因と現在のDT設定値は未確認。過去の設定観測だけで原因を断定しない。
+実APIからPoC取得→SQLite保存→期限内再利用の成功経路、設定変更後のalias反映、
+長期定期運用は未確認。匿名PoC APIへの接続成功実績とは別の確認事項である。
+ローカル証拠は `var/product-validation-20261015-poc/`（ignored）の同期JSON、
+`go-job.log`、DBとバックアップ、要約。生データ・Project UUID・認証情報はこの記録へ転載しない。
+
 ## 2026-10-12 — CI-built image through DT and asset-report lifecycle
 
 - Status: live local identity chain completed, including an in-window

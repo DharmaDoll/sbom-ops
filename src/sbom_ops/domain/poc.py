@@ -15,10 +15,25 @@ from sbom_ops.domain.advisory import (
 _CVE = re.compile(r"CVE-[0-9]{4}-[0-9]{4,}", re.IGNORECASE)
 
 
+class PocRunBusy(RuntimeError):
+    """Another local process already owns the PoC operation lock."""
+
+
 @dataclass(frozen=True)
 class PocTargets:
     cves: tuple[str, ...]
     unresolved: tuple[str, ...]
+
+    def summary(self) -> dict[str, str | int]:
+        if not self.cves:
+            status = "no_resolvable_cves" if self.unresolved else "no_findings"
+        else:
+            status = "partially_resolved" if self.unresolved else "resolved"
+        return {
+            "status": status,
+            "cve_count": len(self.cves),
+            "unresolved_id_count": len(self.unresolved),
+        }
 
 
 @dataclass(frozen=True)
@@ -70,10 +85,13 @@ class PocRecord:
 class PocFetchError(Exception):
     """Sanitized transport failure; never contains a response body or API key."""
 
-    def __init__(self, code: str, *, status: int | None = None) -> None:
+    def __init__(
+        self, code: str, *, status: int | None = None, retry_after: str | None = None
+    ) -> None:
         super().__init__(code)
         self.code = code
         self.status = status
+        self.retry_after = retry_after
 
 
 def select_poc_targets(payload: object, *, max_cves: int) -> PocTargets:

@@ -14,6 +14,17 @@ from sbom_ops.domain.advisory import (
     VulnerabilityEvidenceObservation,
 )
 from sbom_ops.domain.poc import PocRecord
+from sbom_ops.domain.poc_retry import PocSourceState
+
+POC_SOURCE_SCHEMA = """
+CREATE TABLE poc_source_state (
+    source TEXT PRIMARY KEY,
+    failures INTEGER NOT NULL CHECK(failures BETWEEN 0 AND 64),
+    retry_at TEXT,
+    last_error TEXT,
+    http_status INTEGER
+)
+"""
 
 POC_SCHEMA = """
 CREATE TABLE poc_observations (
@@ -49,10 +60,11 @@ class PocStore:
         )
         try:
             version = self._db.execute("PRAGMA user_version").fetchone()[0]
-            if version != 6:
+            if version not in (6, 7, 8, 9) or (not read_only and version < 7):
                 raise ValueError(
-                    "PoC storage requires schema v6; back up and migrate the DB"
+                    "PoC updates require schema v7; back up and migrate the DB"
                 )
+            self._version = version
             self._db.row_factory = sqlite3.Row
         except (sqlite3.Error, ValueError):
             self._db.close()
@@ -109,9 +121,46 @@ class PocStore:
         ).fetchone()
         return self._record(row) if row else None
 
-    def save(self, record: PocRecord) -> None:
+    def source_state(self, source: str) -> PocSourceState:
+        if self._version < 7:
+            return PocSourceState(source)
+        row = self._db.execute(
+            "SELECT * FROM poc_source_state WHERE source = ?", (source,)
+        ).fetchone()
+        if row is None:
+            return PocSourceState(source)
+        if row["retry_at"] is not None:
+            deadline = datetime.fromisoformat(row["retry_at"])
+            if deadline.tzinfo is None:
+                raise ValueError("PoC retry timestamp must include a timezone")
+        return PocSourceState(
+            source,
+            row["failures"],
+            row["retry_at"],
+            row["last_error"],
+            row["http_status"],
+        )
+
+    def save(self, record: PocRecord, state: PocSourceState | None = None) -> None:
+        if state is not None and state.source != record.source:
+            raise ValueError("PoC record and retry state sources must match")
         success = record.success
         with self._db:
+            # DML below commits the evidence and its retry barrier together.
+            if state is not None:
+                self._db.execute(
+                    "INSERT INTO poc_source_state VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(source) DO UPDATE SET failures=excluded.failures, "
+                    "retry_at=excluded.retry_at, last_error=excluded.last_error, "
+                    "http_status=excluded.http_status",
+                    (
+                        state.source,
+                        state.failures,
+                        state.retry_at,
+                        state.last_error,
+                        state.http_status,
+                    ),
+                )
             self._db.execute(
                 "INSERT INTO poc_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(cve, source) DO UPDATE SET "

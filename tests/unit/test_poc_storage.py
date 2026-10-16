@@ -173,6 +173,9 @@ def test_v5_requires_explicit_migration_and_backup_restores_old_schema(
     db_path, tmp_path
 ):
     with sqlite3.connect(db_path) as db:
+        db.execute("DROP TABLE identifier_reviews")
+        db.execute("DROP TABLE identifier_observations")
+        db.execute("DROP TABLE poc_source_state")
         db.execute("DROP TABLE poc_observations")
         db.execute("PRAGMA user_version=5")
     before = db_path.read_bytes()
@@ -183,7 +186,7 @@ def test_v5_requires_explicit_migration_and_backup_restores_old_schema(
         original = registry.list_services()
         registry.backup_to(tmp_path / "v5.sqlite3")
         assert registry.migrate()
-        assert registry.schema_version == 6
+        assert registry.schema_version == 9
         assert registry.list_services() == original
     with AssetRegistry(tmp_path / "v5.sqlite3", read_only=True) as registry:
         assert registry.schema_version == 5
@@ -194,6 +197,9 @@ def test_v5_requires_explicit_migration_and_backup_restores_old_schema(
 
 def test_poc_migration_failure_rolls_back_all_ddl(db_path, monkeypatch):
     with sqlite3.connect(db_path) as db:
+        db.execute("DROP TABLE identifier_reviews")
+        db.execute("DROP TABLE identifier_observations")
+        db.execute("DROP TABLE poc_source_state")
         db.execute("DROP TABLE poc_observations")
         db.execute("PRAGMA user_version=5")
     with AssetRegistry(db_path) as registry:
@@ -279,7 +285,11 @@ def test_cli_stores_without_json_and_preview_does_not_create_db(
     assert len(source.calls) == 1
     with PocStore(db, read_only=True) as store:
         assert store.get(CVE, source.source).success.record_count == 2
-    assert {p.name for p in tmp_path.iterdir()} == {"findings.json", "state.sqlite3"}
+    assert {p.name for p in tmp_path.iterdir()} == {
+        "findings.json",
+        "state.sqlite3",
+        "state.sqlite3.poc.lock",
+    }
 
 
 def test_sync_poc_db_failure_is_optional_not_a_dt_failure(

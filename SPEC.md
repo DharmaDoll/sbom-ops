@@ -8,7 +8,7 @@
 
 実装範囲はDT Finding取得、KEV補完、DT由来EPSS、優先度計算、資産台帳、
 補足JSON読込、CLI、任意のGitHub Issue同期。
-VEX書き込み、到達可能性分析、LLM、Jira、PoCの定期取得は未実装。
+VEX書き込み、到達可能性分析、LLM、Jiraは未実装。
 外部EPSSの `EpssClient` はスタブであり、設定したURLへの自動フォールバックはない。
 
 ## Design Constraints
@@ -136,7 +136,7 @@ HIGHラベルを数値CVSSの代わりにはしない。P3は低リスクの証�
   `reported` は実稼働・公開・SBOMの出所を独立に証明した意味ではない。
 - schema v3の訂正は同一対象の旧申告を一対一で指定する。
   新申告の観測日時以降だけ旧申告を無効にし、履歴を残す。
-  新規DBはv6（PoC専用テーブルを追加）。v1〜v5の資産は読取可能。移行は `assets migrate --backup PATH` で
+  新規DBはv9（CVE対応候補の採用・取消履歴を追加）。v1〜v8の資産は読取可能。移行は `assets migrate --backup PATH` で
   バックアップ先行で明示し、自動移行しない。移行後の検査失敗もschema変更ごと取り消す。
 - `assets update-service`は担当・重要度・事業影響の理由を更新する。
   安定IDは変更不可。変更者・変更理由が必須で、既定は読み取り専用プレビュー。
@@ -192,10 +192,14 @@ UUID以外の成果物同一性は検証しない。Findingへの適用性や実
 取得は独立した `poc-fetch --findings sync.json` で対象をプレビューし、
 `--execute` を明示した場合だけ行う。保存先は `--db`（既定 `var/assets.sqlite3`）。
 資産と同じSQLiteの `poc_observations` にCVE・情報源別で保存し、DT台帳は複製しない。
-通常のsyncには外部取得を足さない。schema v6の `--asset-db` からPoCも自動読込する。
+通常のsyncには外部取得を足さない。schema v6以降の `--asset-db` からPoCも自動読込する。
 別DBを選ぶ場合は `--poc-db`。JSONの `--advisory-snapshot` を明示した場合はJSONを優先し、
 DBのPoCとは混ぜない。`--poc-db` とJSONの同時指定は拒否する。
 成功したsyncの主ID・明示aliasからCVEを重複排除し、未解決IDは別記する。
+プレビューと取得結果の`selection`にCVE数・未解決ID数を出す。
+状態は`no_findings`（入力0件）、`no_resolvable_cves`（CVE対応0件）、
+`partially_resolved`（一部未解決）、`resolved`。件数はそれぞれの集合サイズで解決率ではない。
+CVE対応0件かつ未解決ありなら通信せず部分結果（終了コード1）とし、PoCなしとしない。
 Vulnerability-Lookupの `GET /api/sighting/` にCVEと
 `type=published-proof-of-concept&page=1&per_page=1` を送り、件数と先頭報告を検証する。
 資産・Project情報は送らない。PoC本体、参照URL、投稿者情報は保存・追跡しない。
@@ -205,14 +209,60 @@ Vulnerability-Lookupの `GET /api/sighting/` にCVEと
 既定は25 CVE以内、呼出間隔3.1秒以上、期限6時間。CLIで上限・間隔・期限を指定できる。
 通信失敗で残りの取得を停止し、即時再試行しない。成功・失敗を一件ずつDBへ確定保存する。
 既定の更新間隔は1時間（`--refresh-seconds`）。間隔未満かつ期限内の成功結果だけを再利用し、
-期限切れ・未来日時・失敗したCVEは次の明示実行で再取得する。TTL変更は次の取得結果から適用。
+期限切れ・未来日時・失敗したCVEは次の取得対象とするが、情報源の待機中は通信しない。
+TTL変更は次の取得結果から適用。
 中断後も確定済みの新しい成功結果は再利用する。PoC本文の差分取得ではなく、対象CVEの選別である。
 失敗時は最終成功の件数・時刻・期限を残し、直近の試行日時・エラー・HTTP状態を別列に保存する。
 syncのPoC判定は取得失敗が残っていればunknownとし、過去の件数で現在の有無を断定しない。
 `collection.results`に最終成功時刻・失敗理由・HTTP状態・未実行・キャッシュ再利用を出す。
 `--output NEW_FILE` は任意のJSONエクスポート。DB保存後に行い、既存ファイルは上書きしない。
-DBは明示バックアップ付きでv6に移行し、自動移行しない。PoCだけの読込失敗は任意入力の失敗として
-DT評価を継続する。全試行の履歴、定期実行、実行間のレート制限待機・バックオフは未実装。
+PoC更新はv7〜v9に対応し、自動移行しない。移行コマンドと新規作成は最新v9を使う。
+v6は読み取りのみ継続できる。
+PoCだけの読込失敗は任意入力の失敗としてDT評価を継続する。
+`poc_source_state`に情報源別の連続失敗数・再試行可能時刻・エラーを、観測と同じトランザクションで保存。
+失敗時は今回の通信を止め、既定60秒から倍増（設定上限3600秒）。CLIの
+`--retry-base-seconds / --retry-max-seconds`で設定できる。
+Retry-Afterの秒数・HTTP日時を解釈し、指定が有効なら計算した待機時刻との遅い方を採用する。
+取得先の指定はローカル上限で切り詰めない。欠落・不正な値は設定した待機を使う。
+待機中も有効な成功キャッシュは読めるが、新たな取得はせず、終了コード1と`source_state.retry_at`を返す
+（全対象をキャッシュで満たせる場合は0）。別CVEの指定でも待機を回避できない。
+成功した通信で連続失敗を解消する。待機の省略・リセット用フラグは設けない。
+同じDB・同じ情報源識別子を使うこと。取得中はDBの実体パスに対応する`.poc.lock`を保持し、
+重複起動は待たずに終了コード3で停止する。プレビューはロックも作らない。
+単一ホストのUnix系OS・ローカルファイルシステムが対象。別DB・ハードリンク・共有ストレージでの排他は保証しない。
+ロックファイルは残し、OSがプロセス終了時にロックを解放する。運用中にファイルを削除しない。
+`scripts/refresh_poc.py`は外部タイマーから呼び出す単発処理。既定はプレビューで、
+`--execute`時のみ、対象1 Projectのsync JSON→PoC取得→確認用一覧を実行する。
+既存v7以降の資産DBを要求し、自動作成・移行はしない。常に`--dry-run --no-github`を使う。
+全体は別の`.poc-job.lock`で重複起動を防ぐ。同期結果は実行ごとの一時ディレクトリに置き、
+同期失敗・不正な入力では取得を止め、過去の入力に代替しない。
+PoC部分失敗（終了コード1）でも一覧を出す。各段階の制限時間は既定900秒、
+`--stage-timeout`で指定できる。失敗・時間切れは2、重複起動は3。
+タイマーの登録・全試行履歴の保管は行わない。定期運用の実環境での通し確認は未完了。
+
+`id-candidates`は成功したsync JSONの未解決GO/GHSA/PYSEC IDに限定してOSVを照会する独立コマンド。
+既定はプレビュー、`--execute`でのみ通信・保存、`--show`は保存履歴の読取のみ。
+最大25 ID、明示`--id`で入力中の対象を選択可能。主IDを保持し、OSVの明示aliasだけから
+CVE候補を作る。応答ID一致、timezone付きmodifiedが観測時刻以下であることを検証する。
+複数候補・候補なし・撤回・取得失敗を区別し、説明文・related・upstreamは使わない。
+schema v8の`identifier_observations`へ元ID・DT情報源・要求ID・出典・観測/更新日時・候補・
+状態を追記する。観測行の`approved=false`は取得時点の状態で変更しない。
+採用状態は別のレビュー履歴で管理し、通常のsync・PoC取得・KEV判定へはまだ接続しない。
+単一ホストで同じDBの候補取得をロックし、3.1秒間隔、初回エラーで残りを止める。
+手動確認用。候補取得のキャッシュ、再試行待機、定期取得は未実装。
+契約根拠は[OSV ID API](https://google.github.io/osv.dev/get-v1-vulns/)と
+[OSV schema](https://ossf.github.io/osv-schema/)。合成応答による製品テストを持つ。
+
+`id-review`はv9の`identifier_reviews`へ採用・取消を追記する。既定プレビューで、
+`--execute`でのみ保存する。観測ID・元ID・DT情報源・選択CVE・変更者・理由・日時を保持し、
+採用には明示した期限が必要。既定24時間の観測年齢上限は`--max-age-hours`で変更できる。
+期限は現在より後、観測日時＋年齢上限以下。未来・古い観測、最新でない観測、候補外CVE、
+DT情報源不一致、撤回済み・失敗観測は拒否する。複数候補からは明示した1 CVEだけを採用する。
+採用の再確認と追記は`BEGIN IMMEDIATE`の同一トランザクション内で行う。
+元ID＋DT情報源ごとの最新判断だけが有効。取消はその最新採用の観測ID・CVEと一致する必要がある。
+期限切れ・未来の判断・新しい観測の追加は有効扱いにしない。内容が同じ再取得でも再確認を要求する。
+変更者は入力された申告名であり、認証や署名ではない。実行者の保護はローカルDBのアクセス権で行う。
+この段階は判断の保存・表示まで。`poc_connected=false`を出し、PoC取得・表示への限定接続は未実装。
 
 - schema_versionは整数1、snapshot_id、timezone付きgenerated_at、
   vulnerability_observations、project_exposureが必要。
@@ -309,6 +359,7 @@ labは製品パッケージ外とし、生の結果・環境UUID・認証情報�
 変更実験は使い捨てProject・限定権限・明示的opt-inが必要。
 削除は実行単位の台帳・実対象の同一性確認・専用キー・明示実行・監査を必要とする。
 token完了直後に削除せず、非同期処理の静穏を確認して別操作で行う。
+即時の自動削除は禁止する（Immediate automatic cleanup is prohibited）。
 
 ## Google Cloud Deployment Contract
 
