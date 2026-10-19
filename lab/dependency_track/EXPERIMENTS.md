@@ -1,5 +1,94 @@
 # Dependency-Track Lab Experiment Ledger
 
+## 2026-10-19 — 1サービスの登録・新版並存・担当変更・停止・復元
+
+- 結果: #11の限定した運用演習を実施。1サービス・1配布単位・新旧2版で一連の操作を確認した。
+- 対象: DT bundled 4.14.3、SQLite v9、ChromeDriver 138.0.7204.157。
+  mainの成功済みCI [38977941893](https://github.com/DharmaDoll/sbom-ops/actions/runs/38977941893)
+  と [39188661604](https://github.com/DharmaDoll/sbom-ops/actions/runs/39188661604) のデモイメージ。
+- 実物と架空: イメージ・SBOM・ローカルコンテナ・DT Findingは実物。
+  サービスの業務上の用途・重要度・担当team-a/team-bは架空。運用担当者の操作をagentが代行した。
+  ローカルでの稼働だけを確認し、インターネット公開は`unknown`とした。
+- 安全策: 新しい演習DBと演習用Project 2つのみ。Analysis・VEX・抑制・DT設定は変更せず、
+  全syncは`--dry-run --no-github`。既存DB・Projectへの上書きや削除はしない。
+
+### 目的と実施内容
+
+個別機能のテストではなく、同じサービスに資産・成果物・担当・PoC・稼働状況を結び付け、
+更新や停止後にも運用担当者が次の行動を説明できるかを確認する。
+新旧CI成果物のSHA-256、ソースコミットとmain成功結果を照合し、各アーカイブから
+Trivyのオフライン・ライセンススキャンでCycloneDX SBOMを生成した。
+Trivyでは脆弱性DBのスキャンをしていない。両イメージは異なるIDだがバイナリは同一だった。
+そのため「再配布・版切替」の演習であり、脆弱性を直した新版とはしなかった。
+
+サービスとweb配布単位をSQLiteに登録。旧版を非root・read-only・capabilitiesなし・
+リソース制限付きでlocalhostだけに起動し、イメージIDとhealth応答を確認した。
+CIの代役として既存uploadスクリプトをローカル実行し、SBOMをDTへ直接投入した。
+GitHub ActionsからこのDTへアップロードしたわけではない。中間サーバは使っていない。
+BOM処理token完了後、ChromeDriverでDTへログインし、Project・Components・
+Audit Vulnerabilities・Exploit Predictionsを読み取り、CLIと照合した。
+
+続いて同名・別のイメージID版を別Projectとして投入。新旧を並行稼働させ、各UUIDを承認して
+期限付き申告を登録した。担当変更のプレビュー／保存、旧リンクの撤回／再承認、
+新版の短期限申告への明示訂正と自然な期限切れを試した。
+同じ資産DBでGO ID 1件のCVE候補を取得し、公式対応を確認して検証用に採用、PoCを取得した。
+最後に両コンテナを停止し、停止申告へ訂正。オンラインバックアップを検査し、
+バックアップから別DBへ復元して両Projectを再同期した。
+
+### 観測した事実
+
+- 新旧ともSBOMのイメージID、実行コンテナ、DT Project版が一致した。
+  Componentは`demo`、デモGo module、`stdlib v1.24.4`の3つ。
+  UI初期表示のComponents集計は0だったが、一覧読込後は3件になった。
+- 両版とも60 Findings。選択した`GO-2025-3849`はOSV由来、stdlib v1.24.4、
+  UIはUnassigned、Analysisは`-`、抑制表示なし、CVSSv3/v4・EPSSはいずれも`-`だった。
+  CLIはCVSS/EPSSがnull、NOT_SET、非抑制、P3。理由にスコア未取得が明記された。
+- 初回のProject対応はmatched、担当team-a、稼働申告はreported/deployed、公開はunknown。
+  新旧並存後もそれぞれ正しいイメージIDの申告へ結び付いた。
+- 担当変更プレビューではDBのSHA-256が不変。保存後の一覧はteam-bとなり、変更履歴を保持した。
+  旧リンク撤回中はrevokedとなって60 Findingsは残り、再承認後の両リンク監査はmatched。
+  未登録の配布単位への承認は終了コード2で拒否し、DBのSHA-256は変化しなかった。
+  これは訂正手順の演習であり、既存データの誤紐付けを発見したわけではない。
+- 新版の稼働申告を明示訂正し、検証用の期限を30秒にした。
+  期限前はreported、32秒待機後のsyncはexpired・deployment_status=null。
+  コンテナ自体はその時点でもrunning=trueで、期限切れは停止と区別された。
+- [Go公式の対応](https://pkg.go.dev/vuln/GO-2025-3849)とOSVの明示aliasはCVE-2025-47907で一致。
+  採用後、Vulnerability-LookupはPoC報告0件を返し、同じ資産DBでteam-bとnot_observedを併記できた。
+  この取得先での未観測であり、世界中にPoCが存在しないという意味ではない。
+- 両コンテナのID・イメージを照合して停止し、running=falseを確認してから
+  `--supersedes-report`でnot_deployedへ訂正。両版のsyncはreported/not_deployedとなった。
+  各60 Findingsが残り、全同期のIssue作成・更新・終了は0件。
+- 旧版の主ID・Component・P3・CVSS/EPSS・Analysis・抑制・評価理由は、
+  初回／担当変更＋PoC補完後／停止・復元後で一致した。
+- 元DB・バックアップ・復元DBは権限600、整合性検査は正常。SQL dumpは元DBと復元DBで一致。
+  復元後の両Projectについてregistry_projects・registry_deployments・review_queueが
+  停止後の元DBの結果と一致し、候補・採用・PoC・変更履歴もdumpに保持された。
+
+### 運用担当者向けの整理
+
+| 予想・問い | 確認した事実 | 次に確認すること・担当 |
+| --- | --- | --- |
+| SBOMだけで担当や稼働が分かるか | DTはComponentとFindingを持つ。担当は台帳登録、稼働は期限付き申告から表示された。 | 資産担当が担当変更と稼働の根拠を更新する。Project名だけでは本番稼働を断定しない。 |
+| P3なら後回しで安全か | 今回はCVSS/EPSS未提供の既定評価。PoC 0件でも適用性は判定していない。 | 担当team-bがGo公式の対象パッケージ・関数と利用状況、ツールチェーン更新を確認する。自動抑制しない。 |
+| 新しい版なら修正済みか | 今回の新旧は同一バイナリで、Findingは各60件のまま。 | 開発担当が実際の修正内容・ビルド情報・更新後SBOMを示す。イメージIDの変更だけでは判断しない。 |
+| 期限切れや停止でFindingは消えるか | 期限切れは不明、停止申告はnot_deployed。DT Findingはどちらでも残る。 | 運用担当が実稼働を確認し申告を更新する。修正確認やIssue終了は別工程。 |
+| 復元後は過去の状態を信用してよいか | 関係・履歴は復元できるが期限は延びない。 | 復旧担当が対象DB・整合性・現在のDT対応・期限を再確認する。 |
+
+### 製品判断・限界・証拠
+
+新しい製品機能を増やさず、既存CLIで中核の運用フローを通せた。
+運用ガイドへ更新・並存・訂正・期限切れ・停止・復元の確認順を追記し、
+P3とスコア未取得を区別する注意を加えた。今回の範囲では製品コードの不具合は見つからなかった。
+これは架空業務のローカル演習であり、実担当者の本番承認、インターネット公開、
+SBOM網羅性、全Findingへの影響、長期運用、署名付きビルド証明は未検証。
+製品GitHub同期の書込みは後続 #7 で扱い、今回の成功で有効化しない。
+
+ローカル証拠: `var/operator-review/issue11-20261019.*/` のCI実行記録・新旧アーカイブ・
+SBOM・health/稼働/停止記録、`01-*`〜`28-*`のCLI結果、`ui-*`のDOM・画面記録、
+3つのSQLite DB（すべてignored）。認証情報・環境固有UUID・生の応答はGitへ転載しない。
+認証済みブラウザとChromeDriverは終了、演習コンテナ2つは停止した。
+停止コンテナ・イメージ・DT Project・検証DBは証拠として残し、削除していない。
+
 ## 2026-10-18〜19 — Quick Start FindingへのPoC補完を読取専用で確認
 
 既存Quick Start Project（DT bundled 4.14.3）を製品CLIで読み取り、77 Findings中の

@@ -193,6 +193,10 @@ P0→P3順の日本語一覧になり、優先度の理由・DT分析・抑制�
 1項目は1 Findingで、複数環境はその内訳。抑制済みの行も表示するため、上から機械的に
 対応依頼を出さずDTの判断も確認する。期限切れ・矛盾・未紐付けは安全という意味ではない。
 PoC未取得は「不明」であり「なし」ではない。情報源別件数を合算して独自PoC数にしない。
+CVSS・EPSSが未提供のFindingもある。DT画面の`-`とCLIの`null`を照合し、
+P3でも理由に「未取得」があれば低リスクの証明とは扱わない。担当者は情報源の助言と
+利用しているパッケージ・関数を確認する。画面を開いた直後の集計値だけで判断せず、
+Component一覧・監査一覧が読み込まれた後に対象の行を確認する。
 `--output json`の`review_queue`にも同じ内容を出し、従来の`assessments`等は残す。
 資産一覧はSQLiteの承認済み対応だけを使い、評価用の`--asset-inventory`とは混ぜない。
 外部接続なしの練習は`python examples/review_scenario.py`で試せる。
@@ -534,7 +538,8 @@ SQLiteはローカルの永続ディスク上で単一ホストから使い、�
 既存の出力先は上書きしない。新規DBは所有者だけが読み書きできる権限で作る。
 登録以外のコマンドはDBパスの誤りを空DBの新規作成として扱わない。
 バックアップは別の永続ストレージに保管し、`assets --db BACKUP_PATH check`
-で開けることを定期的に確かめる。自動保持期間と復元手順は未整備である。
+で開けることを定期的に確かめる。別DBへ復元して照合する手順は下記の運用演習を参照する。
+本番での切替手順とバックアップの自動保持期間は未整備である。
 複数ホストから同じファイルを共有する運用やネットワークファイルシステムには
 使わない。その運用が必要になればサーバー型DBへ移行する。
 GitHub Actionsのように実行環境が毎回破棄されるジョブには、DBファイルを
@@ -664,6 +669,49 @@ Trivyの`image --format cyclonedx`の対象、DT Project版、
 アーカイブ内のSHA-256一覧だけを独立した出所証明とみなさない。
 
 ## 日常の運用とログ
+
+### 同じサービスで更新・担当変更・停止を通す
+
+初回演習の後、前節のCI成果物を使って次の流れを試す。DB・サービスID・配布単位は同じものを使う。
+各段階の`sync --asset-db ... --dry-run --no-github --output json`を別ファイルへ保存する。
+新旧イメージが別IDでも、中身が同じ再ビルドなら脆弱性修正とは限らない。
+同じ名前・別の版としてDTへ投入し、既存ProjectのSBOMを上書きしない。
+
+| 段階 | 操作と確認すること |
+| --- | --- |
+| 旧版の稼働 | CIの出所・チェックサム・イメージID・healthを照合。Project名・版・UUID・ComponentをDT画面で確認し、台帳へ承認する。 |
+| 新版と並存 | 同じサービスの新版SBOMを直接投入。新しいProject UUIDを別途承認し、各版に稼働申告を登録。両Projectで別々にsyncし、版を取り違えないことを確認する。 |
+| 担当変更 | `update-service`のプレビューを確認してから`--apply`。新しいsyncの担当は変わるが、Findingや優先度は変わらない。変更理由を`history`で確認する。 |
+| リンク訂正 | 演習用のリンクだけを`revoke-link`で撤回し、syncが担当・稼働を結び付けなくなることを確認。DTの名・版・UUIDを再確認して`approve`し直す。過去履歴は消さない。 |
+| 申告の期限切れ | 演習では短い期限の申告へ明示訂正し、期限前後のsyncを比較。`expired`は「今は不明」であり、`not_deployed`ではない。コンテナが動いていても申告は失効する。 |
+| 実際の停止 | 演習コンテナのIDを照合して停止を確認し、`--supersedes-report`で同じ成果物の申告を`not_deployed`へ訂正。新旧両版で確認する。停止してもDTのFindingは残る。 |
+| バックアップから確認 | `backup`→バックアップの`check`→別DBとして復元→`audit-links`とsync。担当・承認・申告・履歴・PoCが引き継がれるか確認する。元DBは上書きしない。 |
+
+担当変更とバックアップの例。`DEMO_SERVICE_ID`とDBパスは今回の演習用の値を使い、
+バックアップ・復元先は未使用の名前にする。
+
+```bash
+sbom-ops assets --db var/assets.sqlite3 update-service \
+  --service "$DEMO_SERVICE_ID" --owner training-team-b \
+  --actor your-name --reason '演習での担当引継ぎ'
+# プレビューを確認してから、同じコマンドに --apply を付けて保存する
+sbom-ops assets --db var/assets.sqlite3 history --service "$DEMO_SERVICE_ID"
+sbom-ops assets --db var/assets.sqlite3 backup --output var/exercise-backup.sqlite3
+sbom-ops assets --db var/exercise-backup.sqlite3 check
+# backupコマンドを使い、検査したバックアップから別のDBへ複製する
+sbom-ops assets --db var/exercise-backup.sqlite3 backup --output var/exercise-restored.sqlite3
+sbom-ops assets --db var/exercise-restored.sqlite3 audit-links
+sbom-ops sync --project "$SBOM_OPS_DT_PROJECT_UUID" \
+  --asset-db var/exercise-restored.sqlite3 --dry-run --no-github --output review
+```
+
+PoC対応の採用履歴も使う場合は、最後のsyncに`--use-reviewed-identifiers`を明示する。
+復元しても期限は延びない。過去の「稼働中」やPoC件数を、復元した時点の事実へ読み替えない。
+本番での復旧では、書き込み元の停止・保管先・ファイル権限なども別途決める。
+各段階の「予想／確認した事実／疑問／次の確認先」を残す。実施例と限界は
+[DT検証記録](../lab/dependency_track/EXPERIMENTS.md)の2026-10-19項を参照。
+
+### 日常の流れ
 
 1. CIがSBOMをDTへ直接送る。受付、処理token、Findingの状態を区別する。
 2. `sync --wait-for-analysis --asset-db PATH --no-github` で評価と資産対応を確認する。
