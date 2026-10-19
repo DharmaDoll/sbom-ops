@@ -24,7 +24,7 @@ def test_product_does_not_import_repository_lab() -> None:
         str(path.relative_to(REPOSITORY_ROOT)): sorted(
             module
             for module in _imports(path)
-            if module == "dt_lab" or module.startswith("dt_lab.")
+            if module.split(".", 1)[0] in {"dt_lab", "exploit_lab"}
         )
         for path in PRODUCT_ROOT.rglob("*.py")
     }
