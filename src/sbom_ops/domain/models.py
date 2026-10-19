@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from sbom_ops.domain.advisory import (
+    EvidenceFreshness,
     PocReportSummary,
     VulnerabilityEvidenceObservation,
     summarize_poc_reports,
 )
+from sbom_ops.domain.poc_identity import PocIdentity
 
 
 class Severity(StrEnum):
@@ -157,7 +160,14 @@ class FindingAssessment:
     vulnerability_aliases: tuple[str, ...] = ()
     cvss_version: str | None = None
     advisory_observations: tuple[VulnerabilityEvidenceObservation, ...] = ()
+    poc_identity: PocIdentity | None = None
+    reviewed_poc_observations: tuple[VulnerabilityEvidenceObservation, ...] = ()
 
     @property
     def poc_reports(self) -> PocReportSummary:
-        return summarize_poc_reports(self.advisory_observations)
+        reviewed = self.reviewed_poc_observations
+        if not self.poc_identity or not self.poc_identity.usable(datetime.now(UTC)):
+            reviewed = tuple(
+                replace(row, freshness=EvidenceFreshness.UNKNOWN) for row in reviewed
+            )
+        return summarize_poc_reports(self.advisory_observations + reviewed)

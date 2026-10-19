@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
 
-from sbom_ops.domain.identifier_candidates import IdentifierObservation
+from sbom_ops.domain.identifier_candidates import OSV_SOURCE, IdentifierObservation
 from sbom_ops.domain.identifier_review import IdentifierDecision
 
 IDENTIFIER_SCHEMA = """
@@ -140,6 +140,20 @@ class IdentifierStore:
         )
         fields = [column[0] for column in cursor.description]
         return [dict(zip(fields, row, strict=True)) for row in cursor]
+
+    def review_context(
+        self, original_id: str, dt_source: str
+    ) -> tuple[dict[str, object] | None, dict[str, object] | None, int | None]:
+        """Read one consistent view; do not hold a transaction during HTTP calls."""
+        self.require_reviews()
+        with self._db:
+            self._db.execute("BEGIN")
+            decision = self.latest_review(original_id, dt_source)
+            observation = (
+                self.observation(decision["observation_id"]) if decision else None
+            )
+            latest = self.latest_observation_id(original_id, OSV_SOURCE)
+            return decision, observation, latest
 
     @contextmanager
     def decision_transaction(self) -> Iterator[None]:

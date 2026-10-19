@@ -13,7 +13,7 @@ def test_offline_poc_scenario() -> None:
     assert completed.stderr == ""
     for expected in (
         "外部通信なし",
-        "架空の対応を期限付き採用→期限切れ確認→取消。PoCとの接続はまだ行いません。",
+        "架空の対応を期限付き採用→PoC報告2件を表示→期限切れ・取消後は不明。優先度は不変。",
         "架空のCVE候補をSQLiteへ保存。未採用のためPoC紐付け・優先度は変更しません。",
         "CVE対応なし: 脆弱性は1件、取得対象CVEは0件。PoCなしとは判断しません。",
         "取得時=reported 件数=2 6時間後=unknown",

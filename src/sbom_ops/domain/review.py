@@ -46,6 +46,7 @@ class FindingReview:
             "analysis_state": item.analysis_state.value,
             "is_suppressed": item.is_suppressed,
             "poc_reports": item.poc_reports.as_dict(),
+            "poc_identity": item.poc_identity.as_dict() if item.poc_identity else None,
             "asset_status": self.asset_status,
             "asset": self.asset.as_dict() if self.asset else None,
             "environments": [item.as_dict() for item in self.environments],

@@ -11,11 +11,16 @@ from sbom_ops.domain.identifier_candidates import (
     IdentifierTarget,
     interpret_osv_candidates,
 )
+from sbom_ops.domain.models import AnalysisState, FindingAssessment, Priority, Severity
 from sbom_ops.domain.poc import PocFetchError, select_poc_targets
 from sbom_ops.services.advisory_snapshot import load_advisory_snapshot
 from sbom_ops.services.identifier_review import (
     list_identifier_reviews,
     review_identifier,
+)
+from sbom_ops.services.poc_identity import (
+    attach_reviewed_poc,
+    select_reviewed_poc_targets,
 )
 from sbom_ops.services.poc_refresh import collect_poc_snapshot
 from sbom_ops.storage.asset_registry import AssetRegistry
@@ -122,6 +127,59 @@ def main() -> int:
                 ]
                 == "expired"
             )
+            mapped_targets, mappings = select_reviewed_poc_targets(
+                {
+                    "status": "succeeded",
+                    "assessments": [
+                        {
+                            "vulnerability_id": "GO-2026-10001",
+                            "vulnerability_source": "OSV",
+                        }
+                    ],
+                },
+                candidates,
+                max_cves=25,
+                now=NOW,
+            )
+            assert mapped_targets.cves == ("CVE-2026-10001",)
+            with PocStore(db_path) as pocs:
+                collect_poc_snapshot(
+                    mapped_targets,
+                    FictionalPocSource(),
+                    repository=pocs,
+                    clock=lambda: NOW,
+                )
+                mapped_snapshot = pocs.snapshot()
+            finding = FindingAssessment(
+                "fictional-project",
+                "fictional-finding",
+                "GO-2026-10001",
+                "OSV",
+                Severity.HIGH,
+                8.0,
+                None,
+                Priority.P2,
+                AnalysisState.NOT_SET,
+                False,
+                ("架空の評価理由",),
+            )
+            projected = attach_reviewed_poc(
+                (finding,), mapped_snapshot, candidates, now=NOW
+            )[0]
+            assert (
+                summarize_poc_reports(
+                    projected.reviewed_poc_observations, now=NOW
+                ).status.value
+                == "reported"
+            )
+            assert (
+                projected.vulnerability_aliases == ()
+                and projected.priority == Priority.P2
+            )
+            expired = attach_reviewed_poc(
+                (finding,), mapped_snapshot, candidates, now=NOW + timedelta(hours=1)
+            )[0]
+            assert expired.reviewed_poc_observations == ()
             review_identifier(
                 candidates, **decision, action="revoke", expires_at=None, execute=True
             )
@@ -129,8 +187,12 @@ def main() -> int:
                 list_identifier_reviews(candidates, now=NOW)[0]["effective_status"]
                 == "revoked"
             )
+            revoked = attach_reviewed_poc(
+                (finding,), mapped_snapshot, candidates, now=NOW
+            )[0]
+            assert revoked.poc_reports.status.value == "unknown"
         print(
-            "架空の対応を期限付き採用→期限切れ確認→取消。PoCとの接続はまだ行いません。"
+            "架空の対応を期限付き採用→PoC報告2件を表示→期限切れ・取消後は不明。優先度は不変。"
         )
         with PocStore(db_path) as store:
             snapshot = collect_poc_snapshot(

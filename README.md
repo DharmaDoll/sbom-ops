@@ -64,8 +64,9 @@ JSON出力は `python examples/review_scenario.py --output json` で確認でき
 報告あり／未観測／取得失敗／期限切れと、再試行の待機を外部接続なしで試せます（一時DBのみ）。
 実際の取得は[PoC取得手順](docs/operations.md#poc報告を明示的に取得する)を参照してください。
 CVE対応がないIDは、[対応候補の取得手順](docs/operations.md#cve対応候補を確認する)で
-OSVの候補をSQLiteに保存・確認できます。期限付きの採用・取消も記録できますが、
-まだPoCへの紐付けや優先度変更には使いません。
+OSVの候補をSQLiteに保存・確認できます。期限付き採用後は、
+[明示オプション](docs/operations.md#採用したcve対応をpoc取得表示へ使う)でPoC取得・表示につなげられます。
+上の架空演習では、この接続と期限切れ・取消も試せます。P0〜P3やDT分析は変わりません。
 
 SQLiteへの登録例も、書き込まずに確認できます。
 

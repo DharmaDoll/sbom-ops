@@ -932,7 +932,8 @@ DB移行前バックアップに戻す場合、移行後の資産・PoC・候補
 
 同一の脆弱性を指す対応かを確認した人が、`id-candidates --show`の観測IDとDT情報源を指定する。
 これはPoCの有効性のレビューではない。変更者・理由・期限を記録する機能で、
-**現時点では採用してもPoC取得や表示にはつながらない**（`poc_connected=false`）。
+**採用しただけではPoC取得や表示にはつながらない**（このコマンドは`poc_connected=false`）。
+接続には下記の`--use-reviewed-identifiers`を取得・表示のそれぞれで指定する。
 候補観測の`approved=false`は取得時点の記録であり、現在の採用状態は`id-review show`で確認する。
 
 ```bash
@@ -955,6 +956,37 @@ sbom-ops id-review --db var/assets.sqlite3 revoke \
 新しい候補観測が追加されると、同じ内容でも既存採用は`observation_changed`となり再確認が必要。
 このほか`active`・`expired`・`future`・`revoked`・`superseded`を表示する。
 変更者は申告名で、本人認証ではない。DBとバックアップのアクセス権を管理する。
+
+### 採用したCVE対応をPoC取得・表示へ使う
+
+同じv9のDBにPoC観測と採用履歴を保存する。既存DBが古い場合は先にバックアップ付きで移行する。
+以下は通常のsyncで保存した`var/sync.json`と、確認して採用した対応を使う例。
+
+```bash
+# 対象CVE・未解決ID・採用根拠を通信なしで確認
+sbom-ops poc-fetch --findings var/sync.json --db var/assets.sqlite3 \
+  --use-reviewed-identifiers
+# 確認後に取得。同じDBへCVE別PoC観測を保存
+sbom-ops poc-fetch --findings var/sync.json --db var/assets.sqlite3 \
+  --use-reviewed-identifiers --execute
+# DTを再読取し、有効な対応だけを使ってPoCを表示（PoC APIには通信しない）
+sbom-ops sync --project "$DT_PROJECT_UUID" --asset-db var/assets.sqlite3 \
+  --use-reviewed-identifiers --dry-run --no-github --output review
+```
+
+`DT_PROJECT_UUID`は今回確認するProjectのUUIDに置き換える。JSONが必要なら`--output json`を使う。
+対応の元ID・DT情報源・CVE・採用ID・観測ID・出典・理由・期限が一覧にも残る。
+採用者と理由はsync JSONや監査ログにも含まれるため、秘密情報を書かず、出力の閲覧権限を管理する。
+PoCが0件と確認できた場合と、未採用・取消・期限切れ等で確認できない場合は区別する。
+取得待機中に採用が無効になれば`identifier_review_changed`で通信を見送り、結果は一部未完了になる。
+このエラーでは取得先の待機時間を延長しない。対応を再確認してからプレビューをやり直す。
+
+取消・新しい候補観測の追加後は、上のsyncを再実行して「不明」に戻ることを確認する。
+過去のPoC観測は削除しない。古いJSONや既に出力した画面は更新されないため、判断には新しい出力を使う。
+同じIDでもDT情報源が異なれば別の採用が必要。DTに主CVE・明示CVE aliasがあればそちらを使う。
+採用済み対応の読取に失敗してもDT評価は残り、`CVE対応入力=invalid`と警告を表示する。
+KEV・EPSS・P0〜P3・DT分析・Issue操作は変えず、PoCの有効性も審査しない。
+定期ジョブにはまだ接続しない。まず対象を限定した手動操作で確認する。
 
 ## GitHub同期の確認
 

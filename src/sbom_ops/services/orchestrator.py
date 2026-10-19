@@ -134,6 +134,8 @@ class RunResult:
     advisory_snapshot_generated_at: str | None = None
     advisory_snapshot_sha256: str | None = None
     advisory_snapshot_error: str | None = None
+    poc_identity_status: str = "not_requested"
+    poc_identity_error: str | None = None
     project_exposure_observations: tuple[ProjectExposureObservation, ...] = ()
     actions: tuple[str, ...] = ()
     assessments: tuple[FindingAssessment, ...] = ()
@@ -181,6 +183,8 @@ class RunResult:
             "advisory_snapshot_generated_at": self.advisory_snapshot_generated_at,
             "advisory_snapshot_sha256": self.advisory_snapshot_sha256,
             "advisory_snapshot_error": self.advisory_snapshot_error,
+            "poc_identity_status": self.poc_identity_status,
+            "poc_identity_error": self.poc_identity_error,
             "project_exposure_observations": [
                 observation.as_dict()
                 for observation in self.project_exposure_observations
@@ -212,6 +216,9 @@ class RunResult:
                         for observation in item.advisory_observations
                     ],
                     "poc_reports": item.poc_reports.as_dict(),
+                    "poc_identity": (
+                        item.poc_identity.as_dict() if item.poc_identity else None
+                    ),
                     "rationale": list(item.rationale),
                 }
                 for item in self.review_assessments()

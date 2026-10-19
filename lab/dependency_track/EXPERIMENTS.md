@@ -1,5 +1,16 @@
 # Dependency-Track Lab Experiment Ledger
 
+## 2026-10-18〜19 — Quick Start FindingへのPoC補完を読取専用で確認
+
+既存Quick Start Project（DT bundled 4.14.3）を製品CLIで読み取り、77 Findings中の
+GHSA 1件で、採用済みCVE対応によるPoC表示・期限切れ・再取得・取消を確認した。
+DT設定・Analysis/VEX・Projectは変更せず、GitHub同期も無効。新しい検証用SQLiteだけに保存した。
+PoC提供APIの通信失敗と、無効なProject指定による最初の同期失敗も含む。
+対象の通常評価は補完の前後で一致した。目的・操作・観測事実・判断・未確認事項は
+[PoC検証記録](../exploit_intelligence/EXPERIMENTS.md#2026-10-1819--採用したghsacve対応から製品のpoc取得表示を確認)
+を正本とする。ローカル証拠は `var/product-validation-20261018-poc.*/`（ignored）。
+1サービスの担当・資産・稼働を含む通し確認は別の #11 で行う。
+
 ## 2026-10-15 — 主CVE 10件のPoC取得・SQLite保存・別プロセス再利用
 
 - 結果: CVEが主IDの経路は実環境で確認済み。非CVEの対応付けと1サービス全体の運用は未完了。

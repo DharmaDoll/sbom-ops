@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import sys
+from contextlib import ExitStack
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -55,6 +56,11 @@ from sbom_ops.services.identifier_review import (
     review_identifier,
 )
 from sbom_ops.services.orchestrator import Orchestrator, RunResult
+from sbom_ops.services.poc_identity import (
+    attach_reviewed_poc,
+    reviewed_target_is_current,
+    select_reviewed_poc_targets,
+)
 from sbom_ops.services.poc_refresh import collect_poc_snapshot
 from sbom_ops.services.sync_log import append_sync_event
 from sbom_ops.storage.asset_registry import CURRENT_SCHEMA_VERSION, AssetRegistry
@@ -113,6 +119,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     poc_parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     poc_parser.add_argument("--max-cves", type=int, default=25)
+    poc_parser.add_argument(
+        "--use-reviewed-identifiers",
+        action="store_true",
+        help="use current reviewed CVE mappings from --db (schema v9), PoC only",
+    )
     poc_parser.add_argument("--ttl-seconds", type=int, default=21600)
     poc_parser.add_argument("--pacing-seconds", type=float, default=3.1)
     poc_parser.add_argument(
@@ -134,6 +145,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument("--config")
     sync_parser.add_argument("--project", dest="project_uuid")
     sync_parser.add_argument("--dry-run", action="store_true")
+    sync_parser.add_argument(
+        "--use-reviewed-identifiers",
+        action="store_true",
+        help="attach reviewed PoC mappings from the PoC DB after workflow processing",
+    )
     sync_parser.add_argument("--log-level")
     sync_parser.add_argument("--wait-for-analysis", action="store_true")
     sync_parser.add_argument(
@@ -316,6 +332,7 @@ def print_review_queue(result: RunResult) -> None:
     print(
         f"台帳={result.registry_snapshot_status.value} "
         f"PoC入力={result.advisory_snapshot_status.value} "
+        f"CVE対応入力={result.poc_identity_status} "
         f"解析待機={result.analysis_snapshot_status.value} "
         f"KEV旧キャッシュ={result.kev_used_stale_cache}"
     )
@@ -373,6 +390,18 @@ def print_review_queue(result: RunResult) -> None:
             )
         poc = item.poc_reports
         print(f"  PoC={poc_labels[poc.status.value]}")
+        if item.poc_identity:
+            mapping = item.poc_identity
+            print(
+                f"    PoC用CVE対応={mapping.status} 元ID={mapping.original_id} "
+                f"DT情報源={mapping.dt_source} CVE={mapping.cve or '不明'} "
+                f"採用ID={mapping.review_id or 'なし'} "
+                f"観測ID={mapping.observation_id or 'なし'} "
+                f"出典={mapping.source or '不明'} "
+                f"採用者={json.dumps(mapping.actor, ensure_ascii=False)} "
+                f"理由={json.dumps(mapping.reason, ensure_ascii=False)} "
+                f"期限={mapping.expires_at or '不明'}"
+            )
         for source in poc.sources:
             count = source.record_count if source.record_count is not None else "不明"
             print(
@@ -407,6 +436,7 @@ def run_sync(
     asset_inventory_path: str | None = None,
     asset_db_path: str | None = None,
     poc_db_path: str | None = None,
+    use_reviewed_identifiers: bool = False,
 ) -> int:
     if advisory_snapshot_path and poc_db_path:
         raise ValueError("choose either advisory snapshot or PoC DB")
@@ -422,6 +452,8 @@ def run_sync(
             )
             if registry.schema_version >= 6 and not advisory_snapshot_path:
                 poc_db_path = poc_db_path or asset_db_path
+    if use_reviewed_identifiers and (not poc_db_path or advisory_snapshot_path):
+        raise ValueError("reviewed identifiers require a PoC DB, not a JSON snapshot")
     snapshot = None
     snapshot_error = None
     if advisory_snapshot_path:
@@ -460,6 +492,24 @@ def run_sync(
         orchestrator_kwargs["asset_registry"] = asset_registry
     orchestrator = Orchestrator(config=config, **orchestrator_kwargs)
     result = orchestrator.run()
+    if use_reviewed_identifiers:
+        try:
+            if snapshot is None:
+                raise ValueError("PoC snapshot unavailable")
+            with IdentifierStore(poc_db_path, read_only=True) as identifiers:
+                assessments = attach_reviewed_poc(
+                    result.assessments, snapshot, identifiers, now=datetime.now(UTC)
+                )
+            result = replace(
+                result, assessments=assessments, poc_identity_status="loaded"
+            )
+        except (OSError, ValueError, sqlite3.Error, KeyError, TypeError) as exc:
+            print("warning: reviewed PoC identifiers unavailable", file=sys.stderr)
+            result = replace(
+                result,
+                poc_identity_status="invalid",
+                poc_identity_error=type(exc).__name__,
+            )
     if snapshot_error is not None:
         result = replace(
             result,
@@ -574,6 +624,11 @@ def run_sync(
             f"suppressed={str(assessment.is_suppressed).lower()} "
             f"rationale={rationale}"
         )
+        if assessment.poc_identity:
+            print(
+                "  poc_identity="
+                + json.dumps(assessment.poc_identity.as_dict(), ensure_ascii=False)
+            )
     for action in result.actions:
         prefix = "DRY-RUN " if config.runtime.dry_run else ""
         print(f"{prefix}{action}")
@@ -1028,7 +1083,16 @@ def _run_poc_fetch(args: argparse.Namespace) -> int:
         raw = stream.read(20 * 1024 * 1024 + 1)
     if len(raw) > 20 * 1024 * 1024:
         raise ValueError("sync input exceeds 20 MiB")
-    targets = select_poc_targets(json.loads(raw), max_cves=args.max_cves)
+    payload = json.loads(raw)
+    targets = select_poc_targets(payload, max_cves=args.max_cves)
+    direct_cves = targets.cves
+    mappings = ()
+    selected_at = datetime.now(UTC)
+    if args.use_reviewed_identifiers:
+        with IdentifierStore(args.db, read_only=True) as identifiers:
+            targets, mappings = select_reviewed_poc_targets(
+                payload, identifiers, max_cves=args.max_cves, now=selected_at
+            )
     db_path = Path(args.db)
     if db_path.resolve() == Path(args.findings).resolve():
         raise ValueError("PoC DB must not be the findings input")
@@ -1057,6 +1121,8 @@ def _run_poc_fetch(args: argparse.Namespace) -> int:
                     "base_url": base_url,
                     "cves": targets.cves,
                     "selection": targets.summary(),
+                    "identifier_selection": [item.as_dict() for item in mappings],
+                    "identifier_selection_at": selected_at.isoformat(),
                     "update_cves": due,
                     "db": str(db_path),
                     "refresh_seconds": args.refresh_seconds,
@@ -1086,7 +1152,17 @@ def _run_poc_fetch(args: argparse.Namespace) -> int:
     client = VulnerabilityLookupClient(
         base_url, api_key=os.environ.get("SBOM_OPS_VULNERABILITY_LOOKUP_API_KEY")
     )
-    with PocStore(db_path) as store:
+    with ExitStack() as stack:
+        store = stack.enter_context(PocStore(db_path))
+        target_is_current = None
+        if args.use_reviewed_identifiers:
+            identifiers = stack.enter_context(IdentifierStore(db_path, read_only=True))
+
+            def target_is_current(cve: str, now: datetime) -> bool:
+                return reviewed_target_is_current(
+                    identifiers, cve, direct_cves, mappings, now=now
+                )
+
         snapshot = collect_poc_snapshot(
             targets,
             client,
@@ -1095,7 +1171,12 @@ def _run_poc_fetch(args: argparse.Namespace) -> int:
             refresh_seconds=args.refresh_seconds,
             repository=store,
             retry_policy=retry_policy,
+            target_is_current=target_is_current,
         )
+    snapshot["collection"]["identifier_selection"] = [
+        item.as_dict() for item in mappings
+    ]
+    snapshot["collection"]["identifier_selection_at"] = selected_at.isoformat()
     if output:
         save_poc_snapshot(output, snapshot)
     print(json.dumps(snapshot["collection"], ensure_ascii=False, indent=2))
@@ -1130,6 +1211,7 @@ def main() -> int:
                 asset_inventory_path=args.asset_inventory,
                 asset_db_path=args.asset_db,
                 poc_db_path=args.poc_db,
+                use_reviewed_identifiers=args.use_reviewed_identifiers,
             )
         parser.error(f"unsupported command: {args.command}")
     except PocRunBusy:

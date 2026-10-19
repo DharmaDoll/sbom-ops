@@ -47,6 +47,7 @@ def collect_poc_snapshot(
     repository: PocRepository | None = None,
     refresh_seconds: int = 3600,
     retry_policy: PocRetryPolicy | None = None,
+    target_is_current: Callable[[str, datetime], bool] | None = None,
 ) -> dict[str, object]:
     retry_policy = retry_policy or PocRetryPolicy()
     if not 1 <= ttl_seconds <= 604800:
@@ -66,7 +67,25 @@ def collect_poc_snapshot(
     )
     cooling_down = state.blocked(clock())
     calls = 0
+
+    def mapping_changed(cve: str) -> bool:
+        if target_is_current is None or target_is_current(cve, clock()):
+            return False
+        diagnostics.append(
+            {
+                "vulnerability_id": cve,
+                "attempted": False,
+                "cached": False,
+                "last_success_at": None,
+                "error": "identifier_review_changed",
+                "http_status": None,
+            }
+        )
+        return True
+
     for cve in targets.cves:
+        if mapping_changed(cve):
+            continue
         previous = repository.get(cve, client.source) if repository else None
         if previous and not previous.needs_refresh(
             clock(), timedelta(seconds=refresh_seconds)
@@ -88,6 +107,8 @@ def collect_poc_snapshot(
         attempted = not stopped and not cooling_down
         if attempted and calls:
             sleep(pacing_seconds)
+        if attempted and mapping_changed(cve):
+            continue
         observed_at = clock()
         try:
             if cooling_down:

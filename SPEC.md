@@ -247,7 +247,7 @@ CVE候補を作る。応答ID一致、timezone付きmodifiedが観測時刻以�
 複数候補・候補なし・撤回・取得失敗を区別し、説明文・related・upstreamは使わない。
 schema v8の`identifier_observations`へ元ID・DT情報源・要求ID・出典・観測/更新日時・候補・
 状態を追記する。観測行の`approved=false`は取得時点の状態で変更しない。
-採用状態は別のレビュー履歴で管理し、通常のsync・PoC取得・KEV判定へはまだ接続しない。
+採用状態は別のレビュー履歴で管理する。候補を保存しただけではPoC取得・表示・KEV判定へ接続しない。
 単一ホストで同じDBの候補取得をロックし、3.1秒間隔、初回エラーで残りを止める。
 手動確認用。候補取得のキャッシュ、再試行待機、定期取得は未実装。
 契約根拠は[OSV ID API](https://google.github.io/osv.dev/get-v1-vulns/)と
@@ -262,7 +262,30 @@ DT情報源不一致、撤回済み・失敗観測は拒否する。複数候補
 元ID＋DT情報源ごとの最新判断だけが有効。取消はその最新採用の観測ID・CVEと一致する必要がある。
 期限切れ・未来の判断・新しい観測の追加は有効扱いにしない。内容が同じ再取得でも再確認を要求する。
 変更者は入力された申告名であり、認証や署名ではない。実行者の保護はローカルDBのアクセス権で行う。
-この段階は判断の保存・表示まで。`poc_connected=false`を出し、PoC取得・表示への限定接続は未実装。
+`id-review`自体は判断の保存・表示だけを行い、`poc_connected=false`を返す。
+PoCへの接続は次の独立した明示オプションで行う。
+
+`poc-fetch`と`sync`の`--use-reviewed-identifiers`は既定無効。
+取得では`--db`、表示では`--poc-db`（省略時は`--asset-db`）のv9を読取専用で確認する。
+JSON snapshotとの併用、自動的なDB作成・移行は行わない。
+DTの主ID・明示aliasにCVEがない場合だけ、元ID＋DT情報源の完全一致で最新の有効な採用を使う。
+主CVE・DT aliasを上書きせず、他のDT情報源への採用は流用しない。
+未採用・取消・期限切れ・未来・新観測で無効になった対応では補完しない。
+取得対象の上限・重複排除・再利用・待機制御は通常経路と共通とする。
+取得対象の選択根拠は`collection.identifier_selection`と`identifier_selection_at`に残し、
+各CVEのキャッシュ利用前と通信待機後にも採用を再確認する。無効なら
+`identifier_review_changed`で見送り、情報源の失敗回数や過去のPoC観測は変更しない。
+通信中の取消で既に送った要求は取り消せない。取得したCVE別観測自体は保存する。
+
+syncでは通常の評価・Issue処理の完了後に、`published_poc`だけを表示へ補完する。
+元ID・DT情報源・採用CVE・出典・観測ID/時刻・採用ID/時刻・申告者・理由・期限を
+`assessments`/`review_queue`の`poc_identity`へ出す。情報源別件数は`poc_reports`に表示する。
+補完経路が使えなければ`poc_identity_status=invalid`と警告を出し、通常のDT評価は残す。
+取消・新観測は次のsyncで再確認し、期限切れは表示時にも再判定する。
+保存済みJSONは過去の出力であり、取消後に自動更新されない。
+一般alias・KEV照合・EPSS・P0〜P3・Analysis・Issue操作へは補完を渡さない。
+同等条件でのPoC報告あり優先の表示順のみ、既存のルールに従う。
+定期実行スクリプトはこのオプションを指定せず、従来の主ID・DT aliasだけを使う。
 
 - schema_versionは整数1、snapshot_id、timezone付きgenerated_at、
   vulnerability_observations、project_exposureが必要。
@@ -271,7 +294,8 @@ DT情報源不一致、撤回済み・失敗観測は拒否する。複数候補
   同じID/source/signalの重複を拒否する。
   `not_observed` は完全取得・0件・参照なしに限定する。失敗はunknown。
   部分取得で未観測を断定しないが、有効な報告があればavailableを保持できる。
-- 主IDまたはDTの明示aliasと大文字小文字を無視して完全一致する場合だけ結合する。
+- 通常のsnapshotは主IDまたはDTの明示aliasと大文字小文字を無視して完全一致する場合だけ結合する。
+  採用CVEによるPoC表示の補完は上記の明示オプションに分離する。
   CVE情報の存在はComponentへの影響や公開環境での稼働を証明しない。
 - `published_poc` は有効なCVEと、観測より後のexpires_atが必須。
   有効なfresh/availableがあればPoCはreported、全情報源が有効で未観測ならnot_observed、
