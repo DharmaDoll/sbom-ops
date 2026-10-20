@@ -11,6 +11,7 @@ from sbom_ops.clients.dependency_track import (
     DependencyTrackFinding,
     DependencyTrackProject,
 )
+from sbom_ops.clients.github import GitHubApiError
 from sbom_ops.config import (
     AppConfig,
     DependencyTrackConfig,
@@ -41,6 +42,8 @@ from sbom_ops.domain.assets import (
     DeploymentStatus,
 )
 from sbom_ops.domain.issue_body import IssueBodyError, new_issue_body, parse_issue_body
+from sbom_ops.domain.issue_catalog import IssueIdentityError
+from sbom_ops.domain.models import Finding, Severity
 from sbom_ops.services.orchestrator import Orchestrator, ProjectSelectionError
 
 
@@ -126,20 +129,31 @@ class FakeGitHub:
         self.finding_state_marker = finding_state_marker
         self.legacy_only = legacy_only
         self.tracked_issue_key = tracked_issue_key
-        self.searched_keys: list[str] = []
-        self.matched_key: str | None = None
+        self.list_calls: list[str] = []
+        identity = Finding(
+            "project-1",
+            "service-a",
+            "openssl",
+            "3.0.0",
+            "CVE-2026-0001",
+            Severity.HIGH,
+            8.0,
+            (78,),
+            "description",
+            vulnerability_source="NVD",
+        )
+        self.matched_key = (
+            identity.legacy_finding_key() if legacy_only else identity.finding_key()
+        )
 
-    def find_open_issue_by_finding_key(self, finding_key: str) -> dict | None:
-        self.searched_keys.append(finding_key)
-        if not self.legacy_only and finding_key.startswith("v2:project-1:"):
-            self.matched_key = finding_key
-            return {"number": 11}
-        if self.legacy_only and finding_key == (
-            "project-1:openssl:3.0.0:CVE-2026-0001"
-        ):
-            self.matched_key = finding_key
-            return {"number": 11}
-        return None
+    def list_issues(self) -> list[dict]:
+        self.list_calls.append("repository")
+        # Listing and detail reads are separate: subclasses can simulate an edit
+        # between them without changing the initial inventory.
+        return [
+            FakeGitHub.get_issue(self, 11),
+            *[{**issue, "state": "open"} for issue in self.list_open_issues("sbom")],
+        ]
 
     def get_issue(self, issue_number: int) -> dict:
         if issue_number == 11:
@@ -176,7 +190,7 @@ class FakeGitHub:
 
     def create_issue(self, title: str, body: str, labels: list[str]) -> dict:
         self.created.append((title, body, labels))
-        return {"number": 13}
+        return {"number": 13, "state": "open", "title": title, "body": body}
 
     def update_issue(self, issue_number: int, title: str | None, body: str) -> dict:
         self.updated.append(issue_number)
@@ -760,12 +774,158 @@ def test_orchestrator_migrates_an_existing_legacy_key() -> None:
     result = Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
 
     assert result.issues_created == 0
-    assert github.searched_keys[0].startswith("v2:project-1:")
-    assert github.searched_keys[1] == ("project-1:openssl:3.0.0:CVE-2026-0001")
+    assert github.list_calls == ["repository"]
     assert parse_issue_body(github.updated_bodies[0]).finding_key.startswith(
         "v2:project-1:"
     )
     assert "移行前の本文" in github.updated_bodies[0]
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_closed_issue_is_reviewed_and_duplicate_identity_stops_writes(
+    duplicate: bool,
+) -> None:
+    class ClosedGitHub(FakeGitHub):
+        def list_issues(self) -> list[dict]:
+            rows = super().list_issues()
+            rows[0]["state"] = "closed"
+            if duplicate:
+                rows.append({**rows[0], "number": 99, "state": "open"})
+            return rows
+
+    github = ClosedGitHub()
+    if duplicate:
+        with pytest.raises(IssueIdentityError, match="multiple"):
+            Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+    else:
+        result = Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+        assert any(action.startswith("review-closed ") for action in result.actions)
+        assert result.issues_created == result.issues_updated == 0
+    assert github.created == github.updated == github.closed == []
+
+
+def test_ambiguous_legacy_identity_cannot_choose_one_current_component() -> None:
+    class TwoComponents(FakeDependencyTrack):
+        def get_project_findings(
+            self, project_uuid: str
+        ) -> list[DependencyTrackFinding]:
+            return [
+                replace(finding("CVE-2026-0001"), component_uuid=value)
+                for value in ("a", "b")
+            ]
+
+    github = FakeGitHub(legacy_only=True)
+    with pytest.raises(IssueIdentityError, match="multiple current identities"):
+        Orchestrator(config(), TwoComponents(), FakeKev(), github).run()
+    assert github.created == github.updated == []
+
+
+@pytest.mark.parametrize(
+    "inventory_failure",
+    [GitHubApiError("page limit"), IssueIdentityError("invalid key")],
+)
+def test_issue_inventory_failure_stops_before_any_writes(
+    inventory_failure: Exception,
+) -> None:
+    class FailedGitHub(FakeGitHub):
+        def list_issues(self) -> list[dict]:
+            raise inventory_failure
+
+    github = FailedGitHub()
+    with pytest.raises(type(inventory_failure)):
+        Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+    assert github.created == github.updated == []
+
+
+def test_later_repository_read_failure_prevents_earlier_repository_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TwoProjects(FakeDependencyTrack):
+        def list_projects(self) -> list[DependencyTrackProject]:
+            return [
+                DependencyTrackProject("project-1", "a"),
+                DependencyTrackProject("project-2", "b"),
+            ]
+
+    class FailedGitHub(FakeGitHub):
+        def list_issues(self) -> list[dict]:
+            raise GitHubApiError("second repository page failed")
+
+    first, second = FakeGitHub(), FailedGitHub()
+    runner = Orchestrator(config(), TwoProjects(), FakeKev(), first)
+    monkeypatch.setattr(
+        runner,
+        "_github_target",
+        lambda project: (
+            first if project == "project-1" else second,
+            "sbom",
+            ("acme", project, "sbom"),
+        ),
+    )
+    with pytest.raises(GitHubApiError, match="second repository"):
+        runner.run()
+    assert first.created == first.updated == second.created == second.updated == []
+
+
+@pytest.mark.parametrize("response_lost", [False, True])
+def test_create_is_not_repeated_for_duplicate_finding_rows_or_after_reconciliation(
+    response_lost: bool,
+) -> None:
+    class RepeatedFinding(FakeDependencyTrack):
+        def get_project_findings(
+            self, project_uuid: str
+        ) -> list[DependencyTrackFinding]:
+            return [finding("CVE-2026-0001")] * 2
+
+    class PersistedGitHub(FakeGitHub):
+        issues: list[dict]
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.issues = []
+
+        def list_issues(self) -> list[dict]:
+            return list(self.issues)
+
+        def create_issue(self, title: str, body: str, labels: list[str]) -> dict:
+            row = super().create_issue(title, body, labels)
+            self.issues.append(row)
+            if response_lost:
+                raise GitHubApiError("response lost after server accepted POST")
+            return row
+
+        def get_issue(self, issue_number: int) -> dict:
+            return dict(self.issues[0])
+
+    github = PersistedGitHub()
+    first = Orchestrator(config(), RepeatedFinding(), FakeKev(), github).run()
+    assert first.issues_created == 1
+    assert len(github.created) == 1
+    assert (
+        any("create-reconciled" in action for action in first.actions) == response_lost
+    )
+    second = Orchestrator(config(), RepeatedFinding(), FakeKev(), github).run()
+    assert second.issues_created == 0
+    assert second.issues_updated == 1
+    assert len(github.created) == 1
+
+
+def test_unconfirmed_create_stops_without_retrying_post() -> None:
+    class UnknownGitHub(FakeGitHub):
+        attempts = 0
+
+        def list_issues(self) -> list[dict]:
+            return []
+
+        def create_issue(self, title: str, body: str, labels: list[str]) -> dict:
+            self.attempts += 1
+            raise GitHubApiError("timeout")
+
+    github = UnknownGitHub()
+    with pytest.raises(GitHubApiError, match="outcome is unknown"):
+        Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+    assert github.attempts == 1
+    assert github.updated == []
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -1002,7 +1162,7 @@ def test_later_project_read_failure_prevents_all_github_operations(
             return super().get_project_findings(project_uuid)
 
     class NoCallsGitHub(FakeGitHub):
-        def list_open_issues(self, label: str) -> list[dict]:
+        def list_issues(self) -> list[dict]:
             pytest.fail("GitHub must not be queried before all DT reads succeed")
 
     github = NoCallsGitHub()
@@ -1011,7 +1171,7 @@ def test_later_project_read_failure_prevents_all_github_operations(
     )
     with pytest.raises(DependencyTrackApiError, match="read failed"):
         Orchestrator(run_config, LaterFailure(), FakeKev(), github).run()
-    assert github.searched_keys == []
+    assert github.list_calls == []
     assert github.created == github.updated == github.closed == []
 
 
@@ -1050,7 +1210,7 @@ def test_two_identical_dt_responses_do_not_prove_resolution(
     assert github.closed == []
     assert 12 not in github.updated
     if not github_enabled:
-        assert github.searched_keys == github.updated == []
+        assert github.list_calls == github.updated == []
 
 
 def test_observation_series_never_inherits_historical_missing_count() -> None:
@@ -1092,14 +1252,14 @@ def test_observation_series_never_inherits_historical_missing_count() -> None:
         if rows is None:
             before = (
                 len(github.updated),
-                len(github.searched_keys),
+                len(github.list_calls),
                 github.issue["body"],
             )
             with pytest.raises(DependencyTrackApiError):
                 Orchestrator(run_config, dt, FakeKev(), github).run()
             assert before == (
                 len(github.updated),
-                len(github.searched_keys),
+                len(github.list_calls),
                 github.issue["body"],
             )
         else:

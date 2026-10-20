@@ -11,7 +11,7 @@ from sbom_ops.clients.dependency_track import (
     DependencyTrackFinding,
     DependencyTrackProject,
 )
-from sbom_ops.clients.github import GitHubIssuesClient
+from sbom_ops.clients.github import GitHubApiError, GitHubIssuesClient
 from sbom_ops.clients.kev import KevClient
 from sbom_ops.config import AppConfig
 from sbom_ops.domain.advisory import (
@@ -37,6 +37,7 @@ from sbom_ops.domain.issue_body import (
     new_issue_body,
     parse_issue_body,
 )
+from sbom_ops.domain.issue_catalog import IssueCatalog, IssueIdentityError
 from sbom_ops.domain.models import (
     AnalysisSnapshotStatus,
     AnalysisState,
@@ -98,9 +99,7 @@ def _kev_match(
 class GitHubIssuesClientProtocol(Protocol):
     def get_issue(self, issue_number: int) -> dict: ...
 
-    def find_open_issue_by_finding_key(self, finding_key: str) -> dict | None: ...
-
-    def list_open_issues(self, label: str) -> list[dict]: ...
+    def list_issues(self) -> list[dict]: ...
 
     def create_issue(self, title: str, body: str, labels: list[str]) -> dict: ...
 
@@ -364,6 +363,9 @@ class Orchestrator:
         touched_issue_numbers: dict[tuple[str, str, str], set[int]] = {}
         target_clients: dict[tuple[str, str, str], GitHubIssuesClientProtocol] = {}
         target_projects: dict[tuple[str, str, str], set[str]] = {}
+        catalogs: dict[tuple[str, str], IssueCatalog] = {}
+        repository_issues: dict[tuple[str, str], list[dict]] = {}
+        handled_keys: set[tuple[str, str, str]] = set()
 
         # Read every selected project before touching GitHub. A later DT read
         # failure must not leave earlier projects partially synchronized.
@@ -385,16 +387,52 @@ class Orchestrator:
                     self._dependency_track.get_project_findings(project.uuid)
                 )
 
-        for project in projects:
-            if self._config.github.enabled:
+        prioritized_by_project = {
+            project.uuid: [
+                self._prioritize(raw, kev_ids)
+                for raw in findings_by_project[project.uuid]
+            ]
+            for project in projects
+        }
+        legacy_identities: dict[str, set[str]] = {}
+        for items in prioritized_by_project.values():
+            for item in items:
+                legacy_identities.setdefault(
+                    item.finding.legacy_finding_key(), set()
+                ).add(item.finding.finding_key())
+
+        if self._config.github.enabled:
+            for project in projects:
                 github, issue_label, target_key = self._github_target(project.uuid)
                 target_clients[target_key] = github
                 target_projects.setdefault(target_key, set()).add(project.uuid)
+                repository = target_key[:2]
+                if repository not in catalogs:
+                    repository_issues[repository] = github.list_issues()
+                    catalogs[repository] = IssueCatalog(repository_issues[repository])
+                for item in prioritized_by_project[project.uuid]:
+                    key, legacy = (
+                        item.finding.finding_key(),
+                        item.finding.legacy_finding_key(),
+                    )
+                    match = catalogs[repository].find(key, legacy)
+                    if (
+                        match is not None
+                        and match.key == legacy
+                        and len(legacy_identities[legacy]) > 1
+                    ):
+                        raise IssueIdentityError(
+                            "legacy finding key maps to multiple current identities"
+                        )
+
+        for project in projects:
+            if self._config.github.enabled:
+                github, issue_label, target_key = self._github_target(project.uuid)
+                catalog = catalogs[target_key[:2]]
             raw_findings = findings_by_project[project.uuid]
             findings_processed += len(raw_findings)
             prioritized: list[PrioritizedFinding] = []
-            for raw in raw_findings:
-                prioritized_finding = self._prioritize(raw, kev_ids)
+            for prioritized_finding in prioritized_by_project[project.uuid]:
                 current_keys.add(prioritized_finding.finding.finding_key())
                 current_keys.add(prioritized_finding.finding.legacy_finding_key())
                 prioritized.append(prioritized_finding)
@@ -447,28 +485,54 @@ class Orchestrator:
                     continue
                 title, body = self._issue_content(item)
                 key = item.finding.finding_key()
-                existing = github.find_open_issue_by_finding_key(key)
-                if existing is None:
-                    existing = github.find_open_issue_by_finding_key(
-                        item.finding.legacy_finding_key()
-                    )
+                handling_key = (*target_key[:2], key)
+                if handling_key in handled_keys:
+                    continue
+                handled_keys.add(handling_key)
+                existing = catalog.find(key, item.finding.legacy_finding_key())
+                if existing is not None and existing.state == "closed":
+                    actions.append(f"review-closed {key} issue=#{existing.number}")
+                    continue
                 if existing is None:
                     actions.append(
                         f"create {key} priority={item.priority.value} "
                         f"analysis={item.enrichment.analysis_state.value}"
                     )
                     if not self._config.runtime.dry_run:
-                        github.create_issue(
-                            title,
-                            body,
-                            [
-                                issue_label,
-                                (f"{issue_label}-{item.priority.value}"),
-                            ],
+                        try:
+                            response = github.create_issue(
+                                title,
+                                body,
+                                [issue_label, f"{issue_label}-{item.priority.value}"],
+                            )
+                            confirmed = IssueCatalog([response]).find(key, key)
+                            if confirmed is None or confirmed.state != "open":
+                                raise IssueIdentityError(
+                                    "create response did not confirm the finding"
+                                )
+                        except (GitHubApiError, IssueIdentityError):
+                            # Never retry POST. Re-read the repository to reconcile
+                            # a response lost after the server accepted the write.
+                            catalog = IssueCatalog(github.list_issues())
+                            catalogs[target_key[:2]] = catalog
+                            confirmed = catalog.find(
+                                key, item.finding.legacy_finding_key()
+                            )
+                            if confirmed is None:
+                                raise GitHubApiError(
+                                    "GitHub create outcome is unknown; "
+                                    "inspect the repository "
+                                    "before another sync; no POST was retried"
+                                ) from None
+                            actions.append(
+                                f"create-reconciled {key} issue=#{confirmed.number}"
+                            )
+                        catalog.record(
+                            confirmed.number, confirmed.state, confirmed.body
                         )
                     created += 1
                 else:
-                    number = existing.get("number")
+                    number = existing.number
                     latest = self._read_issue_for_update(github, number)
                     body = merge_issue_body(
                         latest["body"],
@@ -480,6 +544,7 @@ class Orchestrator:
                     )
                     if not self._config.runtime.dry_run:
                         github.update_issue(number, None, body)
+                        catalog.record(number, "open", body, previous_key=existing.key)
                     touched_issue_numbers.setdefault(target_key, set()).add(int(number))
                     updated += 1
 
@@ -487,10 +552,15 @@ class Orchestrator:
             issue_label = target_key[2]
             managed_for_target = target_projects[target_key]
             touched_for_target = touched_issue_numbers.get(target_key, set())
-            for issue in github.list_open_issues(issue_label):
+            for issue in repository_issues[target_key[:2]]:
+                if issue.get("state") != "open":
+                    continue
                 key = self._finding_key_from_issue(issue)
                 if key is None:
                     continue
+                if self._project_uuid_from_finding_key(key) not in managed_for_target:
+                    continue
+                catalogs[target_key[:2]].find(key, key)
                 number = issue.get("number")
                 if key in current_keys:
                     if (

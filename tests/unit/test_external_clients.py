@@ -686,12 +686,23 @@ def test_github_issue_listing_filters_pull_requests_and_paginates(monkeypatch) -
                 {"number": number, "title": "additional issue"}
                 for number in range(12, 110)
             )
-            return FakeResponse(page)
+            for item in page:
+                item["repository_url"] = "https://api.github.com/repos/acme/service-a"
+            return FakeResponse(
+                page,
+                headers={
+                    "Link": (
+                        "<https://api.github.com/repos/acme/service-a/issues?"
+                        "state=all&sort=created&direction=asc&per_page=100&"
+                        'page=2>; rel="next"'
+                    )
+                },
+            )
         return FakeResponse([])
 
     monkeypatch.setattr(github_module, "urlopen", fake_urlopen)
 
-    issues = GitHubIssuesClient("token", "acme", "service-a").list_open_issues("sbom")
+    issues = GitHubIssuesClient("token", "acme", "service-a").list_issues()
 
     assert issues[0]["number"] == 10
     assert 11 not in {issue["number"] for issue in issues}
@@ -699,6 +710,126 @@ def test_github_issue_listing_filters_pull_requests_and_paginates(monkeypatch) -
     assert len(requests) == 2
     assert "page=1" in requests[0]
     assert "page=2" in requests[1]
+    assert "state=all" in requests[0]
+    assert "labels=" not in requests[0] and "/search/" not in requests[0]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        [None],
+        [{"number": True}],
+        [{"number": 1, "repository_url": "https://api.github.com/repos/other/repo"}],
+    ],
+)
+def test_github_issue_listing_rejects_invalid_or_foreign_items(
+    monkeypatch, payload
+) -> None:
+    monkeypatch.setattr(
+        github_module, "urlopen", lambda request, timeout: FakeResponse(payload)
+    )
+    with pytest.raises(GitHubApiError):
+        GitHubIssuesClient("test-token", "acme", "service-a").list_issues()
+
+
+def test_github_page_limit_does_not_return_partial_inventory(monkeypatch) -> None:
+    calls = []
+
+    def respond(request, timeout):
+        calls.append(request)
+        page = len(calls)
+        return FakeResponse(
+            [
+                {
+                    "number": page,
+                    "repository_url": "https://api.github.com/repos/acme/service-a",
+                }
+            ],
+            headers={
+                "link": (
+                    "<https://api.github.com/repos/acme/service-a/issues?"
+                    "state=all&sort=created&direction=asc&per_page=100&"
+                    f'page={page + 1}>; rel="next"'
+                )
+            },
+        )
+
+    monkeypatch.setattr(github_module, "urlopen", respond)
+    with pytest.raises(GitHubApiError, match="page limit"):
+        GitHubIssuesClient("test-token", "acme", "service-a").list_issues()
+    assert len(calls) == 10
+
+
+def test_github_repeated_page_item_is_not_accepted(monkeypatch) -> None:
+    calls = []
+
+    def respond(request, timeout):
+        calls.append(request)
+        headers = {}
+        if len(calls) == 1:
+            headers["Link"] = (
+                "<https://api.github.com/repos/acme/service-a/issues?"
+                'state=all&sort=created&direction=asc&per_page=100&page=2>; rel="next"'
+            )
+        return FakeResponse(
+            [
+                {
+                    "number": 1,
+                    "repository_url": "https://api.github.com/repos/acme/service-a",
+                }
+            ],
+            headers=headers,
+        )
+
+    monkeypatch.setattr(github_module, "urlopen", respond)
+    with pytest.raises(GitHubApiError, match="repeated"):
+        GitHubIssuesClient("test-token", "acme", "service-a").list_issues()
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        '<https://evil.example/issues?page=2>; rel="next"',
+        '<https://api.github.com/repos/acme/service-a/issues?page=1>; rel="next"',
+        "malformed",
+    ],
+)
+def test_github_never_follows_invalid_continuation(monkeypatch, link: str) -> None:
+    calls = []
+
+    def respond(request, timeout):
+        calls.append(request)
+        return FakeResponse(
+            [
+                {
+                    "number": 1,
+                    "repository_url": "https://api.github.com/repos/acme/service-a",
+                }
+            ],
+            headers={"Link": link},
+        )
+
+    monkeypatch.setattr(github_module, "urlopen", respond)
+    with pytest.raises(GitHubApiError):
+        GitHubIssuesClient("test-token", "acme", "service-a").list_issues()
+    assert len(calls) == 1
+
+
+def test_github_post_does_not_retry_after_timeout(monkeypatch) -> None:
+    calls = []
+
+    def lost_response(request, timeout):
+        calls.append(request)
+        raise TimeoutError("write response lost")
+
+    monkeypatch.setattr(github_module, "urlopen", lost_response)
+    with pytest.raises(GitHubApiError):
+        GitHubIssuesClient(
+            "test-token", "acme", "service-a", max_retries=3
+        ).create_issue("title", "body", ["sbom"])
+    assert len(calls) == 1
 
 
 def test_github_get_issue_returns_raw_body_from_selected_repository(

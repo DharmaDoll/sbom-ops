@@ -328,7 +328,13 @@ Finding一覧には残す。Analysisだけを理由に既存Issueを閉じない
 
 Finding keyは `v2:{project_uuid}:sha256(machine_identity)`。
 identityはProject＋Component UUID＋vulnerability UUID、次にProject＋PURL＋source＋主ID、
-最後にProject＋表示名・版＋source＋主IDを使う。旧keyも既存Issue検索に使う。
+最後にProject＋表示名・版＋source＋主IDを使う。旧keyも既存Issue照合に使う。
+検索APIの先頭結果ではなく、対象repoのopen/closed両方のIssue一覧と管理keyを完全一致で照合する。
+ラベルが外れたIssueも確認し、PRは対象外。ページ継続はLinkを検証し、最大10ページ
+（1ページ100件、PR含む）で終わらなければ失敗する。別repoの応答・ページ内外の番号重複・
+不正な応答・取得失敗で部分一覧を返さない。全対象repoの一覧を読んでから書込みへ進む。
+現行keyと旧keyで複数のIssueに一致する場合、または旧keyを複数の現行Findingが共有する
+移行では、推測して選ばず失敗する。同じFindingの重複入力は1実行につき1操作とする。
 key・Finding状態をIssue本文の機械用マーカーに保存する。
 `<!-- sbom-ops:managed:start -->` から `<!-- sbom-ops:managed:end -->` までが
 自動管理範囲で、範囲外の本文と既存タイトルは保持する。優先度の最新値は管理範囲内に記載する。
@@ -337,7 +343,12 @@ key・Finding状態をIssue本文の機械用マーカーに保存する。
 旧形式は元の本文を一字も削らず「移行前の本文」として範囲外に残し、新しい管理範囲を追加する。
 旧本文内のkey・状態・欠落回数は以後の判定に使わない。外部の説明文は制御マーカーにならないよう
 HTML文字をエスケープする。
-開いているIssueを更新し、なければ作成する。閉じたIssueの再利用方針は未実装。
+開いているIssueを更新し、なければ作成する。閉じたIssueに一致した場合は
+`review-closed`を返し、作り直し・再オープン・本文更新をしない。再開の判断は人が行う。
+POSTは自動再送しない。応答喪失や作成応答の不正時は一覧を再取得して完全一致で照合し、
+一意に見つかれば`create-reconciled`を記録する。確認できなければ失敗して停止する。
+未確定操作の永続記録・実行をまたぐ再作成防止・同時実行の排他は未実装のため、
+不明な作成結果を放置したまま同期を再実行しない。限定検証以外の書込みはまだ有効にしない。
 
 自動クローズは未提供。`close_missing_findings=true` は設定エラーとして拒否する。
 過去のMISSING状態・欠落回数は解決判定に使わず、加算もしない。
