@@ -177,9 +177,22 @@ sbom-opsの優先度・根拠を照合する。`--wait-for-analysis`はFinding�
 ない。DTの読取失敗、応答形式の異常、Project一覧の途中欠落は同期エラーとして
 止まり、Findingがゼロ件だったことにはしない。401/403は権限を確認し、
 429/5xxやタイムアウトは設定された再試行の上限を確認する。応答の形が正常でも
-Finding一覧が本当に完全かまでは証明できないため、自動Issueクローズの運用は
-別途確認が必要。差があれば件数だけで結論を出さず、対象Project、表示条件、抑制状態、
-処理時刻を確認する。`--no-github`中にIssue操作は行わない。
+Finding一覧が本当に完全かまでは証明できないため、自動Issueクローズは提供しない。
+`workflow.close_missing_findings=true`（環境変数でも同じ）は設定エラーになる。
+旧 `missing_confirmation_runs` は互換用に受け付けるが、解決判定には使わない。
+過去のIssueの欠落回数は引き継がず、見えない間はそのIssue自体を変更しない。
+再出現時はACTIVEに戻して旧欠落回数を取り除く。`--no-github`中はIssue操作を行わない。
+
+出力の「解決確認=未確認」、JSONの `absence_verification.finding_state=UNKNOWN` は、
+**取得できたFindingの評価とは別に、見えないFindingの解決は未確認**という意味。
+`stable` や0件を「脆弱性なし」「修正完了」と読み替えない。
+読取失敗時は終了コード2、JSONは `status=failed` で件数・評価一覧を出さない。
+全対象Projectを読み終えるまではGitHub操作を始めない。
+
+再試行の上限に達した場合や件数に差がある場合は、対象ProjectのUUID・版、
+投入したSBOMと処理token、DTの表示条件・抑制状態、データソースの更新状況、
+読取キーの権限を確認する。原因を直した後で同じ対象を再実行し、
+DT画面と取得結果を照合する。再実行の成功も欠落だけを根拠にした修正証明にはしない。
 
 `--asset-db`を指定した場合だけ、既存SQLite台帳を読み取り専用で開き、
 `registry-project`に承認済み対応を表示する。`matched`なら担当・事業重要度を
@@ -718,7 +731,7 @@ PoC対応の採用履歴も使う場合は、最後のsyncに`--use-reviewed-ide
 3. 担当者が対応対象・不足情報を判断し、修正後のSBOMで再確認する。
 
 `--wait-for-analysis` は応答安定の確認であり、修正確認ではない。
-自動クローズは既定の無効を維持する。GitHub有効化は下記の別工程とする。
+自動クローズは提供しない。GitHub有効化は下記の別工程とする。
 出力仕様と制限は[SPEC](../SPEC.md#execution-model)を参照する。
 
 機械処理には `--output json`、記録には `--sync-log-file` を追加する。

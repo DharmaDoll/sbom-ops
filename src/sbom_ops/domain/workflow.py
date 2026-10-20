@@ -8,8 +8,6 @@ from sbom_ops.domain.models import AnalysisState, FindingState, RemediationState
 
 class MissingFindingAction(StrEnum):
     NOOP = "NOOP"
-    MARK_MISSING = "MARK_MISSING"
-    CLOSE = "CLOSE"
 
 
 @dataclass(frozen=True)
@@ -19,6 +17,15 @@ class MissingFindingDecision:
     remediation_state: RemediationState
     missing_count: int
     reason: str
+
+    def as_dict(self) -> dict[str, str | int]:
+        return {
+            "action": self.action.value,
+            "finding_state": self.finding_state.value,
+            "remediation_state": self.remediation_state.value,
+            "missing_count": self.missing_count,
+            "reason": self.reason,
+        }
 
 
 @dataclass(frozen=True)
@@ -70,57 +77,16 @@ def observe_workflow_state(
     )
 
 
-def decide_missing_finding(
-    previous_missing_count: int,
-    *,
-    previous_finding_state: FindingState | None,
-    automatic_closure_enabled: bool,
-    scan_verified: bool,
-    confirmations_required: int,
-) -> MissingFindingDecision:
-    """Plan a safe workflow action for a finding absent from one sync result."""
-    if confirmations_required < 2:
-        raise ValueError("confirmations_required must be at least 2")
-    if not automatic_closure_enabled:
-        return MissingFindingDecision(
-            action=MissingFindingAction.NOOP,
-            finding_state=FindingState.UNKNOWN,
-            remediation_state=transition_remediation_state(FindingState.UNKNOWN),
-            missing_count=previous_missing_count,
-            reason="automatic_closure_disabled",
-        )
-    if not scan_verified:
-        return MissingFindingDecision(
-            action=MissingFindingAction.NOOP,
-            finding_state=FindingState.UNKNOWN,
-            remediation_state=transition_remediation_state(FindingState.UNKNOWN),
-            missing_count=previous_missing_count,
-            reason="analysis_completion_not_verified",
-        )
+def decide_missing_finding() -> MissingFindingDecision:
+    """Absence from a read is not proof of resolution, even after stable reads.
 
-    # A count without the matching MISSING state is not a prior confirmed
-    # observation. Malformed or out-of-range metadata starts a new sequence.
-    if (
-        previous_finding_state != FindingState.MISSING
-        or not 1 <= previous_missing_count < confirmations_required
-    ):
-        previous_missing_count = 0
-    missing_count = previous_missing_count + 1
-    if missing_count >= confirmations_required:
-        return MissingFindingDecision(
-            action=MissingFindingAction.CLOSE,
-            finding_state=FindingState.RESOLVED,
-            remediation_state=transition_remediation_state(
-                FindingState.RESOLVED,
-                resolution_confirmed=True,
-            ),
-            missing_count=missing_count,
-            reason="consecutive_absence_confirmed",
-        )
+    There is no artifact/analysis completion evidence source yet. Historical
+    missing counts therefore cannot be accepted or advanced by this decision.
+    """
     return MissingFindingDecision(
-        action=MissingFindingAction.MARK_MISSING,
-        finding_state=FindingState.MISSING,
-        remediation_state=transition_remediation_state(FindingState.MISSING),
-        missing_count=missing_count,
-        reason="awaiting_absence_confirmation",
+        action=MissingFindingAction.NOOP,
+        finding_state=FindingState.UNKNOWN,
+        remediation_state=transition_remediation_state(FindingState.UNKNOWN),
+        missing_count=0,
+        reason="absence_not_verified",
     )

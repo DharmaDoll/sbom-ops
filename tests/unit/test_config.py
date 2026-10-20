@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sbom_ops.config import load_config
+from sbom_ops.config import WorkflowConfig, load_config
 
 
 def test_load_config_reads_required_environment(
@@ -172,7 +172,7 @@ def test_sync_log_file_is_loaded_from_environment(
     assert config.runtime.sync_log_file == "var/sync.jsonl"
 
 
-def test_safe_closure_policy_is_configurable(
+def test_automatic_closure_environment_setting_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SBOM_OPS_DT_BASE_URL", "https://dtrack.example.com")
@@ -183,10 +183,30 @@ def test_safe_closure_policy_is_configurable(
     monkeypatch.setenv("SBOM_OPS_CLOSE_MISSING_FINDINGS", "true")
     monkeypatch.setenv("SBOM_OPS_MISSING_CONFIRMATION_RUNS", "3")
 
-    config = load_config(Namespace(dry_run=False, project_uuid=None, log_level=None))
+    with pytest.raises(
+        ValueError, match="close_missing_findings=true is not supported"
+    ):
+        load_config(Namespace(dry_run=False, project_uuid=None, log_level=None))
 
-    assert config.workflow.close_missing_findings is True
-    assert config.workflow.missing_confirmation_runs == 3
+
+def test_automatic_closure_programmatic_setting_is_rejected() -> None:
+    with pytest.raises(
+        ValueError, match="close_missing_findings=true is not supported"
+    ):
+        WorkflowConfig(close_missing_findings=True)
+
+
+def test_automatic_closure_yaml_setting_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "dependency_track:\n  base_url: https://dtrack.invalid\n  api_key: test-key\n"
+        "github:\n  enabled: false\nworkflow:\n  close_missing_findings: true\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError, match="close_missing_findings=true is not supported"
+    ):
+        load_config(Namespace(config=str(path)))
 
 
 def test_single_missing_confirmation_is_rejected(
@@ -229,7 +249,7 @@ runtime:
   project_uuids: [project-a, project-b]
   wait_for_analysis: true
 workflow:
-  close_missing_findings: true
+  close_missing_findings: false
   missing_confirmation_runs: 3
 routing:
   projects:
@@ -257,7 +277,8 @@ routing:
     assert config.priority.create_issues_for == ("P0", "P2")
     assert config.runtime.project_uuids == ("project-a", "project-b")
     assert config.runtime.wait_for_analysis is True
-    assert config.workflow.close_missing_findings is True
+    assert config.workflow.close_missing_findings is False
+    assert config.workflow.missing_confirmation_runs == 3  # Legacy, unused setting.
     assert config.routing.routes[0].repository == "team-a/service-a"
     assert config.routing.routes[0].issue_label_prefix == "security"
 

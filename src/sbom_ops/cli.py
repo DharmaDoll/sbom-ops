@@ -41,6 +41,7 @@ from sbom_ops.domain.assets import (
 from sbom_ops.domain.identifier_candidates import select_identifier_targets
 from sbom_ops.domain.poc import PocRunBusy, select_poc_targets
 from sbom_ops.domain.poc_retry import PocRetryPolicy
+from sbom_ops.domain.workflow import decide_missing_finding
 from sbom_ops.services.advisory_snapshot import load_advisory_snapshot
 from sbom_ops.services.asset_import import load_asset_registration
 from sbom_ops.services.asset_inventory import load_asset_inventory
@@ -306,9 +307,10 @@ def run_plan(config: AppConfig) -> int:
     print(f"Project routes: {len(config.routing.routes)}")
     print(f"Dry run: {config.runtime.dry_run}")
     print(f"Wait for analysis: {config.runtime.wait_for_analysis}")
-    print(f"Close missing findings: {config.workflow.close_missing_findings}")
+    print("Close missing findings: False (resolution verification not implemented)")
     print(
-        f"Missing confirmations required: {config.workflow.missing_confirmation_runs}"
+        "Legacy missing confirmations (unused): "
+        f"{config.workflow.missing_confirmation_runs}"
     )
     return 0
 
@@ -329,6 +331,7 @@ def print_review_queue(result: RunResult) -> None:
         f"run_id={result.run_id}"
     )
     print("P0→P3順。資産・PoCは参考情報。稼働申告は実稼働の証明ではありません。")
+    print("解決確認=未確認（同一応答・0件は修正完了の根拠になりません）")
     print(
         f"台帳={result.registry_snapshot_status.value} "
         f"PoC入力={result.advisory_snapshot_status.value} "
@@ -546,6 +549,7 @@ def run_sync(
         f"advisory_snapshot_status={result.advisory_snapshot_status.value} "
         f"dry_run={result.dry_run}"
     )
+    print("解決確認=未確認（同一応答・0件は修正完了の根拠になりません）")
     for item in result.registry_projects:
         service = (
             f"{item.service_id}/{item.deployable_id}"
@@ -1230,6 +1234,13 @@ def main() -> int:
         sqlite3.Error,
         ValueError,
     ) as exc:
+        failure = {
+            "run_id": str(uuid4()),
+            "status": "failed",
+            "error_type": type(exc).__name__,
+            "analysis_snapshot_status": "unknown",
+            "absence_verification": decide_missing_finding().as_dict(),
+        }
         if (
             args.command == "sync"
             and active_config is not None
@@ -1237,13 +1248,12 @@ def main() -> int:
         ):
             _append_sync_event_with_warning(
                 active_config.runtime.sync_log_file,
-                {
-                    "run_id": str(uuid4()),
-                    "status": "failed",
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                },
+                {**failure, "error": str(exc)},
             )
+        if args.command == "sync" and args.output == "json":
+            # A failure is not an empty successful inventory. Do not emit zero
+            # counts, partial assessments, or external response bodies here.
+            print(json.dumps(failure, ensure_ascii=False, sort_keys=True))
         print(f"error: {exc}", file=sys.stderr)
         return 2
     return 2

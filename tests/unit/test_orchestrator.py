@@ -7,6 +7,7 @@ import pytest
 
 from sbom_ops.clients.dependency_track import (
     DependencyTrackApiError,
+    DependencyTrackClient,
     DependencyTrackFinding,
     DependencyTrackProject,
 )
@@ -17,7 +18,6 @@ from sbom_ops.config import (
     IntelligenceConfig,
     PriorityConfig,
     RuntimeConfig,
-    WorkflowConfig,
 )
 from sbom_ops.domain.advisory import (
     AdvisorySnapshot,
@@ -193,7 +193,7 @@ def test_orchestrator_keeps_stale_issue_open_by_default() -> None:
     assert result.actions[0].endswith("issue=#11 priority=P0")
     assert result.actions[1] == (
         "keep-open project-1:old:1:CVE-2025-0001 issue=#12 "
-        "reason=automatic_closure_disabled"
+        "reason=absence_not_verified"
     )
     assert len(result.assessments) == 2
     assert result.assessments[0].priority.value == "P0"
@@ -723,22 +723,20 @@ def test_non_cve_alias_does_not_match_kev() -> None:
     assert assessment["priority"] != "P0"
 
 
-def test_orchestrator_marks_first_verified_absence_without_closing() -> None:
+def test_orchestrator_stable_snapshot_does_not_verify_absence() -> None:
     github = FakeGitHub()
     safe_config = replace(
         config(),
         runtime=RuntimeConfig(wait_for_analysis=True),
-        workflow=WorkflowConfig(close_missing_findings=True),
     )
 
     result = Orchestrator(safe_config, FakeDependencyTrack(), FakeKev(), github).run()
 
     assert result.analysis_snapshot_status.value == "stable"
-    assert result.issues_updated == 2
+    assert result.issues_updated == 1
     assert result.issues_closed == 0
-    assert github.updated == [11, 12]
-    assert "<!-- sbom-ops:finding-state=MISSING -->" in github.updated_bodies[1]
-    assert "<!-- sbom-ops:missing-count=1 -->" in github.updated_bodies[1]
+    assert github.updated == [11]
+    assert result.as_dict()["absence_verification"]["finding_state"] == "UNKNOWN"
     assert github.closed == []
 
 
@@ -772,22 +770,20 @@ def test_orchestrator_resets_missing_count_when_finding_reappears() -> None:
     assert "sbom-ops:missing-count" not in github.updated_bodies[0]
 
 
-def test_orchestrator_closes_after_second_verified_absence() -> None:
+def test_orchestrator_ignores_historical_absence_count() -> None:
     github = FakeGitHub(missing_count=1, finding_state_marker="MISSING")
     safe_config = replace(
         config(),
         runtime=RuntimeConfig(wait_for_analysis=True),
-        workflow=WorkflowConfig(close_missing_findings=True),
     )
 
     result = Orchestrator(safe_config, FakeDependencyTrack(), FakeKev(), github).run()
 
-    assert result.issues_updated == 2
-    assert result.issues_closed == 1
-    assert github.updated == [11, 12]
-    assert "<!-- sbom-ops:finding-state=RESOLVED -->" in github.updated_bodies[1]
-    assert github.closed == [12]
-    assert result.actions[1].endswith("count=2 reason=consecutive_absence_confirmed")
+    assert result.issues_updated == 1
+    assert result.issues_closed == 0
+    assert github.updated == [11]
+    assert github.closed == []
+    assert result.actions[1].endswith("reason=absence_not_verified")
 
 
 def test_dt_read_failure_never_marks_or_closes_a_missing_finding() -> None:
@@ -801,7 +797,6 @@ def test_dt_read_failure_never_marks_or_closes_a_missing_finding() -> None:
     safe_config = replace(
         config(),
         runtime=RuntimeConfig(wait_for_analysis=True),
-        workflow=WorkflowConfig(close_missing_findings=True),
     )
 
     with pytest.raises(DependencyTrackApiError, match="malformed collection"):
@@ -817,16 +812,14 @@ def test_orchestrator_does_not_close_from_a_count_without_missing_state() -> Non
     safe_config = replace(
         config(),
         runtime=RuntimeConfig(wait_for_analysis=True),
-        workflow=WorkflowConfig(close_missing_findings=True),
     )
 
     result = Orchestrator(safe_config, FakeDependencyTrack(), FakeKev(), github).run()
 
     assert result.issues_closed == 0
     assert github.closed == []
-    assert "<!-- sbom-ops:finding-state=MISSING -->" in github.updated_bodies[1]
-    assert "<!-- sbom-ops:missing-count=1 -->" in github.updated_bodies[1]
-    assert result.actions[1].endswith("count=1 reason=awaiting_absence_confirmation")
+    assert github.updated == [11]
+    assert result.actions[1].endswith("reason=absence_not_verified")
 
 
 @pytest.mark.parametrize(
@@ -836,7 +829,7 @@ def test_orchestrator_does_not_close_from_a_count_without_missing_state() -> Non
         "<!-- sbom-ops:missing-count=1 -->",
     ],
 )
-def test_orchestrator_restarts_duplicate_missing_metadata(
+def test_orchestrator_ignores_duplicate_missing_metadata(
     duplicate_marker: str,
 ) -> None:
     class DuplicateMetadataGitHub(FakeGitHub):
@@ -849,14 +842,13 @@ def test_orchestrator_restarts_duplicate_missing_metadata(
     safe_config = replace(
         config(),
         runtime=RuntimeConfig(wait_for_analysis=True),
-        workflow=WorkflowConfig(close_missing_findings=True),
     )
 
     result = Orchestrator(safe_config, FakeDependencyTrack(), FakeKev(), github).run()
 
     assert result.issues_closed == 0
-    assert github.updated_bodies[1].count("sbom-ops:finding-state=MISSING") == 1
-    assert github.updated_bodies[1].count("sbom-ops:missing-count=1") == 1
+    assert github.updated == [11]
+    assert github.closed == []
 
 
 def test_orchestrator_resets_stale_missing_state_when_finding_reappears() -> None:
@@ -889,6 +881,135 @@ def test_analysis_snapshot_status_reports_no_projects() -> None:
 
     assert result.projects_processed == 0
     assert result.analysis_snapshot_status.value == "no_projects"
+    assert result.as_dict()["absence_verification"]["finding_state"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("wait_for_analysis", [False, True])
+def test_later_project_read_failure_prevents_all_github_operations(
+    wait_for_analysis: bool,
+) -> None:
+    class LaterFailure(FakeDependencyTrack):
+        def list_projects(self) -> list[DependencyTrackProject]:
+            return [
+                DependencyTrackProject("project-1", "service-a"),
+                DependencyTrackProject("project-2", "service-b"),
+            ]
+
+        def get_project_findings(
+            self, project_uuid: str
+        ) -> list[DependencyTrackFinding]:
+            if project_uuid == "project-2":
+                raise DependencyTrackApiError("read failed after bounded retries")
+            return super().get_project_findings(project_uuid)
+
+    class NoCallsGitHub(FakeGitHub):
+        def list_open_issues(self, label: str) -> list[dict]:
+            pytest.fail("GitHub must not be queried before all DT reads succeed")
+
+    github = NoCallsGitHub()
+    run_config = replace(
+        config(), runtime=RuntimeConfig(wait_for_analysis=wait_for_analysis)
+    )
+    with pytest.raises(DependencyTrackApiError, match="read failed"):
+        Orchestrator(run_config, LaterFailure(), FakeKev(), github).run()
+    assert github.searched_keys == []
+    assert github.created == github.updated == github.closed == []
+
+
+@pytest.mark.parametrize("github_enabled", [False, True])
+@pytest.mark.parametrize("rows", [[], [finding("CVE-2026-0001")]])
+def test_two_identical_dt_responses_do_not_prove_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    github_enabled: bool,
+    rows: list[DependencyTrackFinding],
+) -> None:
+    dt = DependencyTrackClient("https://dtrack.invalid", "test-key")
+    calls: list[str] = []
+
+    def read(project_uuid: str) -> list[DependencyTrackFinding]:
+        calls.append(project_uuid)
+        return rows
+
+    monkeypatch.setattr(dt, "list_projects", FakeDependencyTrack().list_projects)
+    monkeypatch.setattr(dt, "get_project_findings", read)
+    run_config = replace(
+        config(),
+        dependency_track=replace(
+            config().dependency_track, analysis_poll_interval_seconds=0
+        ),
+        runtime=RuntimeConfig(wait_for_analysis=True),
+        github=replace(config().github, enabled=github_enabled),
+    )
+    github = FakeGitHub(missing_count=999, finding_state_marker="MISSING")
+    result = Orchestrator(run_config, dt, FakeKev(), github).run()
+    assert len(calls) == 2  # Use the real stability wait, not the one-read fake.
+    assert result.analysis_snapshot_status.value == "stable"
+    assert result.findings_processed == len(rows)
+    assert result.as_dict()["absence_verification"]["finding_state"] == "UNKNOWN"
+    assert result.as_dict()["absence_verification"]["missing_count"] == 0
+    assert result.issues_closed == 0
+    assert github.closed == []
+    assert 12 not in github.updated
+    if not github_enabled:
+        assert github.searched_keys == github.updated == []
+
+
+def test_observation_series_never_inherits_historical_missing_count() -> None:
+    class SeriesDT(FakeDependencyTrack):
+        rows: list[DependencyTrackFinding] | None = []
+
+        def get_project_findings(
+            self, project_uuid: str
+        ) -> list[DependencyTrackFinding]:
+            if self.rows is None:
+                raise DependencyTrackApiError("analysis response unavailable")
+            return self.rows
+
+    class StatefulGitHub(FakeGitHub):
+        def __init__(self) -> None:
+            super().__init__(
+                missing_count=999,
+                finding_state_marker="MISSING",
+                tracked_issue_key="project-1:openssl:3.0.0:CVE-2026-0002",
+            )
+            self.issue = super().list_open_issues("security")[0]
+
+        def list_open_issues(self, label: str) -> list[dict]:
+            return [dict(self.issue)]
+
+        def update_issue(self, issue_number: int, title: str, body: str) -> dict:
+            if issue_number == 12:
+                self.issue["body"] = body
+            return super().update_issue(issue_number, title, body)
+
+    dt = SeriesDT()
+    github = StatefulGitHub()
+    full = FakeDependencyTrack().get_project_findings("project-1")
+    run_config = replace(config(), runtime=RuntimeConfig(wait_for_analysis=True))
+    # Empty/partial snapshots can occur during analysis. Failure breaks the run,
+    # not into an empty success; reappearance clears legacy markers.
+    for rows in [[], [full[0]], None, [], full, [], [full[0]], None, [], full]:
+        dt.rows = rows
+        if rows is None:
+            before = (
+                len(github.updated),
+                len(github.searched_keys),
+                github.issue["body"],
+            )
+            with pytest.raises(DependencyTrackApiError):
+                Orchestrator(run_config, dt, FakeKev(), github).run()
+            assert before == (
+                len(github.updated),
+                len(github.searched_keys),
+                github.issue["body"],
+            )
+        else:
+            result = Orchestrator(run_config, dt, FakeKev(), github).run()
+            assert result.issues_closed == 0
+            assert result.as_dict()["absence_verification"]["missing_count"] == 0
+        assert github.closed == []
+    assert "finding-state=ACTIVE" in github.issue["body"]
+    assert "missing-count" not in github.issue["body"]
 
 
 def test_suppressed_finding_cancels_pending_absence_closure() -> None:
@@ -906,7 +1027,6 @@ def test_suppressed_finding_cancels_pending_absence_closure() -> None:
     safe_config = replace(
         config(),
         runtime=RuntimeConfig(wait_for_analysis=True),
-        workflow=WorkflowConfig(close_missing_findings=True),
     )
     result = Orchestrator(safe_config, SuppressedInventory(), FakeKev(), github).run()
 

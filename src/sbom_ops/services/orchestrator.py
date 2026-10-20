@@ -43,7 +43,7 @@ from sbom_ops.domain.models import (
 from sbom_ops.domain.priority import order_assessments_for_review, prioritize_finding
 from sbom_ops.domain.review import FindingReview, build_review_queue
 from sbom_ops.domain.routing import ProjectRouter
-from sbom_ops.domain.workflow import MissingFindingAction, decide_missing_finding
+from sbom_ops.domain.workflow import decide_missing_finding
 from sbom_ops.services.asset_registry import (
     observe_registry_deployments,
     observe_registry_projects,
@@ -155,6 +155,7 @@ class RunResult:
         """Return an enum-free payload for CLI and downstream adapters."""
         return {
             "status": "succeeded",
+            "absence_verification": decide_missing_finding().as_dict(),
             "run_id": self.run_id,
             "duration_seconds": self.duration_seconds,
             "kev_used_stale_cache": self.kev_used_stale_cache,
@@ -360,21 +361,32 @@ class Orchestrator:
         target_clients: dict[tuple[str, str, str], GitHubIssuesClientProtocol] = {}
         target_projects: dict[tuple[str, str, str], set[str]] = {}
 
+        # Read every selected project before touching GitHub. A later DT read
+        # failure must not leave earlier projects partially synchronized.
+        # Even stable responses do not prove a complete or resolved inventory.
+        findings_by_project: dict[str, list[DependencyTrackFinding]] = {}
+        for project in projects:
+            if self._config.runtime.wait_for_analysis:
+                findings_by_project[project.uuid] = (
+                    self._dependency_track.wait_for_analysis(
+                        project.uuid,
+                        timeout=self._config.dependency_track.analysis_wait_timeout_seconds,
+                        poll_interval=(
+                            self._config.dependency_track.analysis_poll_interval_seconds
+                        ),
+                    )
+                )
+            else:
+                findings_by_project[project.uuid] = (
+                    self._dependency_track.get_project_findings(project.uuid)
+                )
+
         for project in projects:
             if self._config.github.enabled:
                 github, issue_label, target_key = self._github_target(project.uuid)
                 target_clients[target_key] = github
                 target_projects.setdefault(target_key, set()).add(project.uuid)
-            if self._config.runtime.wait_for_analysis:
-                raw_findings = self._dependency_track.wait_for_analysis(
-                    project.uuid,
-                    timeout=self._config.dependency_track.analysis_wait_timeout_seconds,
-                    poll_interval=(
-                        self._config.dependency_track.analysis_poll_interval_seconds
-                    ),
-                )
-            else:
-                raw_findings = self._dependency_track.get_project_findings(project.uuid)
+            raw_findings = findings_by_project[project.uuid]
             findings_processed += len(raw_findings)
             prioritized: list[PrioritizedFinding] = []
             for raw in raw_findings:
@@ -501,57 +513,10 @@ class Orchestrator:
                     continue
                 if number is None:
                     continue
-                body = issue.get("body") or ""
-                decision = decide_missing_finding(
-                    self._missing_count_from_issue(issue),
-                    previous_finding_state=self._finding_state_from_issue(issue),
-                    automatic_closure_enabled=(
-                        self._config.workflow.close_missing_findings
-                    ),
-                    scan_verified=self._config.runtime.wait_for_analysis,
-                    confirmations_required=(
-                        self._config.workflow.missing_confirmation_runs
-                    ),
-                )
-                if decision.action == MissingFindingAction.NOOP:
-                    actions.append(
-                        f"keep-open {key} issue=#{number} reason={decision.reason}"
-                    )
-                    continue
-                if decision.action == MissingFindingAction.MARK_MISSING:
-                    actions.append(
-                        f"mark-missing {key} issue=#{number} "
-                        f"count={decision.missing_count} reason={decision.reason}"
-                    )
-                    if not self._config.runtime.dry_run:
-                        github.update_issue(
-                            int(number),
-                            str(issue.get("title") or "sbom-ops managed finding"),
-                            self._with_finding_observation(
-                                body,
-                                decision.finding_state,
-                                decision.missing_count,
-                            ),
-                        )
-                    updated += 1
-                    continue
+                decision = decide_missing_finding()
                 actions.append(
-                    f"close {key} issue=#{number} count={decision.missing_count} "
-                    f"reason={decision.reason}"
+                    f"keep-open {key} issue=#{number} reason={decision.reason}"
                 )
-                if not self._config.runtime.dry_run:
-                    github.update_issue(
-                        int(number),
-                        str(issue.get("title") or "sbom-ops managed finding"),
-                        self._with_finding_observation(
-                            body,
-                            decision.finding_state,
-                            decision.missing_count,
-                        ),
-                    )
-                    github.close_issue(int(number))
-                updated += 1
-                closed += 1
 
         return RunResult(
             run_id=run_id,
@@ -735,16 +700,6 @@ class Orchestrator:
             return FindingState(matches[0])
         except ValueError:
             return None
-
-    @staticmethod
-    def _with_finding_observation(
-        body: str, finding_state: FindingState, missing_count: int
-    ) -> str:
-        state_marker = f"<!-- sbom-ops:finding-state={finding_state.value} -->"
-        count_marker = f"<!-- sbom-ops:missing-count={missing_count} -->"
-        body = _FINDING_STATE_PATTERN.sub("", body)
-        body = _MISSING_COUNT_PATTERN.sub("", body)
-        return f"{body.rstrip()}\n\n{state_marker}\n{count_marker}\n"
 
     @staticmethod
     def _with_active_observation(body: str) -> str:

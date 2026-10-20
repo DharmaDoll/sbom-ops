@@ -1,5 +1,3 @@
-import pytest
-
 from sbom_ops.domain.models import AnalysisState, FindingState, RemediationState
 from sbom_ops.domain.workflow import (
     MissingFindingAction,
@@ -9,90 +7,25 @@ from sbom_ops.domain.workflow import (
 )
 
 
-def test_missing_finding_stays_open_when_automatic_closure_is_disabled() -> None:
-    decision = decide_missing_finding(
-        0,
-        previous_finding_state=None,
-        automatic_closure_enabled=False,
-        scan_verified=True,
-        confirmations_required=2,
-    )
+def test_missing_finding_stays_unknown_and_open() -> None:
+    decision = decide_missing_finding()
 
     assert decision.action == MissingFindingAction.NOOP
     assert decision.finding_state == FindingState.UNKNOWN
     assert decision.remediation_state == RemediationState.OPEN
+    assert decision.missing_count == 0
+    assert decision.reason == "absence_not_verified"
 
 
-def test_missing_finding_stays_open_when_scan_is_not_verified() -> None:
-    decision = decide_missing_finding(
-        0,
-        previous_finding_state=None,
-        automatic_closure_enabled=True,
-        scan_verified=False,
-        confirmations_required=2,
-    )
-
-    assert decision.action == MissingFindingAction.NOOP
-    assert decision.reason == "analysis_completion_not_verified"
-
-
-def test_missing_finding_requires_consecutive_confirmations() -> None:
-    first = decide_missing_finding(
-        0,
-        previous_finding_state=None,
-        automatic_closure_enabled=True,
-        scan_verified=True,
-        confirmations_required=2,
-    )
-    second = decide_missing_finding(
-        first.missing_count,
-        previous_finding_state=first.finding_state,
-        automatic_closure_enabled=True,
-        scan_verified=True,
-        confirmations_required=2,
-    )
-
-    assert first.action == MissingFindingAction.MARK_MISSING
-    assert first.finding_state == FindingState.MISSING
-    assert second.action == MissingFindingAction.CLOSE
-    assert second.finding_state == FindingState.RESOLVED
-    assert second.remediation_state == RemediationState.CLOSED
-
-
-def test_missing_finding_never_allows_one_run_closure() -> None:
-    with pytest.raises(ValueError, match="at least 2"):
-        decide_missing_finding(
-            0,
-            previous_finding_state=None,
-            automatic_closure_enabled=True,
-            scan_verified=True,
-            confirmations_required=1,
-        )
-
-
-@pytest.mark.parametrize(
-    ("previous_state", "previous_count"),
-    [
-        (None, 1),
-        (FindingState.ACTIVE, 1),
-        (FindingState.RESOLVED, 1),
-        (FindingState.MISSING, 0),
-        (FindingState.MISSING, 2),
-    ],
-)
-def test_missing_finding_restarts_inconsistent_observation(
-    previous_state: FindingState | None, previous_count: int
-) -> None:
-    decision = decide_missing_finding(
-        previous_count,
-        previous_finding_state=previous_state,
-        automatic_closure_enabled=True,
-        scan_verified=True,
-        confirmations_required=2,
-    )
-
-    assert decision.action == MissingFindingAction.MARK_MISSING
-    assert decision.missing_count == 1
+def test_repeated_absence_never_accumulates_resolution_evidence() -> None:
+    for _ in range(10):
+        assert decide_missing_finding().as_dict() == {
+            "action": "NOOP",
+            "finding_state": "UNKNOWN",
+            "remediation_state": "OPEN",
+            "missing_count": 0,
+            "reason": "absence_not_verified",
+        }
 
 
 def test_analysis_observation_does_not_close_remediation() -> None:

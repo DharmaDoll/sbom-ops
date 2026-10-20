@@ -26,7 +26,8 @@ VEX書き込み、到達可能性分析、LLM、Jiraは未実装。
 
 `sync` は設定読込 → Project選択 → DT取得・KEV補完 → 評価 → 任意のIssue同期 →
 結果出力を行うCLIジョブ。SBOM生成・投入はCIの責務で、`sync` は投入しない。
-現在はProjectごとに読取とIssue更新を行うため、後続の失敗前に書き込みが済む場合がある。
+全対象ProjectのFinding読取が成功した後にIssue同期へ進む。
+GitHub同期中の失敗などに対する書込みの一括取消しは行わない。
 
 - Project指定がなければアクセス可能な全Projectを処理する。
   明示指定のUUIDが一覧にない場合は、補完・GitHub操作前に失敗する。
@@ -37,6 +38,11 @@ VEX書き込み、到達可能性分析、LLM、Jiraは未実装。
   2回連続のFinding応答を待つ。タイムアウトは失敗。
   結果の `analysis_snapshot_status` は `not_requested / stable / no_projects`。
   `stable` は解析完了や応答の完全性を証明しない。
+- `absence_verification` は `finding_state=UNKNOWN / remediation_state=OPEN /
+  action=NOOP / missing_count=0 / reason=absence_not_verified`。
+  空・一部のみ・安定した応答でも、見えないFindingの解決を確認したとは扱わない。
+  失敗時は終了コード2。JSONは `status=failed / analysis_snapshot_status=unknown` と
+  同じ未確認の判定を返し、件数・評価一覧を出さない（0件の成功ではない）。
 - タイムアウト・一時的なHTTP障害には上限付き再試行、401/403には終端エラーを返す。
   書込再試行の安全性は[既知の課題](ROADMAP.md#github同期を有効にする前の必須事項)に残る。
 
@@ -56,7 +62,7 @@ YAMLの秘密情報は `env:VARIABLE_NAME` で参照する。未知の節・キ�
 | intelligence | CISA KEV URL、DTを優先するEPSS URL設定、timeout_seconds=30、max_retries=3、retry_backoff_seconds=1、任意のKEVキャッシュ |
 | priority | p1_epss_threshold=0.7、p2_cvss_threshold=7.0、create_issues_for=[P0,P1] |
 | runtime | dry_run=false、project_uuids=[]、log_level=INFO、wait_for_analysis=false、任意のsync_log_file |
-| workflow | close_missing_findings=false、missing_confirmation_runs=2（最小2） |
+| workflow | close_missing_findings=falseのみ。missing_confirmation_runs=2（最小2）は旧設定互換用で判定には使わない |
 | routing | projects=[]。設定する場合、処理対象Projectごとに一意のowner・repo、任意のissue_label_prefix |
 
 GitHubトークンは `SBOM_OPS_GITHUB_TOKEN`、未設定なら `GH_TOKEN` を使う。
@@ -323,12 +329,15 @@ Finding一覧には残す。Analysisだけを理由に既存Issueを閉じない
 Finding keyは `v2:{project_uuid}:sha256(machine_identity)`。
 identityはProject＋Component UUID＋vulnerability UUID、次にProject＋PURL＋source＋主ID、
 最後にProject＋表示名・版＋source＋主IDを使う。旧keyも既存Issue検索に使う。
-key・Finding状態・欠落回数をIssue本文の機械用マーカーに保存する。
+key・Finding状態をIssue本文の機械用マーカーに保存する。
 開いているIssueを更新し、なければ作成する。閉じたIssueの再利用方針は未実装。
 
-自動クローズは既定で無効。有効化時は解析待ち経路と連続不在（最小2回）が必要。
-一つの妥当なMISSINGマーカーと回数だけを引き継ぎ、不正な記録は数え直す。
-再出現でACTIVEに戻し、欠落回数を消す。ただし応答安定だけでは修正を確認できない。
+自動クローズは未提供。`close_missing_findings=true` は設定エラーとして拒否する。
+過去のMISSING状態・欠落回数は解決判定に使わず、加算もしない。
+見えないFindingのIssueは変更せず開いたままにし、実行結果ではUNKNOWNを返す。
+再出現したFindingはACTIVEに戻し、旧欠落回数を消す。読取失敗時はIssueを書き換えない。
+将来の有効化には、対象成果物とSBOMの同一性、解析・取得の完全性、
+連続不在の証拠と中断時の扱いを別途定義・検証する必要がある。
 本文保存・ラベル更新・重複防止・途中失敗の監査を含め、
 [有効化前の必須事項](ROADMAP.md#github同期を有効にする前の必須事項)が未完了である。
 

@@ -96,6 +96,7 @@ def test_review_output_retains_non_cve_and_unknown_context(monkeypatch, capsys) 
     assert "PoC=不明" in output
     assert "DT分析=NOT_SET 抑制=False" in output
     assert "優先度の理由=Default monitoring priority" in output
+    assert "解決確認=未確認" in output
 
 
 def test_sync_log_failure_is_visible_without_breaking_json_result(
@@ -115,6 +116,7 @@ def test_sync_log_failure_is_visible_without_breaking_json_result(
     assert payload["assessments"][0]["analysis_detail"] == "analyst note"
     assert payload["assessments"][0]["vulnerability_aliases"] == ["CVE-2026-1001"]
     assert payload["analysis_snapshot_status"] == "not_requested"
+    assert payload["absence_verification"]["finding_state"] == "UNKNOWN"
     assert captured.err == (
         "warning: sync log could not be written; primary sync result is unchanged\n"
     )
@@ -130,6 +132,43 @@ def test_sync_log_success_does_not_emit_warning(monkeypatch, capsys) -> None:
     captured = capsys.readouterr()
     assert json.loads(captured.out)["status"] == "succeeded"
     assert captured.err == ""
+
+
+@pytest.mark.parametrize("output_format", ["json", "text", "review"])
+def test_failed_sync_is_not_reported_as_empty_success(
+    monkeypatch: pytest.MonkeyPatch, capsys, output_format: str
+) -> None:
+    config = SimpleNamespace(runtime=SimpleNamespace(sync_log_file="sync.jsonl"))
+    events: list[dict] = []
+
+    def fail(*args, **kwargs) -> int:
+        raise cli.DependencyTrackApiError("DT unavailable after bounded retries")
+
+    def log(path: str, payload: dict) -> bool:
+        events.append(payload)
+        return True
+
+    monkeypatch.setattr(cli, "load_config", lambda args: config)
+    monkeypatch.setattr(cli, "run_sync", fail)
+    monkeypatch.setattr(cli, "append_sync_event", log)
+    monkeypatch.setattr("sys.argv", ["sbom-ops", "sync", "--output", output_format])
+    assert cli.main() == 2
+    captured = capsys.readouterr()
+    assert "DT unavailable" in captured.err
+    assert events[0]["status"] == "failed"
+    assert events[0]["absence_verification"]["finding_state"] == "UNKNOWN"
+    assert "findings_processed" not in events[0]
+    if output_format == "json":
+        payload = json.loads(captured.out)
+        assert payload["status"] == "failed"
+        assert payload["analysis_snapshot_status"] == "unknown"
+        assert payload["run_id"] == events[0]["run_id"]
+        assert payload["error_type"] == "DependencyTrackApiError"
+        assert "error" not in payload
+        assert "assessments" not in payload
+        assert "findings_processed" not in payload
+    else:
+        assert captured.out == ""
 
 
 def test_sync_passes_force_kev_refresh_to_orchestrator(monkeypatch, capsys) -> None:

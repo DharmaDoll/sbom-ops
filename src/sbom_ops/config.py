@@ -72,6 +72,13 @@ class WorkflowConfig:
     close_missing_findings: bool = False
     missing_confirmation_runs: int = 2
 
+    def __post_init__(self) -> None:
+        if self.close_missing_findings:
+            raise ValueError(
+                "workflow.close_missing_findings=true is not supported: "
+                "finding absence does not verify resolution; set it to false"
+            )
+
 
 @dataclass(frozen=True)
 class RoutingConfig:
