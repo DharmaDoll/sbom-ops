@@ -6,7 +6,7 @@ import os
 import sqlite3
 import sys
 from contextlib import ExitStack
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -39,6 +39,7 @@ from sbom_ops.domain.assets import (
     DeploymentStatus,
 )
 from sbom_ops.domain.identifier_candidates import select_identifier_targets
+from sbom_ops.domain.issue_intent import IssueJournalBusy
 from sbom_ops.domain.poc import PocRunBusy, select_poc_targets
 from sbom_ops.domain.poc_retry import PocRetryPolicy
 from sbom_ops.domain.workflow import decide_missing_finding
@@ -66,6 +67,7 @@ from sbom_ops.services.poc_refresh import collect_poc_snapshot
 from sbom_ops.services.sync_log import append_sync_event
 from sbom_ops.storage.asset_registry import CURRENT_SCHEMA_VERSION, AssetRegistry
 from sbom_ops.storage.identifier_candidates import IdentifierStore
+from sbom_ops.storage.issue_journal import IssueJournal
 from sbom_ops.storage.poc import PocStore
 from sbom_ops.storage.poc_snapshot import save_poc_snapshot
 from sbom_ops.storage.run_lock import exclusive_run, poc_lock_path
@@ -74,6 +76,16 @@ from sbom_ops.storage.run_lock import exclusive_run, poc_lock_path
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sbom-ops")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    workflow = subparsers.add_parser("workflow", help="local GitHub write journal")
+    workflow.add_argument("--db", required=True, help="persistent local journal (0600)")
+    workflow_commands = workflow.add_subparsers(dest="workflow_command", required=True)
+    workflow_commands.add_parser(
+        "init", help="initialize a NEW journal; never use to retry"
+    )
+    workflow_commands.add_parser(
+        "show", help="inspect saved create intents without writes"
+    )
 
     review = subparsers.add_parser("id-review")
     review.add_argument("--db", default="var/assets.sqlite3")
@@ -1192,6 +1204,18 @@ def main() -> int:
     args = parser.parse_args()
     active_config: AppConfig | None = None
     try:
+        if args.command == "workflow":
+            if args.workflow_command == "init":
+                IssueJournal.initialize(args.db)
+                print(json.dumps({"status": "initialized", "db": args.db}))
+            else:
+                with IssueJournal(args.db, read_only=True) as journal:
+                    print(
+                        json.dumps(
+                            {"intents": [asdict(item) for item in journal.records()]}
+                        )
+                    )
+            return 0
         if args.command == "id-review":
             return run_identifier_review(args)
         if args.command == "id-candidates":
@@ -1218,6 +1242,11 @@ def main() -> int:
                 use_reviewed_identifiers=args.use_reviewed_identifiers,
             )
         parser.error(f"unsupported command: {args.command}")
+    except IssueJournalBusy:
+        print(
+            json.dumps({"status": "busy", "error": "workflow_journal_already_in_use"})
+        )
+        return 3
     except PocRunBusy:
         error = (
             "identifier_update_already_running"

@@ -8,6 +8,23 @@ import pytest
 from sbom_ops.config import WorkflowConfig, load_config
 
 
+def test_workflow_journal_setting_and_environment_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "dependency_track:\n  base_url: https://dt.example\n  api_key: test-key\n"
+        "github:\n  enabled: false\nworkflow:\n"
+        "  issue_journal_file: var/workflow.sqlite3\n",
+        encoding="utf-8",
+    )
+    args = Namespace(config=str(path))
+    assert load_config(args).workflow.issue_journal_file == "var/workflow.sqlite3"
+    monkeypatch.setenv("SBOM_OPS_ISSUE_JOURNAL_FILE", "/tmp/another.sqlite3")
+    assert load_config(args).workflow.issue_journal_file == "/tmp/another.sqlite3"
+
+
 def test_load_config_reads_required_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

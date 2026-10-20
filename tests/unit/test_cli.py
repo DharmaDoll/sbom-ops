@@ -29,6 +29,51 @@ from sbom_ops.domain.models import (
 )
 from sbom_ops.services.orchestrator import RunResult
 from sbom_ops.storage.asset_registry import AssetRegistry
+from sbom_ops.storage.issue_journal import IssueJournal
+
+
+def test_workflow_init_and_show_need_no_external_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    path = tmp_path / "journal.sqlite3"
+
+    def invoke(action: str) -> int:
+        monkeypatch.setattr(
+            "sys.argv", ["sbom-ops", "workflow", "--db", str(path), action]
+        )
+        return cli.main()
+
+    def no_config(*args: object) -> None:
+        pytest.fail("workflow commands must not load external credentials")
+
+    monkeypatch.setattr(cli, "load_config", no_config)
+    assert invoke("init") == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "initialized"
+    assert invoke("show") == 0
+    assert json.loads(capsys.readouterr().out) == {"intents": []}
+    assert invoke("init") == 2
+    capsys.readouterr()
+    with IssueJournal(path) as journal:
+        journal.reserve("acme/app", "key", "run")
+        assert invoke("show") == 3
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "busy",
+        "error": "workflow_journal_already_in_use",
+    }
+    assert invoke("show") == 0
+    assert json.loads(capsys.readouterr().out)["intents"][0]["state"] == "pending"
+
+
+def test_workflow_show_does_not_initialize_missing_db(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "absent.sqlite3"
+    monkeypatch.setattr("sys.argv", ["sbom-ops", "workflow", "--db", str(path), "show"])
+    assert cli.main() == 2
+    assert not path.exists()
 
 
 class FakeOrchestrator:

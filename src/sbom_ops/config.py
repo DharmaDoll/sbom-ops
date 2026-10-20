@@ -71,6 +71,7 @@ class RuntimeConfig:
 class WorkflowConfig:
     close_missing_findings: bool = False
     missing_confirmation_runs: int = 2
+    issue_journal_file: str | None = None
 
     def __post_init__(self) -> None:
         if self.close_missing_findings:
@@ -145,7 +146,11 @@ _SECTION_KEYS = {
         "wait_for_analysis",
         "sync_log_file",
     },
-    "workflow": {"close_missing_findings", "missing_confirmation_runs"},
+    "workflow": {
+        "close_missing_findings",
+        "missing_confirmation_runs",
+        "issue_journal_file",
+    },
     "routing": {"projects"},
 }
 
@@ -687,7 +692,15 @@ def load_config(args: Any) -> AppConfig:
             else runtime_sync_log_file
         ),
     )
+    issue_journal_value = _config_value(
+        config, "workflow", "issue_journal_file", "SBOM_OPS_ISSUE_JOURNAL_FILE", None
+    )
     workflow = WorkflowConfig(
+        issue_journal_file=(
+            _as_string(issue_journal_value, "workflow.issue_journal_file")
+            if issue_journal_value is not None
+            else None
+        ),
         close_missing_findings=_as_bool(
             _config_value(
                 config,

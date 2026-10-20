@@ -38,6 +38,7 @@ from sbom_ops.domain.issue_body import (
     parse_issue_body,
 )
 from sbom_ops.domain.issue_catalog import IssueCatalog, IssueIdentityError
+from sbom_ops.domain.issue_intent import IssueCreateIntent, IssueIntentError
 from sbom_ops.domain.models import (
     AnalysisSnapshotStatus,
     AnalysisState,
@@ -56,6 +57,7 @@ from sbom_ops.services.asset_registry import (
     observe_registry_deployments,
     observe_registry_projects,
 )
+from sbom_ops.storage.issue_journal import IssueJournal
 
 
 class DependencyTrackClientProtocol(Protocol):
@@ -295,7 +297,7 @@ class Orchestrator:
             if route
             else self._config.github.issue_label_prefix
         )
-        target_key = (owner, repo, label)
+        target_key = (owner.lower(), repo.lower(), label)
         if self._injected_github:
             assert self._github is not None
             return self._github, label, target_key
@@ -313,6 +315,21 @@ class Orchestrator:
         return client, label, target_key
 
     def run(self) -> RunResult:
+        if not self._config.github.enabled:
+            return self._run(None)
+        path = self._config.workflow.issue_journal_file
+        if path is None:
+            if not self._config.runtime.dry_run:
+                raise IssueIntentError(
+                    "GitHub writes require workflow.issue_journal_file; "
+                    "initialize it explicitly with workflow init"
+                )
+            return self._run(None)
+        # OS lock spans network operations; SQLite transactions do not.
+        with IssueJournal(path, read_only=self._config.runtime.dry_run) as journal:
+            return self._run(journal)
+
+    def _run(self, journal: IssueJournal | None) -> RunResult:
         run_id = str(uuid4())
         started_at = time.monotonic()
         all_projects = self._dependency_track.list_projects()
@@ -425,6 +442,32 @@ class Orchestrator:
                             "legacy finding key maps to multiple current identities"
                         )
 
+        # Reconcile every prior create in the selected repositories, including
+        # findings absent from today's input. Absence never authorizes a resend.
+        if journal is not None:
+            by_repository = {
+                "/".join(repo): catalog for repo, catalog in catalogs.items()
+            }
+            pending_confirmations: list[tuple[IssueCreateIntent, int]] = []
+            for intent in journal.records():
+                previous_catalog = by_repository.get(intent.repository)
+                if previous_catalog is None:
+                    continue
+                match = previous_catalog.find(intent.finding_key, intent.finding_key)
+                if match is None or (
+                    intent.state == "confirmed" and match.number != intent.issue_number
+                ):
+                    raise IssueIntentError(
+                        f"create intent {intent.intent_id} cannot be reconciled; "
+                        "inspect GitHub and preserve the journal; no POST was retried"
+                    )
+                if intent.state == "pending":
+                    pending_confirmations.append((intent, match.number))
+            for intent, number in pending_confirmations:
+                actions.append(f"reconcile-create {intent.finding_key} issue=#{number}")
+                if not self._config.runtime.dry_run:
+                    journal.confirm(intent, number, run_id)
+
         for project in projects:
             if self._config.github.enabled:
                 github, issue_label, target_key = self._github_target(project.uuid)
@@ -499,6 +542,8 @@ class Orchestrator:
                         f"analysis={item.enrichment.analysis_state.value}"
                     )
                     if not self._config.runtime.dry_run:
+                        assert journal is not None
+                        intent = journal.reserve("/".join(target_key[:2]), key, run_id)
                         try:
                             response = github.create_issue(
                                 title,
@@ -530,6 +575,7 @@ class Orchestrator:
                         catalog.record(
                             confirmed.number, confirmed.state, confirmed.body
                         )
+                        journal.confirm(intent, confirmed.number, run_id)
                     created += 1
                 else:
                     number = existing.number

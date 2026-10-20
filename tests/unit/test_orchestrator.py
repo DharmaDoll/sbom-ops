@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, tzinfo
+from pathlib import Path
 
 import pytest
 
@@ -19,6 +20,7 @@ from sbom_ops.config import (
     IntelligenceConfig,
     PriorityConfig,
     RuntimeConfig,
+    WorkflowConfig,
 )
 from sbom_ops.domain.advisory import (
     AdvisorySnapshot,
@@ -43,8 +45,22 @@ from sbom_ops.domain.assets import (
 )
 from sbom_ops.domain.issue_body import IssueBodyError, new_issue_body, parse_issue_body
 from sbom_ops.domain.issue_catalog import IssueIdentityError
+from sbom_ops.domain.issue_intent import IssueIntentError, IssueJournalBusy
 from sbom_ops.domain.models import Finding, Severity
 from sbom_ops.services.orchestrator import Orchestrator, ProjectSelectionError
+from sbom_ops.storage.issue_journal import IssueJournal
+
+
+@pytest.fixture(autouse=True)
+def workflow_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    path = tmp_path / "workflow.sqlite3"
+    IssueJournal.initialize(path)
+    base = config()
+    monkeypatch.setattr(
+        __name__ + ".config",
+        lambda: replace(base, workflow=WorkflowConfig(issue_journal_file=str(path))),
+    )
+    return path
 
 
 def config() -> AppConfig:
@@ -926,6 +942,175 @@ def test_unconfirmed_create_stops_without_retrying_post() -> None:
         Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
     assert github.attempts == 1
     assert github.updated == []
+    # A new orchestrator/process must not treat the still-empty list as permission
+    # to resend a POST whose outcome is unknown.
+    with pytest.raises(IssueIntentError, match="cannot be reconciled"):
+        Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+    assert github.attempts == 1
+
+
+@pytest.mark.parametrize("state", ["open", "closed"])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_restart_reconciles_visible_issue_without_creating_again(
+    workflow_journal: Path,
+    state: str,
+    dry_run: bool,
+) -> None:
+    github = FakeGitHub()
+    key = github.matched_key
+    with IssueJournal(workflow_journal) as journal:
+        intent = journal.reserve("ACME/Service-A", key, "previous-run")
+    original_list = github.list_issues
+    github.list_issues = lambda: [
+        {**row, "state": state} if row["number"] == 11 else row
+        for row in original_list()
+    ]
+    result = Orchestrator(
+        replace(config(), runtime=RuntimeConfig(dry_run=dry_run)),
+        FakeDependencyTrack(),
+        FakeKev(),
+        github,
+    ).run()
+    assert github.created == []
+    assert any("reconcile-create" in item for item in result.actions)
+    if state == "closed":
+        assert any("review-closed" in item for item in result.actions)
+        assert github.updated == []
+    with IssueJournal(workflow_journal, read_only=True) as journal:
+        saved = journal.records()[0]
+    assert saved.state == ("pending" if dry_run else "confirmed")
+    if dry_run:
+        assert saved == intent
+        assert github.updated == []
+    else:
+        assert saved.issue_number == 11
+        assert saved.confirmed_run_id == result.run_id
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_journal_preflight_stops_all_writes_even_for_absent_finding(
+    workflow_journal: Path,
+    confirmed: bool,
+) -> None:
+    with IssueJournal(workflow_journal) as journal:
+        intent = journal.reserve("acme/service-a", "v2:absent:unknown", "old-run")
+        if confirmed:
+            journal.confirm(intent, 99, "old-run")
+    github = FakeGitHub()
+    with pytest.raises(IssueIntentError, match="cannot be reconciled"):
+        Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+    assert github.created == github.updated == []
+
+
+def test_confirmed_issue_number_cannot_be_rebound(workflow_journal: Path) -> None:
+    github = FakeGitHub()
+    with IssueJournal(workflow_journal) as journal:
+        intent = journal.reserve("acme/service-a", github.matched_key, "old-run")
+        journal.confirm(intent, 99, "old-run")
+    with pytest.raises(IssueIntentError, match="cannot be reconciled"):
+        Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+    assert github.created == github.updated == []
+
+
+def test_journal_ignores_other_repositories(workflow_journal: Path) -> None:
+    with IssueJournal(workflow_journal) as journal:
+        intent = journal.reserve("acme/other-repo", "unknown", "old-run")
+    github = FakeGitHub()
+    Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+    assert github.updated == [11]
+    with IssueJournal(workflow_journal, read_only=True) as journal:
+        assert journal.records() == (intent,)
+
+
+def test_intent_is_committed_before_post_and_survives_interruption(
+    workflow_journal: Path,
+) -> None:
+    import sqlite3
+
+    class InterruptedGitHub(FakeGitHub):
+        def list_issues(self) -> list[dict]:
+            return []
+
+        def create_issue(self, title: str, body: str, labels: list[str]) -> dict:
+            # Independent DB connection sees the commit before HTTP dispatch.
+            with sqlite3.connect(workflow_journal) as db:
+                row = db.execute("SELECT state FROM issue_create_intents").fetchone()
+            assert row == ("pending",)
+            raise KeyboardInterrupt
+
+    github = InterruptedGitHub()
+    with pytest.raises(KeyboardInterrupt):
+        Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+    with IssueJournal(workflow_journal) as journal:
+        assert journal.records()[0].state == "pending"
+    with pytest.raises(IssueIntentError, match="cannot be reconciled"):
+        Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+
+
+def test_journal_confirmation_failure_cannot_allow_resend(
+    workflow_journal: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CreatedGitHub(FakeGitHub):
+        def list_issues(self) -> list[dict]:
+            return []
+
+    def fail_confirm(*args: object) -> None:
+        raise OSError("disk unavailable")
+
+    github = CreatedGitHub()
+    with monkeypatch.context() as patch:
+        patch.setattr(IssueJournal, "confirm", fail_confirm)
+        with pytest.raises(OSError, match="disk unavailable"):
+            Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+    assert len(github.created) == 1
+    with pytest.raises(IssueIntentError):
+        Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+    assert len(github.created) == 1
+
+
+def test_disabled_github_never_opens_journal_and_dry_run_never_requires_init(
+    tmp_path: Path,
+) -> None:
+    invalid = str(tmp_path / "nonexistent.sqlite3")
+    base = replace(config(), workflow=WorkflowConfig(issue_journal_file=invalid))
+    github = FakeGitHub()
+    disabled = replace(base, github=replace(base.github, enabled=False))
+    Orchestrator(disabled, FakeDependencyTrack(), FakeKev(), github).run()
+    assert not Path(invalid).exists()
+    without_journal = replace(base, workflow=WorkflowConfig())
+    with pytest.raises(IssueIntentError, match="require"):
+        Orchestrator(without_journal, FakeDependencyTrack(), FakeKev(), github).run()
+    with pytest.raises(FileNotFoundError):
+        Orchestrator(base, FakeDependencyTrack(), FakeKev(), github).run()
+    preview = replace(without_journal, runtime=RuntimeConfig(dry_run=True))
+    Orchestrator(preview, FakeDependencyTrack(), FakeKev(), github).run()
+    assert github.created == github.updated == []
+
+
+def test_busy_journal_stops_before_external_reads(workflow_journal: Path) -> None:
+    class UnreadableDT(FakeDependencyTrack):
+        def list_projects(self) -> list[DependencyTrackProject]:
+            pytest.fail("busy run must not read external systems")
+
+    with IssueJournal(workflow_journal):
+        with pytest.raises(IssueJournalBusy):
+            Orchestrator(config(), UnreadableDT(), FakeKev(), FakeGitHub()).run()
+
+
+def test_reservation_failure_prevents_post(monkeypatch: pytest.MonkeyPatch) -> None:
+    class EmptyGitHub(FakeGitHub):
+        def list_issues(self) -> list[dict]:
+            return []
+
+    def fail_reserve(*args: object) -> None:
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(IssueJournal, "reserve", fail_reserve)
+    github = EmptyGitHub()
+    with pytest.raises(OSError, match="disk unavailable"):
+        Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+    assert github.created == github.updated == []
 
 
 @pytest.mark.parametrize("dry_run", [False, True])

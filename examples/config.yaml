@@ -41,6 +41,8 @@ runtime:
 workflow:
   close_missing_findings: false
   missing_confirmation_runs: 2
+  # Required for GitHub writes; initialize once with `workflow --db PATH init`.
+  # issue_journal_file: var/workflow.sqlite3
 
 routing:
   # Add one entry per Dependency-Track Project when multiple repositories are used.

@@ -62,7 +62,7 @@ YAMLの秘密情報は `env:VARIABLE_NAME` で参照する。未知の節・キ�
 | intelligence | CISA KEV URL、DTを優先するEPSS URL設定、timeout_seconds=30、max_retries=3、retry_backoff_seconds=1、任意のKEVキャッシュ |
 | priority | p1_epss_threshold=0.7、p2_cvss_threshold=7.0、create_issues_for=[P0,P1] |
 | runtime | dry_run=false、project_uuids=[]、log_level=INFO、wait_for_analysis=false、任意のsync_log_file |
-| workflow | close_missing_findings=falseのみ。missing_confirmation_runs=2（最小2）は旧設定互換用で判定には使わない |
+| workflow | close_missing_findings=falseのみ。missing_confirmation_runs=2（最小2）は旧設定互換用で判定には使わない。issue_journal_fileはGitHub書込時に必須のSQLite操作記録 |
 | routing | projects=[]。設定する場合、処理対象Projectごとに一意のowner・repo、任意のissue_label_prefix |
 
 GitHubトークンは `SBOM_OPS_GITHUB_TOKEN`、未設定なら `GH_TOKEN` を使う。
@@ -347,8 +347,19 @@ HTML文字をエスケープする。
 `review-closed`を返し、作り直し・再オープン・本文更新をしない。再開の判断は人が行う。
 POSTは自動再送しない。応答喪失や作成応答の不正時は一覧を再取得して完全一致で照合し、
 一意に見つかれば`create-reconciled`を記録する。確認できなければ失敗して停止する。
-未確定操作の永続記録・実行をまたぐ再作成防止・同時実行の排他は未実装のため、
-不明な作成結果を放置したまま同期を再実行しない。限定検証以外の書込みはまだ有効にしない。
+GitHub書込みには明示初期化した `workflow.issue_journal_file` のSQLiteを必須とする。
+POST前にrepo・Finding key・run ID・作成意図ID・時刻をpendingとしてコミットし、
+確認できたIssue番号と確認run IDを保存する。Issue本文・認証情報・対応状態の正本は複製しない。
+次回は対象repoの過去の記録をすべて照合し、一意に同じkeyを確認できたpendingだけ確定する。
+見つからない・複数一致・確定済み番号と異なる場合は、今回のFinding一覧にない記録でも
+全書込みを止める。POSTの自動再送、記録の期限切れ・削除・初期化による再試行は行わない。
+単一ホストの同一DBを使い、同期全体でDB inodeの排他ロックを保持する。SQLiteの書込み
+トランザクションはHTTP待機をまたがない。競合時は待たず失敗する（CLI終了コード3）。
+DB未設定・欠損・不正・他者が読める権限では書き込まず、DBを自動作成しない。
+`--no-github` はDBを開かない。dry-runはDB未設定でも利用できるが、設定時は読み取り専用で
+過去の操作を照合し、pendingを確定せず `reconcile-create` を予定として表示する。
+別DB・複数ホスト・ネットワークディスクによる並列実行、古いバックアップへの巻戻しは非対応。
+送信前停止と応答喪失を区別できない場合の再送解除は未提供。限定検証以外の書込みはまだ有効にしない。
 
 自動クローズは未提供。`close_missing_findings=true` は設定エラーとして拒否する。
 過去のMISSING状態・欠落回数は解決判定に使わず、加算もしない。
