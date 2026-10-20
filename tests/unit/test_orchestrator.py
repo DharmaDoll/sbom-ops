@@ -40,6 +40,7 @@ from sbom_ops.domain.assets import (
     BusinessCriticality,
     DeploymentStatus,
 )
+from sbom_ops.domain.issue_body import IssueBodyError, new_issue_body, parse_issue_body
 from sbom_ops.services.orchestrator import Orchestrator, ProjectSelectionError
 
 
@@ -126,16 +127,29 @@ class FakeGitHub:
         self.legacy_only = legacy_only
         self.tracked_issue_key = tracked_issue_key
         self.searched_keys: list[str] = []
+        self.matched_key: str | None = None
 
     def find_open_issue_by_finding_key(self, finding_key: str) -> dict | None:
         self.searched_keys.append(finding_key)
         if not self.legacy_only and finding_key.startswith("v2:project-1:"):
+            self.matched_key = finding_key
             return {"number": 11}
         if self.legacy_only and finding_key == (
             "project-1:openssl:3.0.0:CVE-2026-0001"
         ):
+            self.matched_key = finding_key
             return {"number": 11}
         return None
+
+    def get_issue(self, issue_number: int) -> dict:
+        if issue_number == 11:
+            return {
+                "number": 11,
+                "title": "human title",
+                "state": "open",
+                "body": f"<!-- sbom-ops:finding-key={self.matched_key} -->",
+            }
+        return {**self.list_open_issues("sbom")[0], "state": "open"}
 
     def list_open_issues(self, label: str) -> list[dict]:
         state_marker = (
@@ -164,7 +178,7 @@ class FakeGitHub:
         self.created.append((title, body, labels))
         return {"number": 13}
 
-    def update_issue(self, issue_number: int, title: str, body: str) -> dict:
+    def update_issue(self, issue_number: int, title: str | None, body: str) -> dict:
         self.updated.append(issue_number)
         self.updated_bodies.append(body)
         return {"number": issue_number}
@@ -748,9 +762,88 @@ def test_orchestrator_migrates_an_existing_legacy_key() -> None:
     assert result.issues_created == 0
     assert github.searched_keys[0].startswith("v2:project-1:")
     assert github.searched_keys[1] == ("project-1:openssl:3.0.0:CVE-2026-0001")
-    assert github.updated_bodies[0].startswith(
-        "<!-- sbom-ops:finding-key=v2:project-1:"
+    assert parse_issue_body(github.updated_bodies[0]).finding_key.startswith(
+        "v2:project-1:"
     )
+    assert "移行前の本文" in github.updated_bodies[0]
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_update_uses_latest_body_preserves_notes_and_human_title(dry_run: bool) -> None:
+    class LatestGitHub(FakeGitHub):
+        reads = 0
+
+        def get_issue(self, issue_number: int) -> dict:
+            self.reads += 1
+            issue = super().get_issue(issue_number)
+            issue["body"] = (
+                "先頭メモ\n"
+                + new_issue_body(self.matched_key, "old data")
+                + "\n直前の追記  "
+            )
+            return issue
+
+        def update_issue(self, issue_number: int, title: str | None, body: str) -> dict:
+            assert title is None  # Do not send a title field in the PATCH.
+            assert body.startswith("先頭メモ\n")
+            assert body.endswith("\n直前の追記  ")
+            assert "old data" not in parse_issue_body(body).managed
+            assert "CVE-2026-0001" in parse_issue_body(body).managed
+            return super().update_issue(issue_number, title, body)
+
+    github = LatestGitHub()
+    run_config = replace(config(), runtime=RuntimeConfig(dry_run=dry_run))
+    result = Orchestrator(run_config, FakeDependencyTrack(), FakeKev(), github).run()
+    assert result.issues_updated == 1
+    assert github.reads == 1
+    assert github.updated == ([] if dry_run else [11])
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"state": "closed"},
+        {"pull_request": {}},
+        {"body": None},
+        {"body": "<!-- sbom-ops:managed:start -->"},
+        {"body": new_issue_body("other-finding", "text")},
+        {"number": 999},
+        {"number": True},
+        {"title": None},
+    ],
+)
+def test_update_refuses_changed_or_ambiguous_issue(
+    changes: dict, dry_run: bool
+) -> None:
+    class ChangedGitHub(FakeGitHub):
+        def get_issue(self, issue_number: int) -> dict:
+            return {**super().get_issue(issue_number), **changes}
+
+    github = ChangedGitHub()
+    run_config = replace(config(), runtime=RuntimeConfig(dry_run=dry_run))
+    with pytest.raises(IssueBodyError):
+        Orchestrator(run_config, FakeDependencyTrack(), FakeKev(), github).run()
+    assert github.created == github.updated == github.closed == []
+
+
+def test_reappearance_reads_latest_notes_before_migration() -> None:
+    class LatestGitHub(FakeGitHub):
+        def get_issue(self, issue_number: int) -> dict:
+            issue = super().get_issue(issue_number)
+            issue["body"] += "\n読み取り直前の担当メモ  "
+            return issue
+
+    github = LatestGitHub(
+        missing_count=2,
+        tracked_issue_key="project-1:openssl:3.0.0:CVE-2026-0002",
+    )
+    Orchestrator(
+        config(), FakeDependencyTrackWithExcludedFinding(), FakeKev(), github
+    ).run()
+    assert github.updated == [12]
+    assert github.updated_bodies[0].endswith("\n読み取り直前の担当メモ  ")
+    assert parse_issue_body(github.updated_bodies[0]).missing_count == 0
 
 
 def test_orchestrator_resets_missing_count_when_finding_reappears() -> None:
@@ -767,7 +860,10 @@ def test_orchestrator_resets_missing_count_when_finding_reappears() -> None:
     assert result.issues_closed == 0
     assert github.updated == [12]
     assert "<!-- sbom-ops:finding-state=ACTIVE -->" in github.updated_bodies[0]
-    assert "sbom-ops:missing-count" not in github.updated_bodies[0]
+    assert (
+        "sbom-ops:missing-count"
+        not in parse_issue_body(github.updated_bodies[0]).managed
+    )
 
 
 def test_orchestrator_ignores_historical_absence_count() -> None:
@@ -864,7 +960,10 @@ def test_orchestrator_resets_stale_missing_state_when_finding_reappears() -> Non
     assert result.issues_closed == 0
     assert github.updated == [12]
     assert "<!-- sbom-ops:finding-state=ACTIVE -->" in github.updated_bodies[0]
-    assert "sbom-ops:missing-count" not in github.updated_bodies[0]
+    assert (
+        "sbom-ops:missing-count"
+        not in parse_issue_body(github.updated_bodies[0]).managed
+    )
 
 
 def test_analysis_snapshot_status_reports_no_projects() -> None:
@@ -977,7 +1076,7 @@ def test_observation_series_never_inherits_historical_missing_count() -> None:
         def list_open_issues(self, label: str) -> list[dict]:
             return [dict(self.issue)]
 
-        def update_issue(self, issue_number: int, title: str, body: str) -> dict:
+        def update_issue(self, issue_number: int, title: str | None, body: str) -> dict:
             if issue_number == 12:
                 self.issue["body"] = body
             return super().update_issue(issue_number, title, body)
@@ -1009,7 +1108,7 @@ def test_observation_series_never_inherits_historical_missing_count() -> None:
             assert result.as_dict()["absence_verification"]["missing_count"] == 0
         assert github.closed == []
     assert "finding-state=ACTIVE" in github.issue["body"]
-    assert "missing-count" not in github.issue["body"]
+    assert "missing-count" not in parse_issue_body(github.issue["body"]).managed
 
 
 def test_suppressed_finding_cancels_pending_absence_closure() -> None:
@@ -1035,7 +1134,10 @@ def test_suppressed_finding_cancels_pending_absence_closure() -> None:
     assert github.closed == []
     assert github.updated == [12]
     assert "<!-- sbom-ops:finding-state=ACTIVE -->" in github.updated_bodies[0]
-    assert "sbom-ops:missing-count" not in github.updated_bodies[0]
+    assert (
+        "sbom-ops:missing-count"
+        not in parse_issue_body(github.updated_bodies[0]).managed
+    )
 
 
 def test_orchestrator_dry_run_does_not_mutate_github() -> None:

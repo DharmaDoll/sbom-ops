@@ -17,7 +17,7 @@ import pytest
 from sbom_ops.clients import github as github_module
 from sbom_ops.clients import http as http_module
 from sbom_ops.clients import kev as kev_module
-from sbom_ops.clients.github import GitHubIssuesClient
+from sbom_ops.clients.github import GitHubApiError, GitHubIssuesClient
 from sbom_ops.clients.http import HttpApiError, HttpJsonResponse, request_json
 from sbom_ops.clients.kev import KevClient
 
@@ -699,3 +699,56 @@ def test_github_issue_listing_filters_pull_requests_and_paginates(monkeypatch) -
     assert len(requests) == 2
     assert "page=1" in requests[0]
     assert "page=2" in requests[1]
+
+
+def test_github_get_issue_returns_raw_body_from_selected_repository(
+    monkeypatch,
+) -> None:
+    issue = {"number": 42, "state": "open", "title": "title", "body": "human notes"}
+
+    def fake_urlopen(request, timeout):
+        assert request.get_method() == "GET"
+        assert (
+            request.full_url == "https://api.github.com/repos/acme/service-a/issues/42"
+        )
+        assert request.data is None
+        return FakeResponse(issue)
+
+    monkeypatch.setattr(github_module, "urlopen", fake_urlopen)
+    assert GitHubIssuesClient("test-token", "acme", "service-a").get_issue(42) == issue
+
+
+@pytest.mark.parametrize("number", [True, 0, -1, "42", "../42"])
+def test_github_get_issue_rejects_invalid_number(number) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        GitHubIssuesClient("test-token", "acme", "service-a").get_issue(number)
+
+
+def test_github_get_issue_rejects_non_object_response(monkeypatch) -> None:
+    monkeypatch.setattr(
+        github_module, "urlopen", lambda request, timeout: FakeResponse([])
+    )
+    with pytest.raises(GitHubApiError, match="not an object"):
+        GitHubIssuesClient("test-token", "acme", "service-a").get_issue(42)
+
+
+@pytest.mark.parametrize("title", [None, "human title"])
+def test_github_patch_does_not_retry_old_body_on_response_loss(
+    monkeypatch, title
+) -> None:
+    calls = []
+
+    def lost_response(request, timeout):
+        calls.append(request)
+        raise TimeoutError("response lost after write")
+
+    monkeypatch.setattr(github_module, "urlopen", lost_response)
+    client = GitHubIssuesClient("test-token", "acme", "service-a", max_retries=3)
+    with pytest.raises(GitHubApiError):
+        client.update_issue(42, title, "merged body")
+    assert len(calls) == 1
+    assert calls[0].get_method() == "PATCH"
+    expected = {"body": "merged body"}
+    if title is not None:
+        expected["title"] = title
+    assert json.loads(calls[0].data) == expected

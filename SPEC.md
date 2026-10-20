@@ -330,15 +330,27 @@ Finding keyは `v2:{project_uuid}:sha256(machine_identity)`。
 identityはProject＋Component UUID＋vulnerability UUID、次にProject＋PURL＋source＋主ID、
 最後にProject＋表示名・版＋source＋主IDを使う。旧keyも既存Issue検索に使う。
 key・Finding状態をIssue本文の機械用マーカーに保存する。
+`<!-- sbom-ops:managed:start -->` から `<!-- sbom-ops:managed:end -->` までが
+自動管理範囲で、範囲外の本文と既存タイトルは保持する。優先度の最新値は管理範囲内に記載する。
+更新直前に対象repoのIssueを再取得し、open・Issue番号・PRではないこと・Finding keyを照合する。
+区切りの欠損・重複・逆順やkeyの不一致では書き込まず失敗する。dry-runも同じ照合を行う。
+旧形式は元の本文を一字も削らず「移行前の本文」として範囲外に残し、新しい管理範囲を追加する。
+旧本文内のkey・状態・欠落回数は以後の判定に使わない。外部の説明文は制御マーカーにならないよう
+HTML文字をエスケープする。
 開いているIssueを更新し、なければ作成する。閉じたIssueの再利用方針は未実装。
 
 自動クローズは未提供。`close_missing_findings=true` は設定エラーとして拒否する。
 過去のMISSING状態・欠落回数は解決判定に使わず、加算もしない。
 見えないFindingのIssueは変更せず開いたままにし、実行結果ではUNKNOWNを返す。
-再出現したFindingはACTIVEに戻し、旧欠落回数を消す。読取失敗時はIssueを書き換えない。
+再出現したFindingは管理範囲の状態をACTIVEに戻し、欠落回数を消す。
+移行前の本文は履歴として保持する。読取失敗時はIssueを書き換えない。
 将来の有効化には、対象成果物とSBOMの同一性、解析・取得の完全性、
 連続不在の証拠と中断時の扱いを別途定義・検証する必要がある。
-本文保存・ラベル更新・重複防止・途中失敗の監査を含め、
+本文のPATCHは通信失敗時に自動再送しない。古い本文で人の追記を上書きしないため、
+結果を確認してから読取り直す。GETとPATCHは一括処理ではなく、間の同時編集を防ぐ保証はない。
+[GitHubの条件付きリクエスト](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests)
+は、個別の明記がない書込みでは利用できない。既存Issue本文を更新する間の同時編集を避ける運用を前提とする。
+本文保存の限定実環境確認・ラベル更新・重複防止・途中失敗の監査を含め、
 [有効化前の必須事項](ROADMAP.md#github同期を有効にする前の必須事項)が未完了である。
 
 ## CLI Contract

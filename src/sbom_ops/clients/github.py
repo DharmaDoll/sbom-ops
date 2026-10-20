@@ -48,7 +48,9 @@ class GitHubIssuesClient:
             return request_json(
                 request,
                 timeout=self._timeout,
-                max_retries=self._max_retries,
+                # Replaying an old body after a response loss can overwrite a
+                # newer human edit. Let orchestration re-read before retrying.
+                max_retries=0 if method == "PATCH" else self._max_retries,
                 backoff_seconds=self._retry_backoff_seconds,
                 error_message=f"GitHub request failed: {method} {path}",
                 opener=urlopen,
@@ -98,11 +100,22 @@ class GitHubIssuesClient:
             {"title": title, "body": body, "labels": labels},
         )
 
-    def update_issue(self, issue_number: int, title: str, body: str) -> dict:
+    def get_issue(self, issue_number: int) -> dict:
+        if type(issue_number) is not int or issue_number <= 0:
+            raise ValueError("issue number must be a positive integer")
+        result = self._request_json("GET", f"{self._repo_path}/issues/{issue_number}")
+        if not isinstance(result, dict):
+            raise GitHubApiError("GitHub issue response was not an object")
+        return result
+
+    def update_issue(self, issue_number: int, title: str | None, body: str) -> dict:
+        payload = {"body": body}
+        if title is not None:
+            payload["title"] = title
         return self._request_json(
             "PATCH",
             f"{self._repo_path}/issues/{issue_number}",
-            {"title": title, "body": body},
+            payload,
         )
 
     def close_issue(self, issue_number: int) -> dict:

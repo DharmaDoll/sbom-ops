@@ -30,6 +30,13 @@ from sbom_ops.domain.assets import (
     AssetInventorySnapshot,
     AssetInventoryStatus,
 )
+from sbom_ops.domain.issue_body import (
+    IssueBodyError,
+    mark_finding_active,
+    merge_issue_body,
+    new_issue_body,
+    parse_issue_body,
+)
 from sbom_ops.domain.models import (
     AnalysisSnapshotStatus,
     AnalysisState,
@@ -89,13 +96,15 @@ def _kev_match(
 
 
 class GitHubIssuesClientProtocol(Protocol):
+    def get_issue(self, issue_number: int) -> dict: ...
+
     def find_open_issue_by_finding_key(self, finding_key: str) -> dict | None: ...
 
     def list_open_issues(self, label: str) -> list[dict]: ...
 
     def create_issue(self, title: str, body: str, labels: list[str]) -> dict: ...
 
-    def update_issue(self, issue_number: int, title: str, body: str) -> dict: ...
+    def update_issue(self, issue_number: int, title: str | None, body: str) -> dict: ...
 
     def close_issue(self, issue_number: int) -> dict: ...
 
@@ -225,11 +234,6 @@ class RunResult:
                 for item in self.review_assessments()
             ],
         }
-
-
-_FINDING_KEY_PATTERN = re.compile(r"<!-- sbom-ops:finding-key=(.*?) -->")
-_MISSING_COUNT_PATTERN = re.compile(r"<!-- sbom-ops:missing-count=([^<>\n]*) -->")
-_FINDING_STATE_PATTERN = re.compile(r"<!-- sbom-ops:finding-state=([^<>\n]*) -->")
 
 
 class Orchestrator:
@@ -465,13 +469,17 @@ class Orchestrator:
                     created += 1
                 else:
                     number = existing.get("number")
-                    if number is None:
-                        continue
+                    latest = self._read_issue_for_update(github, number)
+                    body = merge_issue_body(
+                        latest["body"],
+                        body,
+                        expected_keys=(key, item.finding.legacy_finding_key()),
+                    )
                     actions.append(
                         f"update {key} issue=#{number} priority={item.priority.value}"
                     )
                     if not self._config.runtime.dry_run:
-                        github.update_issue(int(number), title, body)
+                        github.update_issue(number, None, body)
                     touched_issue_numbers.setdefault(target_key, set()).add(int(number))
                     updated += 1
 
@@ -498,14 +506,16 @@ class Orchestrator:
                             }
                         )
                     ):
+                        latest = self._read_issue_for_update(github, number)
+                        body = mark_finding_active(latest["body"], expected_key=key)
                         actions.append(
                             f"mark-active {key} issue=#{number} reason=reappeared"
                         )
                         if not self._config.runtime.dry_run:
                             github.update_issue(
                                 int(number),
-                                str(issue.get("title") or "sbom-ops managed finding"),
-                                self._with_active_observation(issue.get("body") or ""),
+                                None,
+                                body,
                             )
                         updated += 1
                     continue
@@ -670,10 +680,27 @@ class Orchestrator:
         }
 
     @staticmethod
+    def _read_issue_for_update(
+        github: GitHubIssuesClientProtocol, number: object
+    ) -> dict:
+        if type(number) is not int or number <= 0:
+            raise IssueBodyError("invalid issue number for update")
+        latest = github.get_issue(number)
+        if (
+            not isinstance(latest, dict)
+            or type(latest.get("number")) is not int
+            or latest["number"] != number
+            or latest.get("state") != "open"
+            or "pull_request" in latest
+            or not isinstance(latest.get("body"), str)
+            or not isinstance(latest.get("title"), str)
+        ):
+            raise IssueBodyError("issue changed or has an invalid update response")
+        return latest
+
+    @staticmethod
     def _finding_key_from_issue(issue: dict) -> str | None:
-        body = issue.get("body") or ""
-        match = _FINDING_KEY_PATTERN.search(body)
-        return match.group(1) if match else None
+        return parse_issue_body(issue.get("body") or "").finding_key
 
     @staticmethod
     def _project_uuid_from_finding_key(finding_key: str) -> str:
@@ -684,29 +711,11 @@ class Orchestrator:
 
     @staticmethod
     def _missing_count_from_issue(issue: dict) -> int:
-        body = issue.get("body") or ""
-        matches = _MISSING_COUNT_PATTERN.findall(body)
-        if len(matches) != 1 or re.fullmatch(r"[0-9]{1,9}", matches[0]) is None:
-            return 0
-        return int(matches[0])
+        return parse_issue_body(issue.get("body") or "").missing_count
 
     @staticmethod
     def _finding_state_from_issue(issue: dict) -> FindingState | None:
-        body = issue.get("body") or ""
-        matches = _FINDING_STATE_PATTERN.findall(body)
-        if len(matches) != 1:
-            return None
-        try:
-            return FindingState(matches[0])
-        except ValueError:
-            return None
-
-    @staticmethod
-    def _with_active_observation(body: str) -> str:
-        state_marker = f"<!-- sbom-ops:finding-state={FindingState.ACTIVE.value} -->"
-        body = _FINDING_STATE_PATTERN.sub("", body)
-        body = _MISSING_COUNT_PATTERN.sub("", body)
-        return f"{body.rstrip()}\n\n{state_marker}\n"
+        return parse_issue_body(issue.get("body") or "").finding_state
 
     @staticmethod
     def _issue_content(item: PrioritizedFinding) -> tuple[str, str]:
@@ -717,10 +726,7 @@ class Orchestrator:
             f"{finding.component_name} {finding.component_version or ''}".strip()
         )
         rationale = ", ".join(item.rationale)
-        body = f"""<!-- sbom-ops:finding-key={finding.finding_key()} -->
-<!-- sbom-ops:finding-state={FindingState.ACTIVE.value} -->
-
-## Vulnerability
+        body = f"""## Vulnerability
 
 - Project: `{finding.project_name}` (`{finding.project_uuid}`)
 - Component: `{finding.component_name}` `{finding.component_version or "unknown"}`
@@ -746,4 +752,4 @@ class Orchestrator:
 
 This issue is synchronized from Dependency-Track by sbom-ops.
 """
-        return title, body
+        return title, new_issue_body(finding.finding_key(), body)
