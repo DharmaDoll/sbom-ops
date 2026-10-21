@@ -114,7 +114,7 @@ sbom-ops sync --config examples/config.yaml \
 
 詳細テキストは `--output text`、JSONは `--output json` に切り替えます。
 `--wait-for-analysis` は応答の安定確認であり、全解析完了の証明ではありません。
-GitHub同期は既定値だけに頼らず、当面 `--no-github` を指定してください。
+GitHub連携は既定で無効です。Quick startでは環境設定に影響されないよう、当面 `--no-github` を指定してください。
 [既知の課題](ROADMAP.md#github同期を有効にする前の必須事項)を解消するまで本番への書き込みは保留します。
 
 ## 開発と検証

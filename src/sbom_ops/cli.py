@@ -167,6 +167,14 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument("--project", dest="project_uuid")
     sync_parser.add_argument("--dry-run", action="store_true")
     sync_parser.add_argument(
+        "--github-write",
+        action="store_true",
+        help=(
+            "permit GitHub writes for this run (requires enabled config and journal); "
+            "dry-run/no-github take precedence"
+        ),
+    )
+    sync_parser.add_argument(
         "--use-reviewed-identifiers",
         action="store_true",
         help="attach reviewed PoC mappings from the PoC DB after workflow processing",
@@ -316,6 +324,7 @@ def run_plan(config: AppConfig) -> int:
     print(f"Dependency-Track: {config.dependency_track.base_url}")
     print(f"GitHub repository: {config.github.owner}/{config.github.repo}")
     print(f"GitHub Issue sync: {config.github.enabled}")
+    print("GitHub writes require sync --github-write (plan never writes)")
     print(
         f"EPSS source: Dependency-Track (fallback: {config.intelligence.epss_api_url})"
     )

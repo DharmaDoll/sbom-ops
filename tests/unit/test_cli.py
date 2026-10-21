@@ -157,6 +157,15 @@ def test_config_failure_keeps_the_initial_run_id(
     ]
 
 
+def test_write_flag_is_sync_only_and_does_not_override_read_only_switches() -> None:
+    parser = cli.build_parser()
+    assert parser.parse_args(["sync"]).github_write is False
+    args = parser.parse_args(["sync", "--github-write", "--dry-run", "--no-github"])
+    assert args.github_write and args.dry_run and args.no_github
+    with pytest.raises(SystemExit):
+        parser.parse_args(["plan", "--github-write"])
+
+
 class FakeOrchestrator:
     def __init__(
         self,

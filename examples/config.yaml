@@ -9,7 +9,8 @@ dependency_track:
 
 github:
   enabled: false
-  # Enable these after reviewing dry-run output and granting Issue permissions.
+  # Enable after reviewing dry-run output and granting Issue permissions.
+  # Writes additionally require sync --github-write and an initialized journal.
   # token: env:SBOM_OPS_GITHUB_TOKEN
   # owner: acme
   # repo: service-a

@@ -60,7 +60,10 @@ from sbom_ops.domain.models import (
 from sbom_ops.domain.priority import order_assessments_for_review, prioritize_finding
 from sbom_ops.domain.review import FindingReview, build_review_queue
 from sbom_ops.domain.routing import ProjectRouter
-from sbom_ops.domain.workflow import decide_missing_finding
+from sbom_ops.domain.workflow import (
+    decide_missing_finding,
+    require_github_write_permission,
+)
 from sbom_ops.domain.workflow_audit import WorkflowAudit, WorkflowEvent
 from sbom_ops.services.asset_registry import (
     observe_registry_deployments,
@@ -337,6 +340,11 @@ class Orchestrator:
         with ExitStack() as stack:
             try:
                 audit.start()
+                require_github_write_permission(
+                    enabled=self._config.github.enabled,
+                    dry_run=self._config.runtime.dry_run,
+                    write_requested=self._config.runtime.github_write,
+                )
                 journal = None
                 if self._config.github.enabled:
                     path = self._config.workflow.issue_journal_file

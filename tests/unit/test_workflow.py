@@ -1,10 +1,36 @@
+import pytest
+
 from sbom_ops.domain.models import AnalysisState, FindingState, RemediationState
 from sbom_ops.domain.workflow import (
+    GitHubWriteAuthorizationError,
     MissingFindingAction,
     decide_missing_finding,
     observe_workflow_state,
+    require_github_write_permission,
     transition_remediation_state,
 )
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("write_requested", [False, True])
+def test_write_authorization_matrix(
+    enabled: bool, dry_run: bool, write_requested: bool
+) -> None:
+    flags = dict(enabled=enabled, dry_run=dry_run, write_requested=write_requested)
+    if enabled and not dry_run and not write_requested:
+        with pytest.raises(GitHubWriteAuthorizationError, match="--github-write"):
+            require_github_write_permission(**flags)
+    else:
+        require_github_write_permission(**flags)
+
+
+@pytest.mark.parametrize("value", [1, "true", None])
+def test_truthy_non_boolean_is_not_a_write_grant(value: object) -> None:
+    with pytest.raises(GitHubWriteAuthorizationError, match="booleans"):
+        require_github_write_permission(
+            enabled=True, dry_run=False, write_requested=value
+        )
 
 
 def test_missing_finding_stays_unknown_and_open() -> None:

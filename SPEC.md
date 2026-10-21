@@ -58,7 +58,7 @@ YAMLの秘密情報は `env:VARIABLE_NAME` で参照する。未知の節・キ�
 | 設定群 | 主な項目と既定値 |
 | --- | --- |
 | dependency_track | URL・APIキー必須。page_size=100、timeout_seconds=30、max_retries=3、retry_backoff_seconds=1、analysis_wait_timeout_seconds=120、analysis_poll_interval_seconds=5 |
-| github | enabled=true、issue_label_prefix=sbom、timeout_seconds=30、max_retries=3、retry_backoff_seconds=1。有効時のみowner・repo・token必須 |
+| github | enabled=false、issue_label_prefix=sbom、timeout_seconds=30、max_retries=3、retry_backoff_seconds=1。有効時のみowner・repo・token必須 |
 | intelligence | CISA KEV URL、DTを優先するEPSS URL設定、timeout_seconds=30、max_retries=3、retry_backoff_seconds=1、任意のKEVキャッシュ |
 | priority | p1_epss_threshold=0.7、p2_cvss_threshold=7.0、create_issues_for=[P0,P1] |
 | runtime | dry_run=false、project_uuids=[]、log_level=INFO、wait_for_analysis=false、任意のsync_log_file |
@@ -66,7 +66,13 @@ YAMLの秘密情報は `env:VARIABLE_NAME` で参照する。未知の節・キ�
 | routing | projects=[]。設定する場合、処理対象Projectごとに一意のowner・repo、任意のissue_label_prefix |
 
 GitHubトークンは `SBOM_OPS_GITHUB_TOKEN`、未設定なら `GH_TOKEN` を使う。
-サンプルYAMLではGitHubを無効にしているが、コードの既定値は有効。
+GitHub連携はコード・サンプルYAMLとも既定で無効。tokenやrepoを設定しても有効化しない。
+`github.enabled=true` は接続の有効化であり、書込み許可とは別である。
+書込みには実行ごとの `sync --github-write` と初期化／移行済みの操作記録DBを必要とする。
+有効な連携をdry-runでなく実行し、書込み許可がなければ、外部API・操作記録DBの利用前に失敗する。
+`--github-write` はYAMLや環境変数に保存できず、`plan` では指定できない。
+Pythonから直接使う場合も `RuntimeConfig(github_write=True)` の明示指定を必要とする。
+`--dry-run` と `--no-github` は書込み許可より優先し、併用時も書き込まない。
 `--no-github` は設定より優先し、GitHubアクセス・認証情報を不要にする。
 routing設定時に対象Projectの経路がなければ、既定リポジトリへ流さず失敗する。
 
@@ -398,7 +404,7 @@ DB未設定・欠損・不正・他者が読める権限では書き込まず、
 | assets --db PATH | 登録・更新・廃止・紐付け撤回・history・承認・照合・稼働申告・検査・backup・migrate |
 
 `sync` は `--config / --project / --dry-run / --log-level / --wait-for-analysis /
---refresh-kev / --advisory-snapshot / --asset-inventory / --asset-db / --no-github /
+--refresh-kev / --advisory-snapshot / --asset-inventory / --asset-db / --no-github / --github-write /
 --output / --sync-log-file` を持つ。正確な引数は各コマンドの `--help` で確認する。
 `--dry-run` はIssue書き込みを止めるが読取は行う。`--no-github` はGitHub操作全体を止める。
 設定・APIなどの処理済みエラーは終了コード2、成功は0。assets audit-linksの不一致も非ゼロ。

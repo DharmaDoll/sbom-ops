@@ -5,7 +5,47 @@ from pathlib import Path
 
 import pytest
 
-from sbom_ops.config import WorkflowConfig, load_config
+from sbom_ops.config import GitHubConfig, RuntimeConfig, WorkflowConfig, load_config
+
+
+def test_github_is_disabled_by_default_even_with_ambient_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SBOM_OPS_DT_BASE_URL", "https://dt.example")
+    monkeypatch.setenv("SBOM_OPS_DT_API_KEY", "test-key")
+    monkeypatch.setenv("GH_TOKEN", "ambient-test-token")
+    monkeypatch.delenv("SBOM_OPS_GITHUB_ENABLED", raising=False)
+    config = load_config(Namespace())
+    assert config.github.enabled is False
+    assert config.runtime.github_write is False
+    assert GitHubConfig("test", "acme", "app").enabled is False
+    assert RuntimeConfig().github_write is False
+
+
+@pytest.mark.parametrize("requested", [False, True])
+def test_only_invocation_flag_grants_writes(
+    monkeypatch: pytest.MonkeyPatch, requested: bool
+) -> None:
+    monkeypatch.setenv("SBOM_OPS_DT_BASE_URL", "https://dt.example")
+    monkeypatch.setenv("SBOM_OPS_DT_API_KEY", "test-key")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_ENABLED", "true")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_OWNER", "acme")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_REPO", "app")
+    monkeypatch.setenv("SBOM_OPS_GITHUB_TOKEN", "test-token")
+    # A stale scheduler environment must never grant writes for a new run.
+    monkeypatch.setenv("SBOM_OPS_GITHUB_WRITE", "true")
+    config = load_config(Namespace(github_write=requested))
+    assert config.github.enabled is True
+    assert config.runtime.github_write is requested
+    disabled = load_config(Namespace(github_write=requested, no_github=True))
+    assert disabled.github.enabled is False
+
+
+def test_yaml_cannot_store_write_permission(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text("runtime:\n  github_write: true\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="github_write"):
+        load_config(Namespace(config=str(path)))
 
 
 def test_workflow_journal_setting_and_environment_override(
@@ -141,6 +181,7 @@ def test_cvss_threshold_above_scale_is_rejected(
 def test_gh_token_is_fallback_for_github_authentication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("SBOM_OPS_GITHUB_ENABLED", "true")
     monkeypatch.setenv("SBOM_OPS_DT_BASE_URL", "https://dtrack.example.com")
     monkeypatch.setenv("SBOM_OPS_DT_API_KEY", "dt-key")
     monkeypatch.delenv("SBOM_OPS_GITHUB_TOKEN", raising=False)
@@ -156,6 +197,7 @@ def test_gh_token_is_fallback_for_github_authentication(
 def test_github_issue_sync_can_be_disabled_by_cli(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("SBOM_OPS_GITHUB_ENABLED", "true")
     monkeypatch.setenv("SBOM_OPS_DT_BASE_URL", "https://dtrack.example.com")
     monkeypatch.setenv("SBOM_OPS_DT_API_KEY", "dt-key")
     monkeypatch.setenv("SBOM_OPS_GITHUB_TOKEN", "gh-key")

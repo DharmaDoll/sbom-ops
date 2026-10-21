@@ -1157,6 +1157,13 @@ dry-run中は記録を変更せず、`--no-github` ではDB自体を使わない
 
 ### 有効化前の確認
 
+GitHub連携は既定で無効。`github.enabled=true` または `SBOM_OPS_GITHUB_ENABLED=true` に
+しただけでは書き込めない。書込みには、その実行の `--github-write` と操作記録DBが必要になる。
+書込み許可をYAMLや環境変数に保存する設定はない。旧運用で `enabled=true` のまま
+`sync` していた場合、許可の省略はエラーになる。まず `--dry-run` で対象と差分を確認する。
+`--github-write` 単独では連携自体を有効化しない。また `--dry-run` や `--no-github` と
+併用した場合は、書込み禁止の方を優先する。`plan` は常に表示だけで書き込まない。
+
 当面は `--no-github` を使う。本文・ラベル・重複防止の実環境確認や途中失敗の監査など、
 [有効化前の必須事項](../ROADMAP.md#github同期を有効にする前の必須事項)の
 最新状況は[開発Issue #7](https://github.com/DharmaDoll/sbom-ops/issues/7)を確認する。
@@ -1174,6 +1181,9 @@ sbom-ops sync --config examples/config.yaml \
 `SBOM_OPS_GITHUB_TOKEN`がある場合はそちらが優先される。
 検証後は `SBOM_OPS_GITHUB_ENABLED=false` に戻すか、必ず `--no-github` を指定する。
 既知の問題の解消と対象・権限・経路の確認後に、限定した対象で書き込みを検証する。
+その段階でのみ、確認した同じ `sync` の `--dry-run` を外して `--github-write` を付ける。
+通常のQuick startや評価だけの実行には付けない。タイマー実行でも実行コマンド側に明示し、
+先に `plan` とdry-runでProject・repo・経路・DBの対象を確認すること。
 
 ## YAML configuration
 

@@ -6,6 +6,26 @@ from enum import StrEnum
 from sbom_ops.domain.models import AnalysisState, FindingState, RemediationState
 
 
+class GitHubWriteAuthorizationError(ValueError):
+    """GitHub writes need an explicit grant for this invocation."""
+
+
+def require_github_write_permission(
+    *,
+    enabled: bool,
+    dry_run: bool,
+    write_requested: bool,
+) -> None:
+    if any(type(value) is not bool for value in (enabled, dry_run, write_requested)):
+        raise GitHubWriteAuthorizationError("GitHub execution flags must be booleans")
+    # Both read-only switches take precedence, even over a requested write.
+    if enabled and not dry_run and not write_requested:
+        raise GitHubWriteAuthorizationError(
+            "GitHub writes require --github-write for this invocation; "
+            "use --dry-run to preview or --no-github to skip GitHub"
+        )
+
+
 class MissingFindingAction(StrEnum):
     NOOP = "NOOP"
 

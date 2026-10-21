@@ -48,6 +48,7 @@ from sbom_ops.domain.issue_catalog import IssueIdentityError
 from sbom_ops.domain.issue_intent import IssueIntentError, IssueJournalBusy
 from sbom_ops.domain.issue_labels import IssueLabelError
 from sbom_ops.domain.models import Finding, Severity
+from sbom_ops.domain.workflow import GitHubWriteAuthorizationError
 from sbom_ops.domain.workflow_audit import WorkflowAudit, WorkflowEvent
 from sbom_ops.services.orchestrator import Orchestrator, ProjectSelectionError
 from sbom_ops.storage.issue_journal import IssueJournal
@@ -68,10 +69,10 @@ def workflow_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def config() -> AppConfig:
     return AppConfig(
         dependency_track=DependencyTrackConfig("https://dtrack", "dt-key"),
-        github=GitHubConfig("gh-key", "acme", "service-a"),
+        github=GitHubConfig("gh-key", "acme", "service-a", enabled=True),
         intelligence=IntelligenceConfig(),
         priority=PriorityConfig(),
-        runtime=RuntimeConfig(),
+        runtime=RuntimeConfig(github_write=True),
     )
 
 
@@ -793,7 +794,7 @@ def test_orchestrator_stable_snapshot_does_not_verify_absence() -> None:
     github = FakeGitHub()
     safe_config = replace(
         config(),
-        runtime=RuntimeConfig(wait_for_analysis=True),
+        runtime=RuntimeConfig(wait_for_analysis=True, github_write=True),
     )
 
     result = Orchestrator(safe_config, FakeDependencyTrack(), FakeKev(), github).run()
@@ -988,7 +989,7 @@ def test_restart_reconciles_visible_issue_without_creating_again(
         for row in original_list()
     ]
     result = Orchestrator(
-        replace(config(), runtime=RuntimeConfig(dry_run=dry_run)),
+        replace(config(), runtime=RuntimeConfig(dry_run=dry_run, github_write=True)),
         FakeDependencyTrack(),
         FakeKev(),
         github,
@@ -1110,6 +1111,90 @@ def test_disabled_github_never_opens_journal_and_dry_run_never_requires_init(
     assert github.created == github.updated == []
 
 
+def test_write_without_explicit_grant_stops_before_journal_and_external_reads(
+    workflow_journal: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnreadableDT(FakeDependencyTrack):
+        def list_projects(self) -> list[DependencyTrackProject]:
+            pytest.fail("unapproved run must not read DT")
+
+    def unexpected_journal(*args: object, **kwargs: object) -> None:
+        pytest.fail("unapproved run must not open workflow DB")
+
+    before = workflow_journal.read_bytes()
+    monkeypatch.setattr(
+        "sbom_ops.services.orchestrator.IssueJournal", unexpected_journal
+    )
+    github = FakeGitHub()
+    base = config()
+    unapproved = replace(base, runtime=replace(base.runtime, github_write=False))
+    audit = WorkflowAudit()
+    with pytest.raises(GitHubWriteAuthorizationError, match="--github-write"):
+        Orchestrator(unapproved, UnreadableDT(), FakeKev(), github).run(audit=audit)
+    assert github.created == github.updated == github.list_calls == []
+    assert workflow_journal.read_bytes() == before
+    assert audit.events[-1].error_type == "GitHubWriteAuthorizationError"
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize(
+    "flags",
+    [
+        (),
+        ("--dry-run",),
+        ("--github-write",),
+        ("--github-write", "--dry-run"),
+        ("--github-write", "--no-github"),
+    ],
+)
+def test_cli_write_switches_control_real_orchestration(
+    workflow_journal: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+    enabled: bool,
+    flags: tuple[str, ...],
+) -> None:
+    import json
+
+    from sbom_ops import cli
+
+    values = {
+        "SBOM_OPS_DT_BASE_URL": "https://dt.example",
+        "SBOM_OPS_DT_API_KEY": "test-key",
+        "SBOM_OPS_GITHUB_ENABLED": str(enabled).lower(),
+        "SBOM_OPS_GITHUB_OWNER": "acme",
+        "SBOM_OPS_GITHUB_REPO": "service-a",
+        "SBOM_OPS_GITHUB_TOKEN": "test-token",
+        "SBOM_OPS_ISSUE_JOURNAL_FILE": str(workflow_journal),
+        "SBOM_OPS_DRY_RUN": "false",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("SBOM_OPS_CONFIG_FILE", raising=False)
+    github = FakeGitHub()
+    monkeypatch.setattr(
+        cli,
+        "Orchestrator",
+        lambda config, **kwargs: Orchestrator(
+            config, FakeDependencyTrack(), FakeKev(), github, **kwargs
+        ),
+    )
+    monkeypatch.setattr("sys.argv", ["sbom-ops", "sync", "--output", "json", *flags])
+    denied = enabled and not flags
+    writes = enabled and flags == ("--github-write",)
+    before = workflow_journal.read_bytes()
+    assert cli.main() == (2 if denied else 0)
+    result = json.loads(capsys.readouterr().out)
+    if denied:
+        assert result["error_type"] == "GitHubWriteAuthorizationError"
+        assert github.list_calls == []
+    assert github.updated == ([11] if writes else [])
+    assert github.created == github.closed == []
+    if not writes:
+        assert workflow_journal.read_bytes() == before
+
+
 def test_busy_journal_stops_before_external_reads(workflow_journal: Path) -> None:
     class UnreadableDT(FakeDependencyTrack):
         def list_projects(self) -> list[DependencyTrackProject]:
@@ -1154,7 +1239,9 @@ def test_priority_downgrade_updates_existing_issue_and_preserves_human_labels(
     github = ConcurrentLabelGitHub()
     github.labels = ["sbom", "sbom-P0", "human", "sbom-P0-note", "other-P1"]
     original = list(github.labels)
-    run_config = replace(config(), runtime=RuntimeConfig(dry_run=dry_run))
+    run_config = replace(
+        config(), runtime=RuntimeConfig(dry_run=dry_run, github_write=True)
+    )
     result = Orchestrator(run_config, FakeDependencyTrack(), NoKev(), github).run()
     assert result.issues_updated == 1
     assert result.issues_created == result.issues_closed == 0
@@ -1490,7 +1577,9 @@ def test_update_uses_latest_body_preserves_notes_and_human_title(dry_run: bool) 
             return super().update_issue(issue_number, title, body)
 
     github = LatestGitHub()
-    run_config = replace(config(), runtime=RuntimeConfig(dry_run=dry_run))
+    run_config = replace(
+        config(), runtime=RuntimeConfig(dry_run=dry_run, github_write=True)
+    )
     result = Orchestrator(run_config, FakeDependencyTrack(), FakeKev(), github).run()
     assert result.issues_updated == 1
     assert github.reads == 1
@@ -1519,7 +1608,9 @@ def test_update_refuses_changed_or_ambiguous_issue(
             return {**super().get_issue(issue_number), **changes}
 
     github = ChangedGitHub()
-    run_config = replace(config(), runtime=RuntimeConfig(dry_run=dry_run))
+    run_config = replace(
+        config(), runtime=RuntimeConfig(dry_run=dry_run, github_write=True)
+    )
     with pytest.raises(IssueBodyError):
         Orchestrator(run_config, FakeDependencyTrack(), FakeKev(), github).run()
     assert github.created == github.updated == github.closed == []
@@ -1568,7 +1659,7 @@ def test_orchestrator_ignores_historical_absence_count() -> None:
     github = FakeGitHub(missing_count=1, finding_state_marker="MISSING")
     safe_config = replace(
         config(),
-        runtime=RuntimeConfig(wait_for_analysis=True),
+        runtime=RuntimeConfig(wait_for_analysis=True, github_write=True),
     )
 
     result = Orchestrator(safe_config, FakeDependencyTrack(), FakeKev(), github).run()
@@ -1590,7 +1681,7 @@ def test_dt_read_failure_never_marks_or_closes_a_missing_finding() -> None:
     github = FakeGitHub(missing_count=1, finding_state_marker="MISSING")
     safe_config = replace(
         config(),
-        runtime=RuntimeConfig(wait_for_analysis=True),
+        runtime=RuntimeConfig(wait_for_analysis=True, github_write=True),
     )
 
     with pytest.raises(DependencyTrackApiError, match="malformed collection"):
@@ -1605,7 +1696,7 @@ def test_orchestrator_does_not_close_from_a_count_without_missing_state() -> Non
     github = FakeGitHub(missing_count=1)
     safe_config = replace(
         config(),
-        runtime=RuntimeConfig(wait_for_analysis=True),
+        runtime=RuntimeConfig(wait_for_analysis=True, github_write=True),
     )
 
     result = Orchestrator(safe_config, FakeDependencyTrack(), FakeKev(), github).run()
@@ -1635,7 +1726,7 @@ def test_orchestrator_ignores_duplicate_missing_metadata(
     github = DuplicateMetadataGitHub(missing_count=1, finding_state_marker="MISSING")
     safe_config = replace(
         config(),
-        runtime=RuntimeConfig(wait_for_analysis=True),
+        runtime=RuntimeConfig(wait_for_analysis=True, github_write=True),
     )
 
     result = Orchestrator(safe_config, FakeDependencyTrack(), FakeKev(), github).run()
@@ -1671,7 +1762,7 @@ def test_analysis_snapshot_status_reports_no_projects() -> None:
 
     safe_config = replace(
         config(),
-        runtime=RuntimeConfig(wait_for_analysis=True),
+        runtime=RuntimeConfig(wait_for_analysis=True, github_write=True),
         github=replace(config().github, enabled=False),
     )
     result = Orchestrator(safe_config, NoProjects(), FakeKev(), FakeGitHub()).run()
@@ -1705,7 +1796,8 @@ def test_later_project_read_failure_prevents_all_github_operations(
 
     github = NoCallsGitHub()
     run_config = replace(
-        config(), runtime=RuntimeConfig(wait_for_analysis=wait_for_analysis)
+        config(),
+        runtime=RuntimeConfig(wait_for_analysis=wait_for_analysis, github_write=True),
     )
     with pytest.raises(DependencyTrackApiError, match="read failed"):
         Orchestrator(run_config, LaterFailure(), FakeKev(), github).run()
@@ -1734,7 +1826,7 @@ def test_two_identical_dt_responses_do_not_prove_resolution(
         dependency_track=replace(
             config().dependency_track, analysis_poll_interval_seconds=0
         ),
-        runtime=RuntimeConfig(wait_for_analysis=True),
+        runtime=RuntimeConfig(wait_for_analysis=True, github_write=True),
         github=replace(config().github, enabled=github_enabled),
     )
     github = FakeGitHub(missing_count=999, finding_state_marker="MISSING")
@@ -1782,7 +1874,9 @@ def test_observation_series_never_inherits_historical_missing_count() -> None:
     dt = SeriesDT()
     github = StatefulGitHub()
     full = FakeDependencyTrack().get_project_findings("project-1")
-    run_config = replace(config(), runtime=RuntimeConfig(wait_for_analysis=True))
+    run_config = replace(
+        config(), runtime=RuntimeConfig(wait_for_analysis=True, github_write=True)
+    )
     # Empty/partial snapshots can occur during analysis. Failure breaks the run,
     # not into an empty success; reappearance clears legacy markers.
     for rows in [[], [full[0]], None, [], full, [], [full[0]], None, [], full]:
@@ -1823,7 +1917,7 @@ def test_suppressed_finding_cancels_pending_absence_closure() -> None:
     )
     safe_config = replace(
         config(),
-        runtime=RuntimeConfig(wait_for_analysis=True),
+        runtime=RuntimeConfig(wait_for_analysis=True, github_write=True),
     )
     result = Orchestrator(safe_config, SuppressedInventory(), FakeKev(), github).run()
 

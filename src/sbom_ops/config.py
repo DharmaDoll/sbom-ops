@@ -33,7 +33,7 @@ class GitHubConfig:
     timeout_seconds: float = 30.0
     max_retries: int = 3
     retry_backoff_seconds: float = 1.0
-    enabled: bool = True
+    enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -65,6 +65,8 @@ class RuntimeConfig:
     log_level: str = "INFO"
     wait_for_analysis: bool = False
     sync_log_file: str | None = None
+    # Invocation-only: intentionally not accepted from YAML/environment.
+    github_write: bool = False
 
 
 @dataclass(frozen=True)
@@ -465,7 +467,7 @@ def load_config(args: Any) -> AppConfig:
             "github",
             "enabled",
             "SBOM_OPS_GITHUB_ENABLED",
-            True,
+            False,
         ),
         "github.enabled",
     ) and not bool(getattr(args, "no_github", False))
@@ -672,6 +674,7 @@ def load_config(args: Any) -> AppConfig:
         else None
     )
     runtime = RuntimeConfig(
+        github_write=getattr(args, "github_write", False) is True,
         dry_run=bool(getattr(args, "dry_run", False)) or runtime_dry_run,
         project_uuids=_parse_project_uuids(config, getattr(args, "project_uuid", None)),
         log_level=_as_string(
