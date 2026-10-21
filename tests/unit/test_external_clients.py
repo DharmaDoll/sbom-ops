@@ -648,6 +648,64 @@ def test_kev_client_reuses_cache_on_not_modified(monkeypatch, tmp_path) -> None:
     assert result == {"CVE-UNCHANGED"}
 
 
+def test_github_label_mutations_use_add_and_single_remove_not_replacement(
+    monkeypatch,
+) -> None:
+    requests = []
+
+    def respond(request, timeout):
+        requests.append(request)
+        return FakeResponse([{"name": "human"}, {"name": "ops/P0"}])
+
+    monkeypatch.setattr(github_module, "urlopen", respond)
+    client = GitHubIssuesClient("test-token", "acme", "app")
+    client.add_issue_labels(12, ["ops/P0"])
+    client.remove_issue_label(12, "ops/P1 ?#")
+    assert requests[0].method == "POST"
+    assert (
+        requests[0].full_url == "https://api.github.com/repos/acme/app/issues/12/labels"
+    )
+    assert json.loads(requests[0].data) == {"labels": ["ops/P0"]}
+    assert requests[1].method == "DELETE"
+    assert requests[1].full_url.endswith("/labels/ops%2FP1%20%3F%23")
+    assert requests[1].data is None
+
+
+@pytest.mark.parametrize("operation", ["add", "remove"])
+@pytest.mark.parametrize("status", [403, 404, 429, 503])
+def test_github_label_mutations_never_retry_or_swallow_errors(
+    monkeypatch, operation: str, status: int
+) -> None:
+    calls = []
+
+    def failed(request, timeout):
+        calls.append(request)
+        raise HTTPError(request.full_url, status, "failed", {}, BytesIO(b"{}"))
+
+    monkeypatch.setattr(github_module, "urlopen", failed)
+    client = GitHubIssuesClient("test-token", "acme", "app", max_retries=4)
+    with pytest.raises(GitHubApiError):
+        if operation == "add":
+            client.add_issue_labels(12, ["sbom-P0"])
+        else:
+            client.remove_issue_label(12, "sbom-P1")
+    assert len(calls) == 1
+
+
+def test_github_empty_label_request_never_reaches_network(monkeypatch) -> None:
+    def unexpected(*args, **kwargs):
+        pytest.fail("empty label mutation must not be sent")
+
+    monkeypatch.setattr(github_module, "urlopen", unexpected)
+    client = GitHubIssuesClient("test-token", "acme", "app")
+    with pytest.raises(ValueError):
+        client.add_issue_labels(12, [])
+    with pytest.raises(ValueError):
+        client.remove_issue_label(12, "")
+    with pytest.raises(ValueError):
+        client.remove_issue_label(True, "sbom")
+
+
 def test_github_client_sends_issue_create_request(monkeypatch) -> None:
     captured = {}
 

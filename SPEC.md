@@ -323,6 +323,8 @@ syncでは通常の評価・Issue処理の完了後に、`published_poc`だけ�
 ## Workflow Rules
 
 GitHub同期は任意で、既定の作成対象はP0/P1。
+作成対象の設定は新規作成だけに適用する。既存のopen IssueはP2/P3への変更でも
+本文・管理ラベルを更新し、優先度低下だけを理由に閉じない。
 抑制済み・NOT_AFFECTED・FALSE_POSITIVEは通常のIssue作成・更新から除外するが、
 Finding一覧には残す。Analysisだけを理由に既存Issueを閉じない。
 
@@ -338,6 +340,16 @@ identityはProject＋Component UUID＋vulnerability UUID、次にProject＋PURL�
 key・Finding状態をIssue本文の機械用マーカーに保存する。
 `<!-- sbom-ops:managed:start -->` から `<!-- sbom-ops:managed:end -->` までが
 自動管理範囲で、範囲外の本文と既存タイトルは保持する。優先度の最新値は管理範囲内に記載する。
+管理ラベルは設定されたprefixそのものと `prefix-P0`〜`prefix-P3` の予約名に限る。
+最新のIssue応答から不足分の追加と不要な優先度ラベルの削除を計画し、
+全ラベルの置換は行わない。人のラベル、似た名前、別prefixのラベルは変更しない。
+追加結果で必要なラベルを確認してから古い優先度を1個ずつ外す。
+名前は大文字小文字を同一視し、削除には取得した表記を使う。
+欠損・不正なラベル応答は空集合とみなさず失敗する。追加／削除の失敗は自動再送せず停止し、
+次回は最新のIssueから差分を再計算する。dry-runは変更予定だけを表示する。
+閉じたIssue・Analysisによる除外対象の管理ラベルは変えない。
+本文更新・ラベル追加・個別削除は一括処理ではないため、途中失敗では部分反映が残る。
+prefixの変更時に旧prefixを推測して削除することはない。移行は人が確認する。
 更新直前に対象repoのIssueを再取得し、open・Issue番号・PRではないこと・Finding keyを照合する。
 区切りの欠損・重複・逆順やkeyの不一致では書き込まず失敗する。dry-runも同じ照合を行う。
 旧形式は元の本文を一字も削らず「移行前の本文」として範囲外に残し、新しい管理範囲を追加する。
@@ -372,8 +384,9 @@ DB未設定・欠損・不正・他者が読める権限では書き込まず、
 結果を確認してから読取り直す。GETとPATCHは一括処理ではなく、間の同時編集を防ぐ保証はない。
 [GitHubの条件付きリクエスト](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests)
 は、個別の明記がない書込みでは利用できない。既存Issue本文を更新する間の同時編集を避ける運用を前提とする。
-本文保存の限定実環境確認・ラベル更新・重複防止・途中失敗の監査を含め、
-[有効化前の必須事項](ROADMAP.md#github同期を有効にする前の必須事項)が未完了である。
+有効化には本文・ラベル・重複防止の限定実環境確認と、途中失敗の監査などを必要とする。
+[有効化前の必須事項](ROADMAP.md#github同期を有効にする前の必須事項)の
+実装・検証状況は[開発Issue #7](https://github.com/DharmaDoll/sbom-ops/issues/7)で管理する。
 
 ## CLI Contract
 

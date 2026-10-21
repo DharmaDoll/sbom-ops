@@ -46,6 +46,7 @@ from sbom_ops.domain.assets import (
 from sbom_ops.domain.issue_body import IssueBodyError, new_issue_body, parse_issue_body
 from sbom_ops.domain.issue_catalog import IssueIdentityError
 from sbom_ops.domain.issue_intent import IssueIntentError, IssueJournalBusy
+from sbom_ops.domain.issue_labels import IssueLabelError
 from sbom_ops.domain.models import Finding, Severity
 from sbom_ops.services.orchestrator import Orchestrator, ProjectSelectionError
 from sbom_ops.storage.issue_journal import IssueJournal
@@ -141,6 +142,8 @@ class FakeGitHub:
         self.updated_bodies: list[str] = []
         self.closed: list[int] = []
         self.created: list[tuple[str, str, list[str]]] = []
+        self.labels = ["sbom", "sbom-P0"]
+        self.label_changes: list[tuple[str, object]] = []
         self.missing_count = missing_count
         self.finding_state_marker = finding_state_marker
         self.legacy_only = legacy_only
@@ -176,6 +179,7 @@ class FakeGitHub:
             return {
                 "number": 11,
                 "title": "human title",
+                "labels": list(self.labels),
                 "state": "open",
                 "body": f"<!-- sbom-ops:finding-key={self.matched_key} -->",
             }
@@ -196,6 +200,7 @@ class FakeGitHub:
             {
                 "number": 12,
                 "title": "old finding",
+                "labels": [],
                 "body": (
                     f"<!-- sbom-ops:finding-key={self.tracked_issue_key} -->"
                     f"{state_marker}"
@@ -206,7 +211,23 @@ class FakeGitHub:
 
     def create_issue(self, title: str, body: str, labels: list[str]) -> dict:
         self.created.append((title, body, labels))
-        return {"number": 13, "state": "open", "title": title, "body": body}
+        return {
+            "number": 13,
+            "state": "open",
+            "title": title,
+            "body": body,
+            "labels": list(labels),
+        }
+
+    def add_issue_labels(self, issue_number: int, labels: list[str]) -> list:
+        self.label_changes.append(("add", labels))
+        self.labels.extend(name for name in labels if name not in self.labels)
+        return list(self.labels)
+
+    def remove_issue_label(self, issue_number: int, label: str) -> list:
+        self.label_changes.append(("remove", label))
+        self.labels.remove(label)
+        return list(self.labels)
 
     def update_issue(self, issue_number: int, title: str | None, body: str) -> dict:
         self.updated.append(issue_number)
@@ -1111,6 +1132,160 @@ def test_reservation_failure_prevents_post(monkeypatch: pytest.MonkeyPatch) -> N
     with pytest.raises(OSError, match="disk unavailable"):
         Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
     assert github.created == github.updated == []
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_priority_downgrade_updates_existing_issue_and_preserves_human_labels(
+    dry_run: bool,
+) -> None:
+    class NoKev(FakeKev):
+        def get_known_exploited_vulnerabilities(
+            self, *, force_refresh: bool = False
+        ) -> set[str]:
+            return set()
+
+    class ConcurrentLabelGitHub(FakeGitHub):
+        def add_issue_labels(self, issue_number: int, labels: list[str]) -> list:
+            # A human label added after GET must not be lost in a full replacement.
+            self.labels.append("human-added-after-read")
+            return super().add_issue_labels(issue_number, labels)
+
+    github = ConcurrentLabelGitHub()
+    github.labels = ["sbom", "sbom-P0", "human", "sbom-P0-note", "other-P1"]
+    original = list(github.labels)
+    run_config = replace(config(), runtime=RuntimeConfig(dry_run=dry_run))
+    result = Orchestrator(run_config, FakeDependencyTrack(), NoKev(), github).run()
+    assert result.issues_updated == 1
+    assert result.issues_created == result.issues_closed == 0
+    assert any("labels " in action and "sbom-P2" in action for action in result.actions)
+    if dry_run:
+        assert github.labels == original
+        assert github.updated == github.label_changes == []
+    else:
+        assert github.label_changes == [("add", ["sbom-P2"]), ("remove", "sbom-P0")]
+        assert set(github.labels) == set(original) - {"sbom-P0"} | {
+            "sbom-P2",
+            "human-added-after-read",
+        }
+        assert "P2" in github.updated_bodies[0]
+        # Re-reading on a later run is idempotent for the managed label set.
+        Orchestrator(run_config, FakeDependencyTrack(), NoKev(), github).run()
+        assert len(github.label_changes) == 2
+
+
+@pytest.mark.parametrize("failure", ["timeout", "missing", "invalid"])
+def test_unconfirmed_label_addition_never_removes_old_priority(failure: str) -> None:
+    class FailedAdd(FakeGitHub):
+        def add_issue_labels(self, issue_number: int, labels: list[str]) -> list:
+            self.label_changes.append(("add", labels))
+            if failure == "timeout":
+                raise GitHubApiError("label response lost")
+            return [] if failure == "missing" else {}
+
+    github = FailedAdd()
+    github.labels = ["sbom", "sbom-P1", "human"]
+    with pytest.raises((GitHubApiError, IssueLabelError)):
+        Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+    assert github.label_changes == [("add", ["sbom-P0"])]
+    assert github.labels == ["sbom", "sbom-P1", "human"]
+
+
+@pytest.mark.parametrize("failure", ["timeout", "still-present", "invalid"])
+def test_label_removal_failure_stops_without_retry(failure: str) -> None:
+    class FailedRemove(FakeGitHub):
+        def remove_issue_label(self, issue_number: int, label: str) -> list:
+            self.label_changes.append(("remove", label))
+            if failure == "timeout":
+                raise GitHubApiError("label response lost")
+            return list(self.labels) if failure == "still-present" else None
+
+    github = FailedRemove()
+    github.labels = ["sbom", "sbom-P0", "sbom-P1", "sbom-P2", "human"]
+    with pytest.raises((GitHubApiError, IssueLabelError)):
+        Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+    assert github.label_changes == [("remove", "sbom-P1")]
+
+
+@pytest.mark.parametrize("operation", ["add", "remove"])
+def test_next_run_reconciles_applied_label_write_after_response_loss(
+    operation: str,
+) -> None:
+    class LostResponse(FakeGitHub):
+        failed = False
+
+        def add_issue_labels(self, issue_number: int, labels: list[str]) -> list:
+            result = super().add_issue_labels(issue_number, labels)
+            if operation == "add" and not self.failed:
+                self.failed = True
+                raise GitHubApiError("response lost after applying labels")
+            return result
+
+        def remove_issue_label(self, issue_number: int, label: str) -> list:
+            result = super().remove_issue_label(issue_number, label)
+            if operation == "remove" and not self.failed:
+                self.failed = True
+                raise GitHubApiError("response lost after applying labels")
+            return result
+
+    github = LostResponse()
+    github.labels = ["sbom", "sbom-P1", "human"]
+    with pytest.raises(GitHubApiError):
+        Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+    Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+    assert github.label_changes == [("add", ["sbom-P0"]), ("remove", "sbom-P1")]
+    assert set(github.labels) == {"sbom", "sbom-P0", "human"}
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_p3_updates_existing_issue_but_does_not_create_one(existing: bool) -> None:
+    class LowRiskDT(FakeDependencyTrack):
+        def get_project_findings(
+            self, project_uuid: str
+        ) -> list[DependencyTrackFinding]:
+            return [replace(finding("CVE-2026-0001"), cvss_score=1.0, epss_score=0.0)]
+
+    class NoKev(FakeKev):
+        def get_known_exploited_vulnerabilities(
+            self, *, force_refresh: bool = False
+        ) -> set[str]:
+            return set()
+
+    class MaybeExisting(FakeGitHub):
+        def list_issues(self) -> list[dict]:
+            return super().list_issues() if existing else []
+
+    github = MaybeExisting()
+    result = Orchestrator(config(), LowRiskDT(), NoKev(), github).run()
+    assert result.issues_created == result.issues_closed == 0
+    assert result.issues_updated == int(existing)
+    assert github.created == []
+    assert github.labels == (["sbom", "sbom-P3"] if existing else ["sbom", "sbom-P0"])
+
+
+def test_malformed_labels_stop_before_body_patch() -> None:
+    class InvalidLabels(FakeGitHub):
+        def get_issue(self, issue_number: int) -> dict:
+            return {**super().get_issue(issue_number), "labels": None}
+
+    github = InvalidLabels()
+    with pytest.raises(IssueLabelError):
+        Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run()
+    assert github.created == github.updated == github.label_changes == []
+
+
+def test_label_namespace_uses_project_route() -> None:
+    from sbom_ops.config import RoutingConfig
+    from sbom_ops.domain.routing import ProjectRoute
+
+    github = FakeGitHub()
+    github.labels = ["ops-P2", "sbom-P1", "human"]
+    routed = replace(
+        config(),
+        routing=RoutingConfig((ProjectRoute("project-1", "acme", "service-a", "ops"),)),
+    )
+    Orchestrator(routed, FakeDependencyTrack(), FakeKev(), github).run()
+    assert github.label_changes == [("add", ["ops", "ops-P0"]), ("remove", "ops-P2")]
+    assert set(github.labels) == {"ops", "ops-P0", "sbom-P1", "human"}
 
 
 @pytest.mark.parametrize("dry_run", [False, True])

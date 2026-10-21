@@ -178,3 +178,28 @@ class GitHubIssuesClient:
         return self._request_json(
             "PATCH", f"{self._repo_path}/issues/{issue_number}", {"state": "closed"}
         )
+
+    def add_issue_labels(self, issue_number: int, labels: list[str]) -> list:
+        self._validate_label_request(issue_number, labels)
+        return self._request_json(
+            "POST",
+            f"{self._repo_path}/issues/{issue_number}/labels",
+            {"labels": labels},
+        )
+
+    def remove_issue_label(self, issue_number: int, label: str) -> list:
+        self._validate_label_request(issue_number, [label])
+        return self._request_json(
+            "DELETE",
+            f"{self._repo_path}/issues/{issue_number}/labels/{quote(label, safe='')}",
+        )
+
+    @staticmethod
+    def _validate_label_request(issue_number: int, labels: list[str]) -> None:
+        if type(issue_number) is not int or issue_number <= 0:
+            raise ValueError("issue number must be a positive integer")
+        # Empty additions have surprising API semantics; never send them.
+        if not labels or any(
+            not isinstance(label, str) or not label.strip() for label in labels
+        ):
+            raise ValueError("label names must not be empty")

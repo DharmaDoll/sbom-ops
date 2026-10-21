@@ -39,6 +39,12 @@ from sbom_ops.domain.issue_body import (
 )
 from sbom_ops.domain.issue_catalog import IssueCatalog, IssueIdentityError
 from sbom_ops.domain.issue_intent import IssueCreateIntent, IssueIntentError
+from sbom_ops.domain.issue_labels import (
+    IssueLabelError,
+    IssueLabelPlan,
+    label_names,
+    plan_issue_labels,
+)
 from sbom_ops.domain.models import (
     AnalysisSnapshotStatus,
     AnalysisState,
@@ -108,6 +114,10 @@ class GitHubIssuesClientProtocol(Protocol):
     def update_issue(self, issue_number: int, title: str | None, body: str) -> dict: ...
 
     def close_issue(self, issue_number: int) -> dict: ...
+
+    def add_issue_labels(self, issue_number: int, labels: list[str]) -> list: ...
+
+    def remove_issue_label(self, issue_number: int, label: str) -> list: ...
 
 
 @dataclass(frozen=True)
@@ -522,8 +532,6 @@ class Orchestrator:
             for item in prioritized:
                 if self._excluded_by_analysis(item):
                     continue
-                if item.priority.value not in self._config.priority.create_issues_for:
-                    continue
                 if not self._config.github.enabled:
                     continue
                 title, body = self._issue_content(item)
@@ -533,6 +541,12 @@ class Orchestrator:
                     continue
                 handled_keys.add(handling_key)
                 existing = catalog.find(key, item.finding.legacy_finding_key())
+                if (
+                    existing is None
+                    and item.priority.value
+                    not in self._config.priority.create_issues_for
+                ):
+                    continue
                 if existing is not None and existing.state == "closed":
                     actions.append(f"review-closed {key} issue=#{existing.number}")
                     continue
@@ -580,6 +594,11 @@ class Orchestrator:
                 else:
                     number = existing.number
                     latest = self._read_issue_for_update(github, number)
+                    labels = plan_issue_labels(
+                        label_names(latest.get("labels")),
+                        issue_label,
+                        item.priority,
+                    )
                     body = merge_issue_body(
                         latest["body"],
                         body,
@@ -588,9 +607,15 @@ class Orchestrator:
                     actions.append(
                         f"update {key} issue=#{number} priority={item.priority.value}"
                     )
+                    if labels.add or labels.remove:
+                        actions.append(
+                            f"labels {key} issue=#{number} "
+                            f"add={list(labels.add)!r} remove={list(labels.remove)!r}"
+                        )
                     if not self._config.runtime.dry_run:
                         github.update_issue(number, None, body)
                         catalog.record(number, "open", body, previous_key=existing.key)
+                        self._apply_issue_labels(github, number, labels)
                     touched_issue_numbers.setdefault(target_key, set()).add(int(number))
                     updated += 1
 
@@ -787,6 +812,29 @@ class Orchestrator:
             return AnalysisState(value.upper())
         except ValueError:
             return AnalysisState.UNKNOWN
+
+    @staticmethod
+    def _apply_issue_labels(
+        github: GitHubIssuesClientProtocol,
+        number: int,
+        plan: IssueLabelPlan,
+    ) -> None:
+        wanted = {name.casefold() for name in plan.desired}
+        if plan.add:
+            added = label_names(github.add_issue_labels(number, list(plan.add)))
+            if not wanted.issubset({name.casefold() for name in added}):
+                raise IssueLabelError(
+                    "required labels were not confirmed; no removal attempted"
+                )
+        for name in plan.remove:
+            remaining = {
+                value.casefold()
+                for value in label_names(github.remove_issue_label(number, name))
+            }
+            if name.casefold() in remaining or not wanted.issubset(remaining):
+                raise IssueLabelError(
+                    "label removal outcome was not confirmed; inspect before retrying"
+                )
 
     @staticmethod
     def _excluded_by_analysis(item: PrioritizedFinding) -> bool:
