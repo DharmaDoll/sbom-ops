@@ -48,6 +48,7 @@ from sbom_ops.domain.issue_catalog import IssueIdentityError
 from sbom_ops.domain.issue_intent import IssueIntentError, IssueJournalBusy
 from sbom_ops.domain.issue_labels import IssueLabelError
 from sbom_ops.domain.models import Finding, Severity
+from sbom_ops.domain.workflow_audit import WorkflowAudit, WorkflowEvent
 from sbom_ops.services.orchestrator import Orchestrator, ProjectSelectionError
 from sbom_ops.storage.issue_journal import IssueJournal
 
@@ -1260,6 +1261,183 @@ def test_p3_updates_existing_issue_but_does_not_create_one(existing: bool) -> No
     assert result.issues_updated == int(existing)
     assert github.created == []
     assert github.labels == (["sbom", "sbom-P3"] if existing else ["sbom", "sbom-P0"])
+
+
+def test_partial_failure_is_audited_with_one_run_id_and_without_raw_error(
+    workflow_journal: Path,
+) -> None:
+    class FailedLabels(FakeGitHub):
+        def add_issue_labels(self, issue_number: int, labels: list[str]) -> list:
+            raise GitHubApiError("SECRET_REMOTE_RESPONSE")
+
+    github = FailedLabels()
+    github.labels = ["sbom", "sbom-P1"]
+    audit = WorkflowAudit()
+    with pytest.raises(GitHubApiError):
+        Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run(
+            audit=audit
+        )
+    assert github.updated == [11]
+    with IssueJournal(workflow_journal, read_only=True) as journal:
+        events = journal.events(audit.run_id)
+    assert events == tuple(audit.events)
+    assert {event.run_id for event in events} == {audit.run_id}
+    assert [(event.event, event.operation) for event in events] == [
+        ("run_started", None),
+        ("operation_started", "update_body"),
+        ("operation_confirmed", "update_body"),
+        ("operation_started", "add_labels"),
+        ("operation_unknown", "add_labels"),
+        ("run_failed", None),
+    ]
+    assert "SECRET_REMOTE_RESPONSE" not in str(audit.as_dict())
+
+
+@pytest.mark.parametrize("failure_at", ["operation_started", "operation_confirmed"])
+def test_audit_disk_failure_stops_further_github_writes(
+    workflow_journal: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_at: str,
+) -> None:
+    original = IssueJournal.append_event
+
+    def failed(self: IssueJournal, event: WorkflowEvent) -> None:
+        if event.event == failure_at:
+            raise OSError("disk full")
+        original(self, event)
+
+    monkeypatch.setattr(IssueJournal, "append_event", failed)
+    github = FakeGitHub()
+    github.labels = ["sbom", "sbom-P1"]
+    audit = WorkflowAudit()
+    with pytest.raises(OSError, match="disk full"):
+        Orchestrator(config(), FakeDependencyTrack(), FakeKev(), github).run(
+            audit=audit
+        )
+    assert audit.persistence_failed
+    assert github.updated == ([] if failure_at == "operation_started" else [11])
+    assert github.created == github.label_changes == []
+    with IssueJournal(workflow_journal, read_only=True) as journal:
+        assert journal.events(audit.run_id)[-1].event == "run_failed"
+
+
+@pytest.mark.parametrize("creating", [False, True])
+def test_primary_failure_survives_failed_audit_of_the_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    creating: bool,
+) -> None:
+    original = IssueJournal.append_event
+
+    def fail_on_error(self: IssueJournal, event: WorkflowEvent) -> None:
+        if event.event in {"operation_unknown", "run_failed"}:
+            raise OSError("audit unavailable")
+        original(self, event)
+
+    class FailedGitHub(FakeGitHub):
+        def list_issues(self) -> list[dict]:
+            return [] if creating else super().list_issues()
+
+        def create_issue(self, title: str, body: str, labels: list[str]) -> dict:
+            raise GitHubApiError("original API failure")
+
+        def update_issue(self, issue_number: int, title: str | None, body: str) -> dict:
+            raise GitHubApiError("original API failure")
+
+    monkeypatch.setattr(IssueJournal, "append_event", fail_on_error)
+    audit = WorkflowAudit()
+    with pytest.raises(GitHubApiError, match="original API failure"):
+        Orchestrator(config(), FakeDependencyTrack(), FakeKev(), FailedGitHub()).run(
+            audit=audit
+        )
+    assert audit.persistence_failed
+    assert audit.events[-1].error_type == "GitHubApiError"
+
+
+def test_create_intent_and_reconciliation_share_audit_operation_id(
+    workflow_journal: Path,
+) -> None:
+    class LostCreate(FakeGitHub):
+        row: dict | None = None
+
+        def list_issues(self) -> list[dict]:
+            return [] if self.row is None else [self.row]
+
+        def create_issue(self, title: str, body: str, labels: list[str]) -> dict:
+            self.row = super().create_issue(title, body, labels)
+            raise GitHubApiError("lost response")
+
+    result = Orchestrator(
+        config(), FakeDependencyTrack(), FakeKev(), LostCreate()
+    ).run()
+    with IssueJournal(workflow_journal, read_only=True) as journal:
+        intent = journal.records()[0]
+        events = journal.events(result.run_id)
+    assert intent.run_id == result.run_id
+    operations = [event for event in events if event.operation is not None]
+    assert [event.event for event in operations] == [
+        "operation_started",
+        "operation_unknown",
+        "operation_reconciled",
+    ]
+    assert {event.operation_id for event in operations} == {intent.intent_id}
+    assert events[-1].event == "run_succeeded"
+
+
+@pytest.mark.parametrize("disabled", [False, True])
+def test_preview_and_disabled_github_do_not_persist_audit_events(
+    workflow_journal: Path,
+    disabled: bool,
+) -> None:
+    base = config()
+    selected = replace(
+        base,
+        runtime=replace(base.runtime, dry_run=not disabled),
+        github=replace(base.github, enabled=not disabled),
+    )
+    github = FakeGitHub()
+    result = Orchestrator(selected, FakeDependencyTrack(), FakeKev(), github).run()
+    assert [event.event for event in result.workflow_events] == [
+        "run_started",
+        "run_succeeded",
+    ]
+    assert github.created == github.updated == github.label_changes == []
+    with IssueJournal(workflow_journal, read_only=True) as journal:
+        assert journal.events() == ()
+
+
+def test_cli_failure_json_log_and_sqlite_keep_the_same_run_id(
+    workflow_journal: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    import json
+
+    from sbom_ops import cli
+
+    class FailedBody(FakeGitHub):
+        def update_issue(self, issue_number: int, title: str | None, body: str) -> dict:
+            raise GitHubApiError("SECRET_REMOTE_RESPONSE")
+
+    base = config()
+    log = workflow_journal.with_suffix(".jsonl")
+    selected = replace(base, runtime=replace(base.runtime, sync_log_file=str(log)))
+    runner = Orchestrator(selected, FakeDependencyTrack(), FakeKev(), FailedBody())
+    monkeypatch.setattr(cli, "load_config", lambda args: selected)
+    monkeypatch.setattr(cli, "Orchestrator", lambda **kwargs: runner)
+    monkeypatch.setattr("sys.argv", ["sbom-ops", "sync", "--output", "json"])
+    assert cli.main() == 2
+    result = json.loads(capsys.readouterr().out)
+    logged = json.loads(log.read_text())
+    assert logged == result
+    assert "SECRET_REMOTE_RESPONSE" not in log.read_text()
+    assert result["status"] == "failed"
+    assert "assessments" not in result
+    with IssueJournal(workflow_journal, read_only=True) as journal:
+        events = journal.events(result["run_id"])
+    assert [event.as_dict() for event in events] == [
+        {**event, "labels": tuple(event["labels"])}
+        for event in result["workflow_events"]
+    ]
 
 
 def test_malformed_labels_stop_before_body_patch() -> None:

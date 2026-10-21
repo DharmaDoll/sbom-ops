@@ -76,6 +76,87 @@ def test_workflow_show_does_not_initialize_missing_db(
     assert not path.exists()
 
 
+def test_workflow_migrate_and_audit_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    import sqlite3
+
+    from sbom_ops.domain.workflow_audit import WorkflowAudit
+
+    path, backup = tmp_path / "journal.db", tmp_path / "backup.db"
+    IssueJournal.initialize(path)
+    with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE workflow_events")
+        db.execute("PRAGMA user_version = 1")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["sbom-ops", "workflow", "--db", str(path), "migrate", "--backup", str(backup)],
+    )
+    assert cli.main() == 0
+    assert json.loads(capsys.readouterr().out)["schema_version"] == 2
+    audit = WorkflowAudit()
+    audit.start()
+    with IssueJournal(path) as journal:
+        audit.attach(journal.append_event)
+        audit.emit("run_succeeded")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["sbom-ops", "workflow", "--db", str(path), "audit", "--run-id", audit.run_id],
+    )
+    assert cli.main() == 0
+    assert [
+        event["event"] for event in json.loads(capsys.readouterr().out)["events"]
+    ] == ["run_started", "run_succeeded"]
+
+
+def test_interrupt_has_same_run_id_and_exit_130(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    config = SimpleNamespace(runtime=SimpleNamespace(sync_log_file=None))
+    monkeypatch.setattr(cli, "load_config", lambda args: config)
+
+    def interrupted(*args: object, **kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "run_sync", interrupted)
+    monkeypatch.setattr("sys.argv", ["sbom-ops", "sync", "--output", "json"])
+    assert cli.main() == 130
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "interrupted"
+    assert [event["event"] for event in result["workflow_events"]] == [
+        "run_started",
+        "run_interrupted",
+    ]
+    assert {event["run_id"] for event in result["workflow_events"]} == {
+        result["run_id"]
+    }
+
+
+def test_config_failure_keeps_the_initial_run_id(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    from sbom_ops.domain.workflow_audit import WorkflowAudit
+
+    audit = WorkflowAudit()
+    monkeypatch.setattr(cli, "WorkflowAudit", lambda: audit)
+
+    def failed(args: object) -> None:
+        raise ValueError("invalid config")
+
+    monkeypatch.setattr(cli, "load_config", failed)
+    monkeypatch.setattr("sys.argv", ["sbom-ops", "sync", "--output", "json"])
+    assert cli.main() == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["run_id"] == audit.run_id
+    assert [event["event"] for event in result["workflow_events"]] == [
+        "run_started",
+        "run_failed",
+    ]
+
+
 class FakeOrchestrator:
     def __init__(
         self,

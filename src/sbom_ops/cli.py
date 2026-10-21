@@ -9,7 +9,6 @@ from contextlib import ExitStack
 from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
 
 from sbom_ops.clients.dependency_track import (
     DependencyTrackApiError,
@@ -43,6 +42,7 @@ from sbom_ops.domain.issue_intent import IssueJournalBusy
 from sbom_ops.domain.poc import PocRunBusy, select_poc_targets
 from sbom_ops.domain.poc_retry import PocRetryPolicy
 from sbom_ops.domain.workflow import decide_missing_finding
+from sbom_ops.domain.workflow_audit import WorkflowAudit
 from sbom_ops.services.advisory_snapshot import load_advisory_snapshot
 from sbom_ops.services.asset_import import load_asset_registration
 from sbom_ops.services.asset_inventory import load_asset_inventory
@@ -86,6 +86,14 @@ def build_parser() -> argparse.ArgumentParser:
     workflow_commands.add_parser(
         "show", help="inspect saved create intents without writes"
     )
+    migration = workflow_commands.add_parser(
+        "migrate", help="upgrade with a new backup; never reset"
+    )
+    migration.add_argument("--backup", required=True)
+    audit_parser = workflow_commands.add_parser(
+        "audit", help="read durable workflow events"
+    )
+    audit_parser.add_argument("--run-id")
 
     review = subparsers.add_parser("id-review")
     review.add_argument("--db", default="var/assets.sqlite3")
@@ -452,6 +460,7 @@ def run_sync(
     asset_db_path: str | None = None,
     poc_db_path: str | None = None,
     use_reviewed_identifiers: bool = False,
+    audit: WorkflowAudit | None = None,
 ) -> int:
     if advisory_snapshot_path and poc_db_path:
         raise ValueError("choose either advisory snapshot or PoC DB")
@@ -506,7 +515,7 @@ def run_sync(
     if asset_registry is not None:
         orchestrator_kwargs["asset_registry"] = asset_registry
     orchestrator = Orchestrator(config=config, **orchestrator_kwargs)
-    result = orchestrator.run()
+    result = orchestrator.run(audit=audit) if audit is not None else orchestrator.run()
     if use_reviewed_identifiers:
         try:
             if snapshot is None:
@@ -1203,11 +1212,31 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     active_config: AppConfig | None = None
+    audit = WorkflowAudit()
+    if args.command == "sync":
+        audit.start()
     try:
         if args.command == "workflow":
             if args.workflow_command == "init":
                 IssueJournal.initialize(args.db)
                 print(json.dumps({"status": "initialized", "db": args.db}))
+            elif args.workflow_command == "migrate":
+                IssueJournal.migrate(args.db, args.backup)
+                print(json.dumps({"status": "migrated", "schema_version": 2}))
+            elif args.workflow_command == "audit":
+                with IssueJournal(args.db, read_only=True) as journal:
+                    print(
+                        json.dumps(
+                            {
+                                "schema_version": journal.schema_version,
+                                "events": [
+                                    event.as_dict()
+                                    for event in journal.events(args.run_id)
+                                ],
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
             else:
                 with IssueJournal(args.db, read_only=True) as journal:
                     print(
@@ -1240,11 +1269,19 @@ def main() -> int:
                 asset_db_path=args.asset_db,
                 poc_db_path=args.poc_db,
                 use_reviewed_identifiers=args.use_reviewed_identifiers,
+                audit=audit,
             )
         parser.error(f"unsupported command: {args.command}")
-    except IssueJournalBusy:
+    except IssueJournalBusy as exc:
+        audit.fail(exc)
         print(
-            json.dumps({"status": "busy", "error": "workflow_journal_already_in_use"})
+            json.dumps(
+                {
+                    "status": "busy",
+                    "error": "workflow_journal_already_in_use",
+                    **(audit.as_dict() if args.command == "sync" else {}),
+                }
+            )
         )
         return 3
     except PocRunBusy:
@@ -1262,10 +1299,12 @@ def main() -> int:
         OSError,
         sqlite3.Error,
         ValueError,
+        KeyboardInterrupt,
     ) as exc:
+        audit.fail(exc)
         failure = {
-            "run_id": str(uuid4()),
-            "status": "failed",
+            **audit.as_dict(),
+            "status": "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed",
             "error_type": type(exc).__name__,
             "analysis_snapshot_status": "unknown",
             "absence_verification": decide_missing_finding().as_dict(),
@@ -1277,14 +1316,14 @@ def main() -> int:
         ):
             _append_sync_event_with_warning(
                 active_config.runtime.sync_log_file,
-                {**failure, "error": str(exc)},
+                failure,
             )
         if args.command == "sync" and args.output == "json":
             # A failure is not an empty successful inventory. Do not emit zero
             # counts, partial assessments, or external response bodies here.
             print(json.dumps(failure, ensure_ascii=False, sort_keys=True))
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
+        print(f"error: {exc} (run_id={audit.run_id})", file=sys.stderr)
+        return 130 if isinstance(exc, KeyboardInterrupt) else 2
     return 2
 
 

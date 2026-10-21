@@ -1114,6 +1114,29 @@ export SBOM_OPS_ISSUE_JOURNAL_FILE=var/workflow.sqlite3
 sbom-ops workflow --db var/workflow.sqlite3 show
 ```
 
+旧版の操作記録DB（schema v1）がある場合は、同期を停止してから次の移行を1回行う。
+既存の作成記録を保持したまま、監査用テーブルを追加する。バックアップ先の上書きはしない。
+資産台帳の `assets migrate` とは別の操作である。
+
+```bash
+sbom-ops workflow --db var/workflow.sqlite3 migrate --backup var/workflow-before-audit.sqlite3
+sbom-ops workflow --db var/workflow.sqlite3 audit --run-id '同期結果に出たrun_id'
+```
+
+`audit` は読取り専用。`--run-id` を省略すると全記録を表示する。
+run IDはCLIの開始からエラー出力まで共通で、本文更新やラベル操作の経過を追える。
+`operation_started` は送信前の記録、`operation_confirmed` は確認済み、
+`operation_unknown` は結果未確認、`operation_reconciled` は再照合で確認できた操作である。
+本文更新だけconfirmedで、ラベル操作がunknownなら、そのIssueの本文とラベルを確認する。
+startedしかない操作は「未送信」とは限らない。終了記録のないrunも、プロセス状態と
+GitHubを確認するまで成功・失敗・実行中と断定しない。作成意図は `show` でも照合する。
+監査保存が失敗すると後続書込みは止まり、失敗JSONに `audit_persistence_failed=true` が出る。
+その場合、出力にある記録がDBに残っていない可能性があるため、両方を保全する。
+Ctrl+Cはinterrupted（終了コード130）、強制終了では終了記録自体が残らない場合がある。
+dry-runや `--no-github`、DBを開く前の失敗はSQLiteには記録されない。
+旧DBを移行しても過去の操作監査は追加されない。これはローカルの復旧用記録であり、
+DB管理者が書き換えられない監査基盤ではない。
+
 `show` は読取りだけで、`pending`（結果未確定）／`confirmed`（番号確認済み）、
 元のrun IDと確認時のrun IDを表示する。`pending` は「未送信」を意味しない。
 送信前停止と応答喪失を区別できない記録の再送解除コマンドはまだ提供していない。
@@ -1125,7 +1148,7 @@ DBの移動・バックアップは全同期を停止してから行い、書込
 破損・紛失時は新規DBで続けず、GitHubとの照合・復旧を先に行う。
 dry-runはDB未設定でも可能だが、実行環境のDBを設定すると未確定記録も確認できる。
 dry-run中は記録を変更せず、`--no-github` ではDB自体を使わない。
-なお、これだけで有効化準備が完了するわけではない。監査や限定実環境での確認が残るため、
+なお、これだけで有効化準備が完了するわけではない。限定実環境での確認などが残るため、
 タイマー実行・本番書込みはまだ有効化しない。
 
 更新直前に本文を読み直すが、読取りと書込みの間の同時編集までは防げない。

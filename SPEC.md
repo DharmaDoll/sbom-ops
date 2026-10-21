@@ -420,8 +420,25 @@ PoC件数は情報源別の申告値であり、期限等の有効状態と一�
 成功結果はrun_id・duration_seconds・件数・評価・資産/補足状態・予定/実行操作を保持する。
 `runtime.sync_log_file` または `--sync-log-file` で任意のJSONLへ追記する。
 親ディレクトリは事前に作る。ログ書込失敗はstderrで警告し、stdoutや同期結果を置き換えない。
-成功記録はsucceeded、処理済みエラーはfailed。
-現在の失敗記録は別run IDとなり、途中までの操作履歴を保持しない。
+CLIは引数解析後、設定読込み前にrun IDを発行し、成功・失敗・中断・作成意図・操作監査で共有する。
+成功記録はsucceeded、処理済みエラーはfailed、KeyboardInterruptはinterrupted（終了コード130）。
+JSON失敗結果もworkflow_eventsを持つが、不完全な評価一覧や成功件数は返さない。
+
+GitHub書込み時は操作記録DB schema v2のworkflow_eventsへ開始・終了と各書込みの
+operation_started／operation_confirmed／operation_unknown／operation_reconciledを追記する。
+開始記録を確定保存してからHTTPへ進み、本文更新・ラベル追加・個別削除を別の操作IDで追う。
+createの操作IDは作成意図IDと共通で、後続runによる照合も結び付ける。
+確認済みとはAPI応答または再取得で確認できたことを表し、DBとGitHubを一括更新する保証ではない。
+startedだけの操作は未送信と送信済みを区別できない。終了記録がないrunも結果不明であり、
+動作中・成功・未実行のいずれとも断定しない。強制終了時は残った記録とGitHubを照合する。
+監査保存失敗では後続書込みを止め、元の障害を別の監査障害で隠さない。失敗JSONの
+audit_persistence_failed=trueはメモリ上の記録とSQLiteに差があることを示す。
+DBを開けない・設定エラー・dry-run・--no-githubではSQLiteへ監査を保存せず、
+通常の結果／失敗出力で同じrun IDを使う。任意のJSONLは必須のSQLite操作監査の代替ではない。
+v1 DBへの書込みは拒否し、バックアップ付きworkflow migrateで明示移行する。
+過去の監査を推測で補完しない。workflow auditはrun IDで読み出せる。
+記録は時刻・対象repo/key/番号・操作種別・ラベル名・例外型に限定し、本文・認証情報・
+応答本体・例外メッセージは操作監査に保存しない。ローカルDB管理者への改ざん耐性は保証しない。
 
 秘密情報を記録しない。分析メモ・担当者情報は結果に含まれるため、アクセス・保持期間を管理する。
 

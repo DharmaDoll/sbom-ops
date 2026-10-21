@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
-from typing import Protocol
-from uuid import uuid4
+from collections.abc import Callable
+from contextlib import ExitStack
+from dataclasses import dataclass, replace
+from functools import partial
+from typing import Protocol, TypeVar
 
 from sbom_ops.clients.dependency_track import (
     DependencyTrackClient,
@@ -59,11 +61,14 @@ from sbom_ops.domain.priority import order_assessments_for_review, prioritize_fi
 from sbom_ops.domain.review import FindingReview, build_review_queue
 from sbom_ops.domain.routing import ProjectRouter
 from sbom_ops.domain.workflow import decide_missing_finding
+from sbom_ops.domain.workflow_audit import WorkflowAudit, WorkflowEvent
 from sbom_ops.services.asset_registry import (
     observe_registry_deployments,
     observe_registry_projects,
 )
 from sbom_ops.storage.issue_journal import IssueJournal
+
+_WriteResult = TypeVar("_WriteResult")
 
 
 class DependencyTrackClientProtocol(Protocol):
@@ -159,6 +164,7 @@ class RunResult:
     project_exposure_observations: tuple[ProjectExposureObservation, ...] = ()
     actions: tuple[str, ...] = ()
     assessments: tuple[FindingAssessment, ...] = ()
+    workflow_events: tuple[WorkflowEvent, ...] = ()
 
     def review_assessments(self) -> tuple[FindingAssessment, ...]:
         return order_assessments_for_review(self.assessments)
@@ -175,6 +181,8 @@ class RunResult:
         """Return an enum-free payload for CLI and downstream adapters."""
         return {
             "status": "succeeded",
+            "workflow_events": [event.as_dict() for event in self.workflow_events],
+            "audit_persistence_failed": False,
             "absence_verification": decide_missing_finding().as_dict(),
             "run_id": self.run_id,
             "duration_seconds": self.duration_seconds,
@@ -324,23 +332,40 @@ class Orchestrator:
             self._github_cache[target_key] = client
         return client, label, target_key
 
-    def run(self) -> RunResult:
-        if not self._config.github.enabled:
-            return self._run(None)
-        path = self._config.workflow.issue_journal_file
-        if path is None:
-            if not self._config.runtime.dry_run:
-                raise IssueIntentError(
-                    "GitHub writes require workflow.issue_journal_file; "
-                    "initialize it explicitly with workflow init"
-                )
-            return self._run(None)
-        # OS lock spans network operations; SQLite transactions do not.
-        with IssueJournal(path, read_only=self._config.runtime.dry_run) as journal:
-            return self._run(journal)
+    def run(self, *, audit: WorkflowAudit | None = None) -> RunResult:
+        audit = audit or WorkflowAudit()
+        with ExitStack() as stack:
+            try:
+                audit.start()
+                journal = None
+                if self._config.github.enabled:
+                    path = self._config.workflow.issue_journal_file
+                    if path is None and not self._config.runtime.dry_run:
+                        raise IssueIntentError(
+                            "GitHub writes require workflow.issue_journal_file; "
+                            "initialize it explicitly with workflow init"
+                        )
+                    if path is not None:
+                        journal = stack.enter_context(
+                            IssueJournal(path, read_only=self._config.runtime.dry_run)
+                        )
+                        if not self._config.runtime.dry_run:
+                            audit.attach(journal.append_event)
+                result = self._run(journal, audit)
+                audit.emit("run_succeeded")
+                return replace(result, workflow_events=tuple(audit.events))
+            except BaseException as exc:
+                try:
+                    audit.fail(exc)
+                except BaseException:
+                    # Preserve the original failure if the audit disk also fails.
+                    audit.persistence_failed = True
+                raise
+            finally:
+                audit.detach()
 
-    def _run(self, journal: IssueJournal | None) -> RunResult:
-        run_id = str(uuid4())
+    def _run(self, journal: IssueJournal | None, audit: WorkflowAudit) -> RunResult:
+        run_id = audit.run_id
         started_at = time.monotonic()
         all_projects = self._dependency_track.list_projects()
         available_project_uuids = {project.uuid for project in all_projects}
@@ -477,6 +502,14 @@ class Orchestrator:
                 actions.append(f"reconcile-create {intent.finding_key} issue=#{number}")
                 if not self._config.runtime.dry_run:
                     journal.confirm(intent, number, run_id)
+                    audit.emit(
+                        "operation_reconciled",
+                        operation_id=intent.intent_id,
+                        operation="create_issue",
+                        repository=intent.repository,
+                        finding_key=intent.finding_key,
+                        issue_number=number,
+                    )
 
         for project in projects:
             if self._config.github.enabled:
@@ -558,6 +591,17 @@ class Orchestrator:
                     if not self._config.runtime.dry_run:
                         assert journal is not None
                         intent = journal.reserve("/".join(target_key[:2]), key, run_id)
+                        operation = audit.begin(
+                            "create_issue",
+                            intent.repository,
+                            key,
+                            labels=(
+                                issue_label,
+                                f"{issue_label}-{item.priority.value}",
+                            ),
+                            operation_id=intent.intent_id,
+                        )
+                        reconciled = False
                         try:
                             response = github.create_issue(
                                 title,
@@ -569,7 +613,16 @@ class Orchestrator:
                                 raise IssueIdentityError(
                                     "create response did not confirm the finding"
                                 )
-                        except (GitHubApiError, IssueIdentityError):
+                        except (GitHubApiError, IssueIdentityError) as exc:
+                            try:
+                                audit.outcome(
+                                    operation,
+                                    "operation_unknown",
+                                    error_type=type(exc).__name__,
+                                )
+                            except BaseException:
+                                audit.persistence_failed = True
+                                raise exc from None
                             # Never retry POST. Re-read the repository to reconcile
                             # a response lost after the server accepted the write.
                             catalog = IssueCatalog(github.list_issues())
@@ -586,10 +639,20 @@ class Orchestrator:
                             actions.append(
                                 f"create-reconciled {key} issue=#{confirmed.number}"
                             )
+                            reconciled = True
                         catalog.record(
                             confirmed.number, confirmed.state, confirmed.body
                         )
                         journal.confirm(intent, confirmed.number, run_id)
+                        audit.outcome(
+                            operation,
+                            (
+                                "operation_reconciled"
+                                if reconciled
+                                else "operation_confirmed"
+                            ),
+                            issue_number=confirmed.number,
+                        )
                     created += 1
                 else:
                     number = existing.number
@@ -613,9 +676,18 @@ class Orchestrator:
                             f"add={list(labels.add)!r} remove={list(labels.remove)!r}"
                         )
                     if not self._config.runtime.dry_run:
-                        github.update_issue(number, None, body)
+                        self._audited_write(
+                            audit,
+                            "update_body",
+                            "/".join(target_key[:2]),
+                            key,
+                            number,
+                            partial(github.update_issue, number, None, body),
+                        )
                         catalog.record(number, "open", body, previous_key=existing.key)
-                        self._apply_issue_labels(github, number, labels)
+                        self._apply_issue_labels(
+                            github, number, labels, audit, "/".join(target_key[:2]), key
+                        )
                     touched_issue_numbers.setdefault(target_key, set()).add(int(number))
                     updated += 1
 
@@ -653,10 +725,13 @@ class Orchestrator:
                             f"mark-active {key} issue=#{number} reason=reappeared"
                         )
                         if not self._config.runtime.dry_run:
-                            github.update_issue(
+                            self._audited_write(
+                                audit,
+                                "update_body",
+                                "/".join(target_key[:2]),
+                                key,
                                 int(number),
-                                None,
-                                body,
+                                partial(github.update_issue, int(number), None, body),
                             )
                         updated += 1
                     continue
@@ -818,23 +893,72 @@ class Orchestrator:
         github: GitHubIssuesClientProtocol,
         number: int,
         plan: IssueLabelPlan,
+        audit: WorkflowAudit,
+        repository: str,
+        key: str,
     ) -> None:
         wanted = {name.casefold() for name in plan.desired}
         if plan.add:
-            added = label_names(github.add_issue_labels(number, list(plan.add)))
-            if not wanted.issubset({name.casefold() for name in added}):
-                raise IssueLabelError(
-                    "required labels were not confirmed; no removal attempted"
-                )
+
+            def add() -> None:
+                added = label_names(github.add_issue_labels(number, list(plan.add)))
+                if not wanted.issubset({name.casefold() for name in added}):
+                    raise IssueLabelError(
+                        "required labels were not confirmed; no removal attempted"
+                    )
+
+            Orchestrator._audited_write(
+                audit, "add_labels", repository, key, number, add, labels=plan.add
+            )
         for name in plan.remove:
-            remaining = {
-                value.casefold()
-                for value in label_names(github.remove_issue_label(number, name))
-            }
-            if name.casefold() in remaining or not wanted.issubset(remaining):
-                raise IssueLabelError(
-                    "label removal outcome was not confirmed; inspect before retrying"
+
+            def remove(name: str = name) -> None:
+                remaining = {
+                    value.casefold()
+                    for value in label_names(github.remove_issue_label(number, name))
+                }
+                if name.casefold() in remaining or not wanted.issubset(remaining):
+                    raise IssueLabelError(
+                        "label removal outcome was not confirmed; "
+                        "inspect before retrying"
+                    )
+
+            Orchestrator._audited_write(
+                audit, "remove_label", repository, key, number, remove, labels=(name,)
+            )
+
+    @staticmethod
+    def _audited_write(
+        audit: WorkflowAudit,
+        kind: str,
+        repository: str,
+        key: str,
+        number: int,
+        call: Callable[[], _WriteResult],
+        *,
+        labels: tuple[str, ...] = (),
+    ) -> _WriteResult:
+        operation = audit.begin(kind, repository, key, number, labels)
+        try:
+            result = call()
+            if kind == "update_body" and (
+                not isinstance(result, dict)
+                or type(result.get("number")) is not int
+                or result["number"] != number
+            ):
+                raise IssueIdentityError(
+                    "update response did not confirm the issue number"
                 )
+        except BaseException as exc:
+            try:
+                audit.outcome(
+                    operation, "operation_unknown", error_type=type(exc).__name__
+                )
+            except BaseException:
+                audit.persistence_failed = True
+            raise
+        audit.outcome(operation, "operation_confirmed")
+        return result
 
     @staticmethod
     def _excluded_by_analysis(item: PrioritizedFinding) -> bool:
