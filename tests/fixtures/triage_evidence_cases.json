@@ -1,0 +1,15 @@
+[
+  {"name":"missing", "observations":[], "status":"unknown", "value":"unknown", "reasons":["no_matching_evidence"]},
+  {"name":"explicit_unknown", "observations":[["unknown",-1,1]], "status":"unknown", "value":"unknown", "reasons":["unknown_observation"]},
+  {"name":"yes", "observations":[["yes",-1,1]], "status":"known", "value":"yes", "reasons":[]},
+  {"name":"no", "observations":[["no",-1,1]], "status":"known", "value":"no", "reasons":[]},
+  {"name":"agreement", "observations":[["yes",-1,1],["yes",-2,2]], "status":"known", "value":"yes", "reasons":[]},
+  {"name":"conflict", "observations":[["yes",-1,1],["no",-2,2]], "status":"conflict", "value":"unknown", "reasons":["conflicting_observations"]},
+  {"name":"expired", "observations":[["yes",-2,0]], "status":"expired", "value":"unknown", "reasons":["expired_observation"]},
+  {"name":"future", "observations":[["no",1,2]], "status":"future", "value":"unknown", "reasons":["future_observation"]},
+  {"name":"valid_and_expired", "observations":[["no",-1,1],["yes",-2,0]], "status":"unknown", "value":"unknown", "reasons":["expired_observation"]},
+  {"name":"valid_and_future", "observations":[["no",-1,1],["yes",1,2]], "status":"unknown", "value":"unknown", "reasons":["future_observation"]},
+  {"name":"valid_and_unknown", "observations":[["yes",-1,1],["unknown",-2,2]], "status":"unknown", "value":"unknown", "reasons":["unknown_observation"]},
+  {"name":"mixed_uncertainty", "observations":[["no",-2,0],["yes",1,2],["unknown",-1,1]], "status":"unknown", "value":"unknown", "reasons":["expired_observation","future_observation","unknown_observation"]},
+  {"name":"conflict_and_expired", "observations":[["yes",-1,1],["no",-2,2],["no",-2,0]], "status":"conflict", "value":"unknown", "reasons":["conflicting_observations","expired_observation"]}
+]
