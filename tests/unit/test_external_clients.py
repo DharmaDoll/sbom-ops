@@ -451,7 +451,9 @@ def test_kev_client_writes_versioned_integrity_metadata(monkeypatch, tmp_path) -
     record = json.loads(cache.read_text(encoding="utf-8"))
 
     assert result == {"CVE-2026-0001"}
-    assert record["schema_version"] == 1
+    assert record["schema_version"] == 2
+    assert record["source"] == "https://cisa.example/feed"
+    assert record["catalog"] is None
     assert len(record["sha256"]) == 64
     assert record["metadata"] == {"etag": "etag-1"}
     assert (

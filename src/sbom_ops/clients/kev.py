@@ -9,17 +9,19 @@ import sqlite3
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.request import Request, urlopen
 
 from sbom_ops.clients.http import HttpApiError, request_json
+from sbom_ops.domain.kev import KevSnapshot, catalog_details
 
 
 class KevApiError(RuntimeError):
     """Raised when the CISA KEV feed cannot be retrieved."""
 
 
-_CACHE_SCHEMA_VERSION = 1
+_CACHE_SCHEMA_VERSION = 2
 _CACHE_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -93,11 +95,44 @@ class KevClient:
             else max(30.0, request_lock_bound)
         )
         self.used_stale_cache = False
+        self.last_snapshot: KevSnapshot | None = None
+
+    def get_snapshot(self, *, force_refresh: bool = False) -> KevSnapshot:
+        self.get_known_exploited_vulnerabilities(force_refresh=force_refresh)
+        assert self.last_snapshot is not None
+        return self.last_snapshot
+
+    def _snapshot(
+        self,
+        ids: set[str],
+        checked: float,
+        metadata: dict[str, str | None],
+        catalog: dict[str, object] | None,
+        mode: str,
+    ) -> None:
+        checked_at = datetime.fromtimestamp(checked, UTC)
+        ttl = self._cache_ttl_seconds
+        if not math.isfinite(ttl):
+            raise KevApiError("KEV cache TTL must be finite")
+        self.last_snapshot = KevSnapshot(
+            source=self._feed_url,
+            cve_ids=frozenset(ids),
+            checked_at=checked_at,
+            expires_at=checked_at + timedelta(seconds=max(0, ttl)),
+            mode=mode,
+            catalog_version=str(catalog["version"]) if catalog else None,
+            released_at=(
+                datetime.fromisoformat(str(catalog["released_at"])) if catalog else None
+            ),
+            complete=catalog is not None,
+            etag=metadata.get("etag"),
+        )
 
     def get_known_exploited_vulnerabilities(
         self, *, force_refresh: bool = False
     ) -> set[str]:
         self.used_stale_cache = False
+        self.last_snapshot = None
         if self._cache_path is None:
             return self._get_from_feed(force_refresh=force_refresh)
         lock_path = self._cache_path.with_name(f"{self._cache_path.name}.lock.sqlite3")
@@ -108,10 +143,12 @@ class KevClient:
             raise KevApiError(str(exc)) from exc
 
     def _get_from_feed(self, *, force_refresh: bool) -> set[str]:
-        cached = self._read_fresh_cache()
-        if cached is not None and not force_refresh:
-            return cached
         cached_record = self._read_cache()
+        if cached_record is not None and not force_refresh:
+            checked, ids, metadata, catalog = cached_record
+            if 0 <= time.time() - checked < self._cache_ttl_seconds:
+                self._snapshot(ids, checked, metadata, catalog, "cache")
+                return ids
         headers = {"Accept": "application/json"}
         if cached_record is not None:
             metadata = cached_record[2]
@@ -133,41 +170,47 @@ class KevClient:
             )
         except HttpApiError as exc:
             if exc.status == 304 and cached_record is not None:
-                self._write_cache_unlocked(cached_record[1], cached_record[2])
+                checked = time.time()
+                self._snapshot(
+                    cached_record[1],
+                    checked,
+                    cached_record[2],
+                    cached_record[3],
+                    "revalidated",
+                )
+                self._write_cache_unlocked(
+                    cached_record[1], cached_record[2], cached_record[3], checked
+                )
                 return cached_record[1]
             detail = f" (HTTP {exc.status})" if exc.status else ""
             if self._allow_stale_cache:
                 stale = self._read_cache()
                 if stale is not None:
                     self.used_stale_cache = True
+                    self._snapshot(stale[1], stale[0], stale[2], stale[3], "stale")
                     return stale[1]
             raise KevApiError(f"CISA KEV request failed{detail}") from exc
         if not isinstance(payload, dict):
             raise KevApiError("CISA KEV response was not an object")
-        cve_ids = {
-            str(item["cveID"])
-            for item in payload.get("vulnerabilities", [])
-            if item.get("cveID")
+        rows = payload.get("vulnerabilities", [])
+        if not isinstance(rows, list) or any(
+            not isinstance(item, dict) for item in rows
+        ):
+            raise KevApiError("CISA KEV vulnerabilities must be objects")
+        cve_ids = {str(item["cveID"]) for item in rows if item.get("cveID")}
+        metadata = {
+            "etag": response_headers.get("ETag"),
+            "last_modified": response_headers.get("Last-Modified"),
         }
-        self._write_cache_unlocked(
-            cve_ids,
-            {
-                "etag": response_headers.get("ETag"),
-                "last_modified": response_headers.get("Last-Modified"),
-            },
-        )
+        catalog = catalog_details(payload)
+        checked = time.time()
+        self._snapshot(cve_ids, checked, metadata, catalog, "fetched")
+        self._write_cache_unlocked(cve_ids, metadata, catalog, checked)
         return cve_ids
 
-    def _read_fresh_cache(self) -> set[str] | None:
-        cached = self._read_cache()
-        if cached is None:
-            return None
-        fetched_at, cve_ids, _ = cached
-        if time.time() - fetched_at > self._cache_ttl_seconds:
-            return None
-        return cve_ids
-
-    def _read_cache(self) -> tuple[float, set[str], dict[str, str]] | None:
+    def _read_cache(
+        self,
+    ) -> tuple[float, set[str], dict[str, str], dict[str, object] | None] | None:
         if self._cache_path is None or self._cache_ttl_seconds < 0:
             return None
         try:
@@ -192,8 +235,9 @@ class KevClient:
                     return None
                 metadata = {}
             schema_version = cached.get("schema_version")
+            catalog = None
             if schema_present:
-                if type(schema_version) is not int or schema_version != 1:
+                if type(schema_version) is not int or schema_version not in (1, 2):
                     return None
                 if type(fetched_at_value) not in (int, float):
                     return None
@@ -216,8 +260,32 @@ class KevClient:
                     "cve_ids": cve_ids,
                     "metadata": metadata,
                 }
+                if schema_version == 2:
+                    if (
+                        cached.get("source") != self._feed_url
+                        or "catalog" not in cached
+                    ):
+                        return None
+                    catalog = cached["catalog"]
+                    digest_payload.update(source=cached["source"], catalog=catalog)
+                    if catalog is not None:
+                        if not isinstance(catalog, dict):
+                            return None
+                        validated = catalog_details(
+                            {
+                                "catalogVersion": catalog.get("version"),
+                                "dateReleased": catalog.get("released_at"),
+                                "count": catalog.get("count"),
+                                "vulnerabilities": [
+                                    {"cveID": value} for value in cve_ids
+                                ],
+                            }
+                        )
+                        if validated is None or validated != catalog:
+                            return None
                 if not hmac.compare_digest(digest, _cache_digest(digest_payload)):
                     return None
+            datetime.fromtimestamp(fetched_at, UTC)
             return (
                 fetched_at,
                 set(cve_ids),
@@ -226,6 +294,7 @@ class KevClient:
                     for key, value in metadata.items()
                     if key in {"etag", "last_modified"} and isinstance(value, str)
                 },
+                catalog,
             )
         except (
             OSError,
@@ -253,17 +322,23 @@ class KevClient:
             return
 
     def _write_cache_unlocked(
-        self, cve_ids: set[str], metadata: dict[str, str | None] | None = None
+        self,
+        cve_ids: set[str],
+        metadata: dict[str, str | None] | None = None,
+        catalog: dict[str, object] | None = None,
+        fetched_at: float | None = None,
     ) -> None:
         if self._cache_path is None:
             return
         try:
             self._cache_path.parent.mkdir(parents=True, exist_ok=True)
-            fetched_at = time.time()
+            fetched_at = time.time() if fetched_at is None else fetched_at
             cache_payload: dict[str, object] = {
                 "schema_version": _CACHE_SCHEMA_VERSION,
                 "fetched_at": fetched_at,
                 "cve_ids": sorted(cve_ids),
+                "source": self._feed_url,
+                "catalog": catalog,
                 "metadata": {
                     key: value for key, value in (metadata or {}).items() if value
                 },
