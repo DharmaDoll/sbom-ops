@@ -226,6 +226,8 @@ def test_review_output_retains_non_cve_and_unknown_context(monkeypatch, capsys) 
     assert cli.run_sync(config, "review") == 0
     output = capsys.readouterr().out
     assert "確認用一覧: 1件" in output
+    assert "修正作業の候補: 1組" in output
+    assert "根拠=資産の紐付け未確認・個別扱い" in output
     assert "GHSA-ABCD-1234-5678" in output
     assert "台帳未指定" in output
     assert "PoC=不明" in output

@@ -58,6 +58,7 @@ from sbom_ops.domain.models import (
     Severity,
 )
 from sbom_ops.domain.priority import order_assessments_for_review, prioritize_finding
+from sbom_ops.domain.remediation import RemediationGroup, build_remediation_groups
 from sbom_ops.domain.review import FindingReview, build_review_queue
 from sbom_ops.domain.routing import ProjectRouter
 from sbom_ops.domain.workflow import (
@@ -180,6 +181,9 @@ class RunResult:
             self.registry_deployments,
         )
 
+    def remediation_groups(self) -> tuple[RemediationGroup, ...]:
+        return build_remediation_groups(self.review_queue())
+
     def as_dict(self) -> dict[str, object]:
         """Return an enum-free payload for CLI and downstream adapters."""
         return {
@@ -223,6 +227,9 @@ class RunResult:
             ],
             "actions": list(self.actions),
             "review_queue": [item.as_dict() for item in self.review_queue()],
+            "remediation_groups": [
+                item.as_dict() for item in self.remediation_groups()
+            ],
             "assessments": [
                 {
                     "project_uuid": item.project_uuid,

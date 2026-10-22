@@ -451,6 +451,31 @@ def print_review_queue(result: RunResult) -> None:
             "（既存判断を維持）"
         )
         print(f"  優先度の理由={'; '.join(item.rationale)}")
+    groups = result.remediation_groups()
+    print(f"\n修正作業の候補: {len(groups)}組（確認用。GitHub同期はまだFinding単位）")
+    print("同じサービス・配布単位・完全一致のPURL・情報源/脆弱性IDでまとめます。")
+    print("部品の版違いは別組。不明な紐付けはまとめず、DTの判断・優先度は変えません。")
+    group_basis_labels = {
+        "verified_asset_and_exact_identity": "確認済み資産・部品と脆弱性が一致",
+        "asset_not_verified": "資産の紐付け未確認・個別扱い",
+        "asset_identity_missing": "サービスか配布単位が不明・個別扱い",
+        "package_identity_missing": "部品の識別情報不足・個別扱い",
+        "vulnerability_identity_missing": "脆弱性の識別情報不足・個別扱い",
+        "incomplete_identity": "識別情報不足・個別扱い",
+    }
+    for group in groups:
+        representative = group.members[0].assessment
+        print(
+            f"  候補={group.key} サービス={group.service_id or '不明'} "
+            f"配布単位={group.deployable_id or '不明'} "
+            f"Finding数={len(group.finding_keys)} "
+            f"根拠={group_basis_labels[group.basis]}"
+        )
+        print(
+            f"    脆弱性={representative.vulnerability_id} "
+            f"部品={representative.component_purl or '不明'}"
+        )
+        print(f"    内訳={', '.join(group.finding_keys)}")
     print(
         f"\nIssue操作: 作成={result.issues_created} 更新={result.issues_updated} "
         f"終了={result.issues_closed} dry_run={result.dry_run}"

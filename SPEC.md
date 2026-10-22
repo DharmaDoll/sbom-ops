@@ -421,6 +421,27 @@ DB未設定・欠損・不正・他者が読める権限では書き込まず、
 期限切れ・未来日時・矛盾・別成果物・未申告を維持し、実稼働の証明とは扱わない。
 PoC件数は情報源別の申告値であり、期限等の有効状態と一緒に表示する。
 
+### 修正作業の候補
+
+`review_queue`のFinding識別は変えず、別に`remediation_groups`をJSON/JSONLと
+`--output review`へ出す。台帳の`matched`なサービスID・配布単位ID・PURL全文・
+脆弱性の情報源/IDが全て一致したFindingを一組にする。Project UUID・ビルド版・
+担当者・環境は組のkeyに含めず、`members`に個々のFindingと資産・環境・分析状態を残す。
+`repair-v1:`のkeyは上記の識別値のJSON配列をSHA-256でハッシュしたもので、
+同じ修正対象ならビルドの追加・消失や担当変更では変わらない。権限を表すkeyではない。
+
+部品版・qualifier・subpathを含むPURLは構文変換せず完全一致で扱う。
+異なる部品版の修正経路まで同一とは仮定しない。名前だけの部品やCVE alias・PoC用対応
+だけではまとめず、情報不足・未承認・撤回・廃止などはProject/Finding keyで個別に残す。
+`finding_count`は異なるFinding keyの数で、重複入力も`members`から黙って消さない。
+`highest_observed_priority`は抑制済みを含む観測上の最優先値であり、各Findingの評価や
+DTの判断を上書きせず、Issue作成条件にも使わない。
+
+候補の内訳は選択して観測したProjectの範囲だけであり、全稼働版の網羅や欠落したFindingの
+修正完了を保証しない。現時点では表示のみで、GitHub同期は従来のFinding単位のまま。
+候補keyをそのままIssueへ送らない。同期への適用ではrepo/経路の分離、旧Issue・作成記録の
+移行、部分的なProject選択で内訳を失わない更新が必要（[#7](https://github.com/DharmaDoll/sbom-ops/issues/7)）。
+
 ## Logging
 
 成功結果はrun_id・duration_seconds・件数・評価・資産/補足状態・予定/実行操作を保持する。

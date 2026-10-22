@@ -34,14 +34,17 @@ python examples/review_scenario.py
 
 入力は[架空のDT・資産データ](../examples/review-scenario.example.json)。
 生のDT API応答や本番用importファイルではなく、承認済みの台帳を模擬する専用サンプル。
-本番公開・開発環境の矛盾・期限切れ・対応付けなしを表示する。3件のFindingのまま、
+本番公開・開発環境の矛盾・期限切れ・対応付けなしを表示する。4件のFindingのまま、
 環境は内訳として示す。先頭のP1はDTでは抑制済みなので、優先度だけで対応を決めない。
+同じサービス`checkout-api/web`の2ビルドは同じ部品と脆弱性を含み、修正作業の候補は
+計3組になる。元のFindingは消さず、未紐付けのProjectは同じCVEでも別に残す。
 DB保存や実環境への承認は行わない。旧形式の資産JSONの比較例は
 `python examples/asset_scenario.py`で残している。
 架空のProject UUIDや稼働状況を実DTへコピーしない。
 
 **停止点A:** 「DTだけで分かること」と「人が資産として申告したこと」を
 それぞれ一つ挙げる。資産情報を付けても優先度やIssue操作が変わらない理由は何か。
+4件のFindingが3組の候補になる理由と、紐付けが不明なProjectをまとめない理由も確認する。
 
 ### 2. 人が資産を登録し、DTへ直接SBOMを送る（約20分）
 
@@ -214,6 +217,14 @@ Component一覧・監査一覧が読み込まれた後に対象の行を確認�
 `--output json`の`review_queue`にも同じ内容を出し、従来の`assessments`等は残す。
 資産一覧はSQLiteの承認済み対応だけを使い、評価用の`--asset-inventory`とは混ぜない。
 外部接続なしの練習は`python examples/review_scenario.py`で試せる。
+
+一覧の末尾には「修正作業の候補」を出す。確認済みの同じサービス・配布単位で、
+PURL全文と脆弱性の情報源/IDが一致すれば、複数ビルドのFindingを一組にする。
+部品の版違いは別組。候補keyと内訳から元のFindingを確認できる。
+JSONの`remediation_groups`も同じまとまりで、環境・抑制・期限切れなどは各`members`に残る。
+これは選択したProject内の確認用表示で、Issue数の予測や自動同期への適用ではない。
+一部Projectだけを選んだ実行でメンバーが減っても「解決した」と判断しない。
+GitHub同期はまだFinding単位のため、候補の表示確認を理由に実書込みを有効化しない。
 
 **停止点F:** DT由来の事実、sbom-opsが計算した優先度、人が登録・承認した
 資産情報を区別して説明する。DTだけで担当者や稼働環境を知れるか。

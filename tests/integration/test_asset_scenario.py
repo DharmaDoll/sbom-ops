@@ -97,8 +97,8 @@ def test_review_scenario_joins_fictional_registry_without_external_services() ->
     )
     result = json.loads(completed.stdout)
     rows = result["review_queue"]
-    assert len(rows) == result["findings_processed"] == 3
-    assert [row["priority"] for row in rows] == ["P1", "P2", "P2"]
+    assert len(rows) == result["findings_processed"] == 4
+    assert [row["priority"] for row in rows] == ["P1", "P2", "P2", "P2"]
     assert rows[0]["vulnerability_id"].startswith("GHSA-")
     assert rows[0]["is_suppressed"] is True
     assert rows[0]["environments"][0]["status"] == "expired"
@@ -109,13 +109,25 @@ def test_review_scenario_joins_fictional_registry_without_external_services() ->
     }
     assert rows[2]["asset_status"] == "unlinked"
     assert rows[2]["asset"] is None
+    groups = result["remediation_groups"]
+    assert len(groups) == 3
+    checkout = next(group for group in groups if group["service_id"] == "checkout-api")
+    assert checkout["finding_count"] == 2
+    assert len(checkout["project_uuids"]) == 2
+    assert {key for group in groups for key in group["finding_keys"]} == {
+        row["finding_key"] for row in rows
+    }
+    assert result["issues_created"] == result["issues_updated"] == 0
     assert result["actions"] == []
     assert completed.stderr == ""
     text_output = subprocess.run(
         [sys.executable, str(scenario)], check=True, capture_output=True, text=True
     ).stdout
     for expected in (
-        "確認用一覧: 3件",
+        "確認用一覧: 4件",
+        "修正作業の候補: 3組",
+        "Finding数=2",
+        "GitHub同期はまだFinding単位",
         "担当=team-checkout",
         "期限切れ",
         "申告が矛盾",
