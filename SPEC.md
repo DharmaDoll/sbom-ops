@@ -131,7 +131,8 @@ HIGHラベルを数値CVSSの代わりにはしない。P3は低リスクの証�
 
 [triage_evidence.py](src/sbom_ops/domain/triage_evidence.py) は、公開状態・KEV・
 悪用の自動化可能性・技術的影響・KEVとは独立した悪用報告を保持する純粋なドメイン処理。
-まだ通常のsync、外部取得、SQLite保存、期限計算には接続していない。
+まだ通常のsync、SQLite保存、期限計算には接続していない。
+外部入力は[CISA公式データの単一CVE取得と変換](docs/priority-policy.md#cisa公式データの入力契約)を用意する。
 
 - 出典・記録ID・出典版・観測時刻・有効期限・任意の確認者/理由を元の値とともに残す。
   `known` は情報源の明示報告が有効期間内という意味で、正しさや採用の承認ではない。

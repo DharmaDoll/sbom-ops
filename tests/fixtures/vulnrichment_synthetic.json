@@ -1,0 +1,26 @@
+{
+  "dataType": "CVE_RECORD",
+  "dataVersion": "5.1",
+  "cveMetadata": {"cveId": "CVE-2026-0001", "state": "PUBLISHED"},
+  "containers": {
+    "cna": {"metrics": [{"cvssV3_1": {"baseScore": 10}}]},
+    "adp": [{
+      "providerMetadata": {
+        "orgId": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+        "shortName": "CISA-ADP"
+      },
+      "metrics": [{"other": {
+        "type": "ssvc",
+        "content": {
+          "id": "CVE-2026-0001", "role": "CISA Coordinator", "version": "2.0.3",
+          "timestamp": "2026-10-21T12:00:00Z",
+          "options": [
+            {"Exploitation": "poc"},
+            {"Automatable": "yes"},
+            {"Technical Impact": "total"}
+          ]
+        }
+      }}]
+    }]
+  }
+}
