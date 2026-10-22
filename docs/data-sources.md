@@ -432,13 +432,12 @@ GitHubはFindingの検出元ではない。Remediation workflowの一次情報�
 
 ### 取得・更新
 
-- Finding keyを含むOpen Issueを検索
-- 既存Issueがあればタイトル・本文を更新
-- なければP0/P1等の設定対象だけ作成
-- Dependency-TrackからFindingが消えた場合、連続した検証済み不在を記録し、
-  明示的に有効化された安全なクローズ条件を満たしたときだけ対応Issueをクローズ
+- open/closedの両方を含むrepo一覧から管理keyを完全一致で照合する。
+- 既存Issueの自動管理範囲と管理ラベルを更新し、人の本文・タイトル・ラベルを保持する。
+- 新規作成はP0/P1等の設定対象だけ。確認済み資産の同じ修正作業はrepoごとにまとめる。
+- Findingの欠落だけでは解決とみなさない。自動クローズは未提供で、有効化設定も拒否する。
 
-Finding keyは次の形式でIssue本文に保存する。
+Finding keyは次の形式で識別し、修正作業の組では内訳に保存する。
 
 ```text
 v2:{project_uuid}:sha256(machine_identity)
@@ -447,7 +446,9 @@ v2:{project_uuid}:sha256(machine_identity)
 `machine_identity`はcomponent UUIDとvulnerability UUIDを優先する。これらが
 取得できない場合はPURL、vulnerability source、vulnerability IDを使い、最後に
 表示用のcomponent name/versionへfallbackする。旧形式の表示由来keyは移行期間中
-の重複検索に使うが、新規Issue本文に保存する正本はv2 keyである。
+の照合にも使う。修正作業の組は`repair-v1:` keyで識別し、元の現行/旧Finding keyを残す。
+同期条件・本文形式・移行・送信記録は[SPEC](../SPEC.md#workflow-rules)と
+[運用ガイド](operations.md#github同期の確認)を正本とする。
 
 ## 優先度計算への入力関係
 

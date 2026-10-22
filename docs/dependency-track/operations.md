@@ -11,9 +11,13 @@
 7. Developers remediate issues.
 8. CI uploads updated SBOM.
 9. Orchestrator verifies analysis readiness and observes whether findings are absent.
-10. GitHub Issues are marked missing on the first verified absence.
-11. GitHub Issues are closed only after the configured consecutive confirmations,
-    and only when automatic closure is explicitly enabled.
+10. Absence remains unverified; it does not authorize closing an Issue.
+11. Automatic closure is not supported and its enablement setting is rejected.
+
+Reviewed assets allow findings from multiple builds to share one repair Issue
+per repository. Finding identities and DT analysis decisions remain separate.
+See the [current workflow contract](../../SPEC.md#workflow-rules) and
+[operator guide](../operations.md#github同期の確認) for matching, migration and write opt-in.
 
 ## Operational Ownership
 

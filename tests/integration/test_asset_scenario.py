@@ -127,7 +127,7 @@ def test_review_scenario_joins_fictional_registry_without_external_services() ->
         "確認用一覧: 4件",
         "修正作業の候補: 3組",
         "Finding数=2",
-        "GitHub同期はまだFinding単位",
+        "同期先・DT分析によりIssue操作は異なります",
         "担当=team-checkout",
         "期限切れ",
         "申告が矛盾",

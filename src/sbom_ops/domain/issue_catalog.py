@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sbom_ops.domain.issue_body import IssueBodyError, parse_issue_body
+from sbom_ops.domain.repair_issue import parse_repair_record
 
 
 class IssueIdentityError(ValueError):
@@ -17,6 +18,7 @@ class ManagedIssue:
     state: str
     body: str
     key: str
+    aliases: tuple[str, ...] = ()
 
 
 class IssueCatalog:
@@ -42,16 +44,27 @@ class IssueCatalog:
                 body = ""
             try:
                 key = parse_issue_body(body).finding_key
+                repair = parse_repair_record(body)
             except IssueBodyError as exc:
                 raise IssueIdentityError(
                     f"invalid managed body in issue #{number}"
                 ) from exc
             if key is not None:
-                self._issues[number] = ManagedIssue(number, issue["state"], body, key)
+                self._issues[number] = ManagedIssue(
+                    number, issue["state"], body, key, repair.keys if repair else ()
+                )
 
     def find(self, key: str, legacy_key: str) -> ManagedIssue | None:
+        return self.find_any((key, legacy_key))
+
+    def individual_issues(self) -> tuple[ManagedIssue, ...]:
+        return tuple(item for item in self._issues.values() if not item.aliases)
+
+    def find_any(self, keys: tuple[str, ...]) -> ManagedIssue | None:
         matches = [
-            item for item in self._issues.values() if item.key in {key, legacy_key}
+            item
+            for item in self._issues.values()
+            if set(keys).intersection((item.key, *item.aliases))
         ]
         if len(matches) > 1:
             raise IssueIdentityError(

@@ -176,7 +176,8 @@ v5の`retire-service / retire-deployable / revoke-link`は変更者・理由が�
 訂正は撤回後に既存の`assets approve`でDTのUUID・名前・版を再確認する二段階操作。
 失敗した再承認は撤回済み状態を維持する。同じUUIDを再承認しても旧履歴は残す。
 `sync`は廃止・撤回済みの資産情報を有効な担当・環境として使わず、Finding自体は残す。
-優先度・DT Analysis・抑制・Issue操作を変えない。廃止取消は未実装。
+廃止コマンド自体は優先度・DT Analysis・抑制・GitHubを変更しない。廃止取消は未実装。
+次のGitHub同期で既存の修正作業の資産対応を確認できなくなった場合は、上書きせず停止する。
 操作は[運用ガイド](docs/operations.md#資産の廃止と紐付けの訂正)を参照。
 
 ## Asset Inventory Context
@@ -331,8 +332,9 @@ syncでは通常の評価・Issue処理の完了後に、`published_poc`だけ�
 GitHub同期は任意で、既定の作成対象はP0/P1。
 作成対象の設定は新規作成だけに適用する。既存のopen IssueはP2/P3への変更でも
 本文・管理ラベルを更新し、優先度低下だけを理由に閉じない。
-抑制済み・NOT_AFFECTED・FALSE_POSITIVEは通常のIssue作成・更新から除外するが、
-Finding一覧には残す。Analysisだけを理由に既存Issueを閉じない。
+抑制済み・NOT_AFFECTED・FALSE_POSITIVEはIssueの作成条件・管理ラベルの優先度から除外するが、
+Finding一覧と修正作業の内訳には残す。現在の対象が全て除外なら通常の作成・更新は行わない。
+Analysisだけを理由に既存Issueを閉じない。
 
 Finding keyは `v2:{project_uuid}:sha256(machine_identity)`。
 identityはProject＋Component UUID＋vulnerability UUID、次にProject＋PURL＋source＋主ID、
@@ -413,7 +415,7 @@ DB未設定・欠損・不正・他者が読める権限では書き込まず、
 `review_queue`を追加する。いずれもP0→P3順で、1項目は1 Finding。
 同じCVEでも別部品・別ProjectのFindingはまとめず、非CVEのID・抑制済みFindingも残す。
 環境は`environments`の内訳とし、複数環境をFinding件数へ加算しない。
-既存の優先度・DT分析状態・Issue操作は変更しない。
+出力形式の切替は優先度・DT分析状態・Issue操作を変更しない。
 
 一覧の資産情報はSQLite台帳の照合結果だけを使う。`--asset-inventory`の評価用JSONや
 別入力の公開申告とは混ぜない。台帳未指定は`not_requested`、未紐付け・Project変更・
@@ -435,12 +437,30 @@ PoC件数は情報源別の申告値であり、期限等の有効状態と一�
 だけではまとめず、情報不足・未承認・撤回・廃止などはProject/Finding keyで個別に残す。
 `finding_count`は異なるFinding keyの数で、重複入力も`members`から黙って消さない。
 `highest_observed_priority`は抑制済みを含む観測上の最優先値であり、各Findingの評価や
-DTの判断を上書きせず、Issue作成条件にも使わない。
+DTの判断を上書きせず、そのままIssue作成条件にも使わない。
 
 候補の内訳は選択して観測したProjectの範囲だけであり、全稼働版の網羅や欠落したFindingの
-修正完了を保証しない。現時点では表示のみで、GitHub同期は従来のFinding単位のまま。
-候補keyをそのままIssueへ送らない。同期への適用ではrepo/経路の分離、旧Issue・作成記録の
-移行、部分的なProject選択で内訳を失わない更新が必要（[#7](https://github.com/DharmaDoll/sbom-ops/issues/7)）。
+修正完了を保証しない。GitHub有効時は確認済み資産の候補をrepoごとに分け、
+`repair-v1:` keyで一つのIssueに同期する。未確認資産・識別情報不足は従来のFinding単位。
+同じrepo・同じ組に異なるラベル経路がある場合や、既存の組の資産対応・経路が変わった場合は
+推測で移行せず失敗する。repoをまたいで本文や状態を転用しない。
+
+Issueの管理範囲内にversion 1の`repair-record`を保存する。JSONをBase64化し、
+外部説明文が制御マーカーにならないようにする（暗号化ではない）。各Findingの現行/旧key、
+Project、最後の優先度・分析除外・説明・今回観測の有無を保持する。本文が6万文字を超えれば
+切捨てや別Issue作成ではなく停止する。重複field・不正な型・未知version・key不一致も拒否する。
+
+初回作成・旧Issue移行では、同じサービス/配布単位・同じrepoの照合済みProjectを全て選択する。
+今回確認できない旧Finding単位Issueが同範囲にあれば、別の修正作業だと推測せず停止する。
+既存Issueが一つなら本文外・タイトル・番号を保持して移行し、現行/旧Finding keyは内訳へ残す。
+SQLiteの旧作成記録を削除・書換えず、この内訳で同じ番号へ照合し続ける。
+複数の既存Issueに一致する場合はopen/closedを問わず停止し、勝手な統合・削除をしない。
+
+移行後は一部Projectだけの同期でも、前回の未観測メンバーを「今回未確認」として保持する。
+作成条件と管理ラベルは分析除外を除いた最優先値を使い、未観測メンバーの最後の値も残す。
+したがって欠落だけで優先度を下げない。全対象が解析除外なら更新・クローズをせず確認待ち。
+FindingごとのP0〜P3やDT分析自体は変更しない。実環境での有効化確認は
+[#7](https://github.com/DharmaDoll/sbom-ops/issues/7)で追跡する。
 
 ## Logging
 

@@ -86,10 +86,12 @@ SBOMからFindingが出ても、それだけでは「どのサービスの、ど
 4. sbom-opsがDependency-TrackのEPSS、VEX/分析状態、抑制状態を読む。
 5. sbom-opsがKEV情報を補完し、P0〜P3を計算する。
 6. `NOT_AFFECTED`、`FALSE_POSITIVE`、抑制済みを除外する。
-7. 設定された優先度（MVPではP0/P1）のFindingについてIssueを作成・更新する。
-8. 同じFinding keyの既存Issueがあれば重複作成しない。
+7. 設定された優先度（既定はP0/P1）ではIssueを新規作成し、既存IssueはP2/P3でも更新する。
+8. 確認済み資産の同じ修正作業はrepoごとに一つにまとめ、元のFinding keyは内訳に保持する。
+   既存Issueが複数一致する場合は勝手に統合せず停止する。未確認資産はFinding単位で扱う。
 9. Findingが見えなくなった場合も、解決確認は`UNKNOWN`として扱う。
-10. 既存Issueは変更せず開いたままにする。同じ空応答が続いても自動クローズしない。
+10. 欠落だけなら既存Issueは開いたままにする。同じ組の別Findingを更新する場合も
+    未確認の内訳を残し、空応答が続いたことを理由に自動クローズしない。
 
 ### 結果
 
@@ -184,7 +186,8 @@ GitHub Issueが作成または更新される。
 4. 修正版SBOMをDependency-Trackへアップロードする。
 5. Dependency-TrackでFindingが消滅または状態変化する。
 6. 次回同期でsbom-opsが差分を確認する。
-7. Findingが見えなくなっても解決確認は`UNKNOWN`とし、既存Issueは変更せず開いたままにする。
+7. Findingが見えなくなっても解決確認は`UNKNOWN`とし、既存Issueは開いたままにする。
+   同じ組の別Findingを更新する場合も、未確認の内訳は削除しない。
 8. 人が対象成果物・SBOM・解析状況・修正内容を確認し、対応完了を判断する。
    `--wait-for-analysis`の応答安定だけでは修正完了とは判断しない。
 

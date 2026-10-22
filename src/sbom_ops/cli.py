@@ -452,7 +452,10 @@ def print_review_queue(result: RunResult) -> None:
         )
         print(f"  優先度の理由={'; '.join(item.rationale)}")
     groups = result.remediation_groups()
-    print(f"\n修正作業の候補: {len(groups)}組（確認用。GitHub同期はまだFinding単位）")
+    print(
+        f"\n修正作業の候補: {len(groups)}組"
+        "（同期先・DT分析によりIssue操作は異なります）"
+    )
     print("同じサービス・配布単位・完全一致のPURL・情報源/脆弱性IDでまとめます。")
     print("部品の版違いは別組。不明な紐付けはまとめず、DTの判断・優先度は変えません。")
     group_basis_labels = {

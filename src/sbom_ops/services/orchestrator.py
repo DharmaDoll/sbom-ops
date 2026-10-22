@@ -25,6 +25,7 @@ from sbom_ops.domain.asset_registry import (
     AssetRegistrySnapshot,
     RegistryDeploymentObservation,
     RegistryProjectObservation,
+    RegistryProjectStatus,
     RegistrySnapshotStatus,
 )
 from sbom_ops.domain.assets import (
@@ -59,6 +60,13 @@ from sbom_ops.domain.models import (
 )
 from sbom_ops.domain.priority import order_assessments_for_review, prioritize_finding
 from sbom_ops.domain.remediation import RemediationGroup, build_remediation_groups
+from sbom_ops.domain.repair_issue import (
+    RepairMember,
+    RepairRecord,
+    merge_repair_record,
+    parse_repair_record,
+    repair_issue_body,
+)
 from sbom_ops.domain.review import FindingReview, build_review_queue
 from sbom_ops.domain.routing import ProjectRouter
 from sbom_ops.domain.workflow import (
@@ -426,7 +434,6 @@ class Orchestrator:
         current_keys: set[str] = set()
         created = updated = closed = findings_processed = 0
         actions: list[str] = []
-        assessments: list[FindingAssessment] = []
         touched_issue_numbers: dict[tuple[str, str, str], set[int]] = {}
         target_clients: dict[tuple[str, str, str], GitHubIssuesClientProtocol] = {}
         target_projects: dict[tuple[str, str, str], set[str]] = {}
@@ -461,6 +468,28 @@ class Orchestrator:
             ]
             for project in projects
         }
+        assessments = [
+            self._assessment(item)
+            for items in prioritized_by_project.values()
+            for item in items
+        ]
+        repairs, repair_scopes = (
+            self._repair_records(
+                assessments,
+                prioritized_by_project,
+                registry_projects,
+                registry_deployments,
+                (
+                    observe_registry_projects(
+                        self._asset_registry, all_projects, all_projects
+                    )
+                    if self._asset_registry is not None
+                    else ()
+                ),
+            )
+            if self._config.github.enabled
+            else ({}, {})
+        )
         legacy_identities: dict[str, set[str]] = {}
         for items in prioritized_by_project.values():
             for item in items:
@@ -482,7 +511,47 @@ class Orchestrator:
                         item.finding.finding_key(),
                         item.finding.legacy_finding_key(),
                     )
-                    match = catalogs[repository].find(key, legacy)
+                    repair = repairs.get(key)
+                    match = catalogs[repository].find_any(
+                        repair.keys if repair else (key, legacy)
+                    )
+                    previous = parse_repair_record(match.body) if match else None
+                    if repair:
+                        if previous is None:
+                            scope = repair_scopes[(repair.repository, repair.group_key)]
+                            if not scope.issubset(findings_by_project):
+                                raise IssueIdentityError(
+                                    "initial repair creation/migration requires all "
+                                    "reviewed builds for this service and repository"
+                                )
+                            known_keys = {
+                                k
+                                for p in scope
+                                for value in prioritized_by_project[p]
+                                for k in (
+                                    value.finding.finding_key(),
+                                    value.finding.legacy_finding_key(),
+                                )
+                            }
+                            for old_issue in catalogs[repository].individual_issues():
+                                if (
+                                    self._project_uuid_from_finding_key(old_issue.key)
+                                    in scope
+                                    and old_issue.key not in known_keys
+                                ):
+                                    raise IssueIdentityError(
+                                        "unobserved individual issue in repair scope; "
+                                        "review before creating or migrating a group"
+                                    )
+                        prepared = merge_repair_record(repair, previous)
+                        repair_issue_body(
+                            prepared, existing=match.body if match else None
+                        )
+                    elif previous is not None:
+                        raise IssueIdentityError(
+                            "finding belongs to a repair issue but its asset identity "
+                            "is no longer verified; review before writing"
+                        )
                     if (
                         match is not None
                         and match.key == legacy
@@ -537,58 +606,35 @@ class Orchestrator:
                 current_keys.add(prioritized_finding.finding.finding_key())
                 current_keys.add(prioritized_finding.finding.legacy_finding_key())
                 prioritized.append(prioritized_finding)
-                assessments.append(
-                    FindingAssessment(
-                        project_uuid=project.uuid,
-                        finding_key=prioritized_finding.finding.finding_key(),
-                        vulnerability_id=prioritized_finding.finding.vulnerability_id,
-                        vulnerability_source=(
-                            prioritized_finding.finding.vulnerability_source
-                        ),
-                        severity=prioritized_finding.finding.severity,
-                        cvss_score=prioritized_finding.finding.cvss_score,
-                        epss_score=prioritized_finding.enrichment.epss_score,
-                        priority=prioritized_finding.priority,
-                        analysis_state=prioritized_finding.enrichment.analysis_state,
-                        is_suppressed=prioritized_finding.enrichment.is_suppressed,
-                        rationale=prioritized_finding.rationale,
-                        analysis_detail=(
-                            prioritized_finding.enrichment.analysis_detail
-                        ),
-                        in_kev=prioritized_finding.enrichment.in_kev,
-                        component_uuid=(
-                            prioritized_finding.finding.dependency_track_component_uuid
-                        ),
-                        component_purl=prioritized_finding.finding.component_purl,
-                        component_name=prioritized_finding.finding.component_name,
-                        component_version=prioritized_finding.finding.component_version,
-                        vulnerability_aliases=(
-                            prioritized_finding.finding.vulnerability_aliases
-                        ),
-                        cvss_version=prioritized_finding.finding.cvss_version,
-                        advisory_observations=(
-                            self._advisory_snapshot.observations_for(
-                                prioritized_finding.finding.vulnerability_id,
-                                prioritized_finding.finding.vulnerability_aliases,
-                            )
-                            if self._advisory_snapshot
-                            else ()
-                        ),
-                    )
-                )
 
             for item in prioritized:
                 if self._excluded_by_analysis(item):
                     continue
                 if not self._config.github.enabled:
                     continue
-                title, body = self._issue_content(item)
-                key = item.finding.finding_key()
+                finding_key = item.finding.finding_key()
+                repair = repairs.get(finding_key)
+                key = repair.group_key if repair else finding_key
+                keys = (
+                    repair.keys if repair else (key, item.finding.legacy_finding_key())
+                )
                 handling_key = (*target_key[:2], key)
                 if handling_key in handled_keys:
                     continue
                 handled_keys.add(handling_key)
-                existing = catalog.find(key, item.finding.legacy_finding_key())
+                existing = catalog.find_any(keys)
+                if repair:
+                    prepared = merge_repair_record(
+                        repair, parse_repair_record(existing.body) if existing else None
+                    )
+                    assert prepared.priority is not None
+                    item = replace(item, priority=prepared.priority)
+                    title, _ = self._issue_content(item)
+                    body = repair_issue_body(
+                        prepared, existing=existing.body if existing else None
+                    )
+                else:
+                    title, body = self._issue_content(item)
                 if (
                     existing is None
                     and item.priority.value
@@ -628,6 +674,13 @@ class Orchestrator:
                                 raise IssueIdentityError(
                                     "create response did not confirm the finding"
                                 )
+                            if (
+                                repair
+                                and parse_repair_record(confirmed.body) != prepared
+                            ):
+                                raise IssueIdentityError(
+                                    "create response did not confirm repair members"
+                                )
                         except (GitHubApiError, IssueIdentityError) as exc:
                             try:
                                 audit.outcome(
@@ -642,14 +695,19 @@ class Orchestrator:
                             # a response lost after the server accepted the write.
                             catalog = IssueCatalog(github.list_issues())
                             catalogs[target_key[:2]] = catalog
-                            confirmed = catalog.find(
-                                key, item.finding.legacy_finding_key()
-                            )
+                            confirmed = catalog.find_any(keys)
                             if confirmed is None:
                                 raise GitHubApiError(
                                     "GitHub create outcome is unknown; "
                                     "inspect the repository "
                                     "before another sync; no POST was retried"
+                                ) from None
+                            if (
+                                repair
+                                and parse_repair_record(confirmed.body) != prepared
+                            ):
+                                raise IssueIdentityError(
+                                    "reconciliation did not confirm repair members"
                                 ) from None
                             actions.append(
                                 f"create-reconciled {key} issue=#{confirmed.number}"
@@ -672,15 +730,23 @@ class Orchestrator:
                 else:
                     number = existing.number
                     latest = self._read_issue_for_update(github, number)
+                    if repair:
+                        prepared = merge_repair_record(
+                            repair, parse_repair_record(latest["body"])
+                        )
+                        assert prepared.priority is not None
+                        item = replace(item, priority=prepared.priority)
+                        body = repair_issue_body(prepared, existing=latest["body"])
+                    else:
+                        if parse_repair_record(latest["body"]) is not None:
+                            raise IssueIdentityError("issue became a repair group")
+                        body = merge_issue_body(
+                            latest["body"], body, expected_keys=keys
+                        )
                     labels = plan_issue_labels(
                         label_names(latest.get("labels")),
                         issue_label,
                         item.priority,
-                    )
-                    body = merge_issue_body(
-                        latest["body"],
-                        body,
-                        expected_keys=(key, item.finding.legacy_finding_key()),
                     )
                     actions.append(
                         f"update {key} issue=#{number} priority={item.priority.value}"
@@ -697,7 +763,13 @@ class Orchestrator:
                             "/".join(target_key[:2]),
                             key,
                             number,
-                            partial(github.update_issue, number, None, body),
+                            partial(
+                                self._update_issue,
+                                github,
+                                number,
+                                body,
+                                prepared if repair else None,
+                            ),
                         )
                         catalog.record(number, "open", body, previous_key=existing.key)
                         self._apply_issue_labels(
@@ -715,6 +787,28 @@ class Orchestrator:
                     continue
                 key = self._finding_key_from_issue(issue)
                 if key is None:
+                    continue
+                repair = parse_repair_record(issue.get("body") or "")
+                if repair is not None:
+                    if (
+                        repair.repository == "/".join(target_key[:2])
+                        and repair.label_prefix == issue_label
+                        and any(
+                            m.project_uuid in managed_for_target for m in repair.members
+                        )
+                        and (*target_key[:2], key) not in handled_keys
+                    ):
+                        reason = (
+                            "analysis_excluded"
+                            if any(
+                                m.finding_key in current_keys for m in repair.members
+                            )
+                            else "absence_not_verified"
+                        )
+                        actions.append(
+                            f"keep-open {key} issue=#{issue['number']} "
+                            f"reason={reason}"
+                        )
                     continue
                 if self._project_uuid_from_finding_key(key) not in managed_for_target:
                     continue
@@ -855,6 +949,111 @@ class Orchestrator:
             assessments=tuple(assessments),
         )
 
+    def _repair_records(
+        self,
+        assessments: list[FindingAssessment],
+        prioritized: dict[str, list[PrioritizedFinding]],
+        projects: tuple[RegistryProjectObservation, ...],
+        deployments: tuple[RegistryDeploymentObservation, ...],
+        all_projects: tuple[RegistryProjectObservation, ...],
+    ) -> tuple[dict[str, RepairRecord], dict[tuple[str, str], set[str]]]:
+        rows = build_review_queue(
+            assessments,
+            (
+                RegistrySnapshotStatus.LOADED
+                if self._asset_registry is not None
+                else RegistrySnapshotStatus.NOT_REQUESTED
+            ),
+            projects,
+            deployments,
+        )
+        items: dict[str, PrioritizedFinding] = {}
+        for values in prioritized.values():
+            for item in values:
+                key = item.finding.finding_key()
+                if key in items and items[key] != item:
+                    raise IssueIdentityError("conflicting observations for one finding")
+                items[key] = item
+        result = {}
+        scopes: dict[tuple[str, str], set[str]] = {}
+        for group in build_remediation_groups(rows):
+            if group.basis != "verified_asset_and_exact_identity":
+                continue
+            by_repo: dict[str, dict[str, RepairMember]] = {}
+            labels: dict[str, str] = {}
+            for row in group.members:
+                item = items[row.assessment.finding_key]
+                _, label, target = self._github_target(item.finding.project_uuid)
+                repository = "/".join(target[:2])
+                if repository in labels and labels[repository] != label:
+                    raise IssueIdentityError(
+                        "same repair group has conflicting label routes"
+                    )
+                labels[repository] = label
+                members = by_repo.setdefault(repository, {})
+                members[row.assessment.finding_key] = RepairMember(
+                    row.assessment.finding_key,
+                    item.finding.legacy_finding_key(),
+                    item.finding.project_uuid,
+                    item.priority.value,
+                    self._excluded_by_analysis(item),
+                    f"Service: {group.service_id}/{group.deployable_id}\n\n"
+                    + self._issue_text(item),
+                )
+            for repository, members in by_repo.items():
+                scope = set()
+                for project in all_projects:
+                    if project.status is RegistryProjectStatus.MATCHED and (
+                        project.service_id,
+                        project.deployable_id,
+                    ) == (group.service_id, group.deployable_id):
+                        _, _, target = self._github_target(project.project_uuid)
+                        if "/".join(target[:2]) == repository:
+                            scope.add(project.project_uuid)
+                scopes[(repository, group.key)] = scope
+                record = RepairRecord(
+                    group.key,
+                    repository,
+                    labels[repository],
+                    tuple(members[key] for key in sorted(members)),
+                )
+                for key in members:
+                    result[key] = record
+        return result, scopes
+
+    def _assessment(self, prioritized_finding: PrioritizedFinding) -> FindingAssessment:
+        return FindingAssessment(
+            project_uuid=prioritized_finding.finding.project_uuid,
+            finding_key=prioritized_finding.finding.finding_key(),
+            vulnerability_id=prioritized_finding.finding.vulnerability_id,
+            vulnerability_source=(prioritized_finding.finding.vulnerability_source),
+            severity=prioritized_finding.finding.severity,
+            cvss_score=prioritized_finding.finding.cvss_score,
+            epss_score=prioritized_finding.enrichment.epss_score,
+            priority=prioritized_finding.priority,
+            analysis_state=prioritized_finding.enrichment.analysis_state,
+            is_suppressed=prioritized_finding.enrichment.is_suppressed,
+            rationale=prioritized_finding.rationale,
+            analysis_detail=(prioritized_finding.enrichment.analysis_detail),
+            in_kev=prioritized_finding.enrichment.in_kev,
+            component_uuid=(
+                prioritized_finding.finding.dependency_track_component_uuid
+            ),
+            component_purl=prioritized_finding.finding.component_purl,
+            component_name=prioritized_finding.finding.component_name,
+            component_version=prioritized_finding.finding.component_version,
+            vulnerability_aliases=(prioritized_finding.finding.vulnerability_aliases),
+            cvss_version=prioritized_finding.finding.cvss_version,
+            advisory_observations=(
+                self._advisory_snapshot.observations_for(
+                    prioritized_finding.finding.vulnerability_id,
+                    prioritized_finding.finding.vulnerability_aliases,
+                )
+                if self._advisory_snapshot
+                else ()
+            ),
+        )
+
     def _prioritize(
         self, raw: DependencyTrackFinding, kev_ids: set[str]
     ) -> PrioritizedFinding:
@@ -983,6 +1182,22 @@ class Orchestrator:
         }
 
     @staticmethod
+    def _update_issue(
+        github: GitHubIssuesClientProtocol,
+        number: int,
+        body: str,
+        expected: RepairRecord | None,
+    ) -> dict:
+        response = github.update_issue(number, None, body)
+        if expected is not None and (
+            not isinstance(response, dict)
+            or response.get("state") != "open"
+            or parse_repair_record(response.get("body", "")) != expected
+        ):
+            raise IssueIdentityError("update response did not confirm repair members")
+        return response
+
+    @staticmethod
     def _read_issue_for_update(
         github: GitHubIssuesClientProtocol, number: object
     ) -> dict:
@@ -1023,13 +1238,20 @@ class Orchestrator:
     @staticmethod
     def _issue_content(item: PrioritizedFinding) -> tuple[str, str]:
         finding = item.finding
-        enrichment = item.enrichment
         title = (
             f"[{item.priority.value}] {finding.vulnerability_id}: "
             f"{finding.component_name} {finding.component_version or ''}".strip()
         )
+        return title, new_issue_body(
+            finding.finding_key(), Orchestrator._issue_text(item)
+        )
+
+    @staticmethod
+    def _issue_text(item: PrioritizedFinding) -> str:
+        finding = item.finding
+        enrichment = item.enrichment
         rationale = ", ".join(item.rationale)
-        body = f"""## Vulnerability
+        return f"""## Vulnerability
 
 - Project: `{finding.project_name}` (`{finding.project_uuid}`)
 - Component: `{finding.component_name}` `{finding.component_version or "unknown"}`
@@ -1055,4 +1277,3 @@ class Orchestrator:
 
 This issue is synchronized from Dependency-Track by sbom-ops.
 """
-        return title, new_issue_body(finding.finding_key(), body)
