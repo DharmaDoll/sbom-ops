@@ -1068,6 +1068,53 @@ KEV・EPSS・P0〜P3・DT分析・Issue操作は変えず、PoCの有効性も�
 
 ## GitHub同期の確認
 
+### 権限と送信先を先に固定する
+
+開発Issueの更新・コードのpush用認証と、製品の脆弱性Issue同期用認証は別の用途である。
+現在の製品クライアントは `https://api.github.com` を使う。GitHub Enterprise Serverの
+独自API URLや、GitHub Appのトークン発行・更新は提供していない。
+
+| 製品が行う操作 | API（`/repos/{owner}/{repo}` 以下） | 必要なrepository permission |
+| --- | --- | --- |
+| 全Issue一覧・更新前の本文確認、dry-run | `GET /issues`、`GET /issues/{number}` | Issues: read |
+| 新規作成・管理範囲の本文更新 | `POST /issues`、`PATCH /issues/{number}` | Issues: write |
+| 管理ラベルの追加・個別解除 | `POST /issues/{number}/labels`、`DELETE /issues/{number}/labels/{name}` | Issues: write |
+
+表は[Issues API](https://docs.github.com/en/rest/issues/issues)と
+[Labels API](https://docs.github.com/en/rest/issues/labels)の権限に対応する。
+実書込みでは読取りも必要。Contents・Pull requests・Administrationの書込み権限は要求しない。
+自動クローズ、Issue削除、コメント投稿、repoの作成・設定変更は同期処理の対象外。
+tokenの権限だけで実行アカウントの権限が増えるわけではない。
+特に新規Issue作成時のラベル指定は、実行者にrepoへのpush accessがないと無視され得るため、
+後述の限定検証では「作成成功」だけでなく管理ラベルの反映まで確認する。
+
+最初の限定検証は、有効期限を設けたfine-grained PATで、Repository accessを検証先のみに
+限定し、IssuesをRead and writeにする。読取りだけのdry-runならRead-onlyでよいが、
+それでは実書込み可能なことの証明にはならない。Metadataなど自動付与される読取りと、
+明示的に付与する権限を区別する。組織の承認が必要なら承認完了を確認する。
+長期運用ではGitHub Appも候補だが、発行・更新は運用側で用意し、権限を広げる代替策にはしない。
+詳細は[GitHubのトークン管理](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)を参照。
+秘密値は承認済みの保管先から実行環境の `SBOM_OPS_GITHUB_TOKEN` へ渡す。
+本文・YAML・Issue・ログへ貼らず、開発用の広いtokenを暗黙に流用しない。
+この変数が未指定なら `GH_TOKEN` を使うため、実行環境に残っている認証の用途も確認する。
+
+対象は次のように固定する。資産の担当者情報からrepoやIssue担当者を自動で決める機能ではない。
+
+- `--project` または `runtime.project_uuids` で検証Projectを明示する。省略時は閲覧可能な全Projectになる。
+- `routing.projects` が空なら全対象を `github.owner/repo` へ送る。
+  一件でも経路を設定したら、全対象ProjectのUUIDに経路を用意する。未登録Projectは停止し、既定repoへ逃がさない。
+- 複数repoの経路があってもtokenは共通。全経路の必要権限を確認し、許可するrepoを最小限にする。
+  初回検証は一つのrepoだけにする。経路の変更は既存Issueの移動ではなく、別repoでの新規作成につながり得るため事前レビューする。
+- prefixと `prefix-P0`〜`prefix-P3` の5ラベルを確認し、既存用途と衝突しないものを選ぶ。
+  検証前にrepo側で用意し、後からprefixを変えて既存Issueを見失わせない。
+- `plan` は接続せず設定の概要と経路の件数を示すだけで、権限や全送信先の検証にはならない。
+  設定・環境変数による上書きを確認し、続いて実際の `sync --dry-run` のrepo・key・操作予定を確認する。
+
+Issue本文には部品・脆弱性・サービス/配布単位などの情報が出る。
+非公開資産を公開repoへ送らない。既存Issueも読むため、dry-run出力・操作記録の保管先と閲覧者を決める。
+専用prefixは認証上の隔離ではなく、設定誤りで他Issueを変更できない保証でもない。
+tokenのrepo制限と、確認済みProject・経路・管理keyの組合せで対象を絞る。
+
 ### 複数ビルドを一つの修正作業として扱う
 
 `--asset-db`の照合済みサービス・配布単位、PURL全文、脆弱性の情報源/IDが一致すれば、
@@ -1219,7 +1266,7 @@ GitHub連携は既定で無効。`github.enabled=true` または `SBOM_OPS_GITHU
 export SBOM_OPS_GITHUB_ENABLED=true
 export SBOM_OPS_GITHUB_OWNER=your-org
 export SBOM_OPS_GITHUB_REPO=your-repo
-export GH_TOKEN="$(gh auth token)"
+# SBOM_OPS_GITHUB_TOKENは承認済みの保管先から実行環境へ渡しておく。
 sbom-ops sync --config examples/config.yaml \
   --project "$SBOM_OPS_DT_PROJECT_UUID" --wait-for-analysis --dry-run
 ```
@@ -1230,6 +1277,35 @@ sbom-ops sync --config examples/config.yaml \
 その段階でのみ、確認した同じ `sync` の `--dry-run` を外して `--github-write` を付ける。
 通常のQuick startや評価だけの実行には付けない。タイマー実行でも実行コマンド側に明示し、
 先に `plan` とdry-runでProject・repo・経路・DBの対象を確認すること。
+
+### 限定した実環境での確認手順
+
+検証用repoとProject、許可するIssue操作・件数を先に合意する。開発Issue更新の許可を
+製品によるIssue作成の許可とみなさない。架空の資産と検証用Findingを用い、
+初回は1サービス・2ビルド・同一部品/脆弱性の一組、作成は最大1 Issueに限定する。
+旧形式からの移行は、別の一組・既存の検証用1 Issueを対象にする。
+検証用DB・設定・run ID・対象Issue番号を記録し、本番のDBを使い回さない。
+これは検証の開始時に対象を分けるためであり、結果不明時に別DBへ逃げる手順ではない。
+
+| 順序 | 操作 | 確認する結果 |
+| --- | --- | --- |
+| 1 | 同じ設定・台帳・Project選択でGitHub有効のdry-run | 想定repoの一組だけが作成予定。意図しない更新がない。DBとIssueは非変更 |
+| 2 | 各回に `--github-write` を指定し、同じ入力で順に2回同期（並列実行しない） | 2ビルドで1 Issue、2回目は同じ番号。管理ラベル・本文・作成記録・監査が対応する |
+| 3 | 検証Issueの管理範囲外にメモ、人のタイトルとラベルを設定して再同期 | 人の変更は保持。優先度変更を伴う検証入力では管理ラベルだけ更新 |
+| 4 | 片方のビルドだけ選んで同期、続いて元の全選択で同期 | 未選択の内訳を失わず「今回未確認」。再出現しても同じIssueで、選択縮小だけでは優先度を下げない |
+| 5 | 検証用旧形式Issueを、全ビルド選択でdry-run後に同期 | 番号・人の本文・タイトルと旧作成記録を保持し、再実行でも重複しない |
+| 6 | 読取り専用tokenで書込みを試す限定失敗検証（別途許可した対象のみ） | エラー・run ID・監査を記録し、成功扱いしない。GitHubと記録を読戻し、後続書込みや重複がない |
+| 7 | 同期を止め、結果と残存物を確認 | 本文・ラベル・DB監査・run IDを照合し、連携を無効へ戻す。勝手にIssueや記録を削除しない |
+
+各段階で想定外のrepo/key/番号/件数、403/404、応答不明、監査失敗があれば先へ進まない。
+「失敗したからもう一度作る」ことはせず、[本文の扱いと復旧](#本文の扱いと復旧)と
+[操作記録](#作成の操作記録sqlite)に従う。read-only検証の失敗を理由に権限を広げない。
+通信応答喪失・プロセス停止・監査保存失敗は模擬GitHubと一時DBの回帰テストで確認する。
+実GitHubへ意図的なネットワーク障害を起こして、同じ証明を得たことにはしない。
+実検証の記録には日時、commit、対象の範囲、tokenの種類と権限（値は不可）、
+各操作の期待値・結果・Issue番号・run ID、ローカル証跡の場所、未確認事項を残し、
+開発Issue #7へ秘密値や非公開の本文を転載せず検証要約を反映する。
+限定検証の成功は本番全体や定期実行の承認ではない。展開範囲・保管・同時実行の条件を別途確認する。
 
 ## YAML configuration
 
