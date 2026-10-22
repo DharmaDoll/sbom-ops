@@ -1,79 +1,156 @@
-# Priority Policy
+# 優先度と対応期限の方針
 
-## 優先度と対応期限
+## 現在の製品で行うこと
 
-現在の計算ルールと閾値は[SPEC](../SPEC.md#priority-rules)に集約する。
-P0〜P3は設定されたルールの結果であり、P3でもスコア不足のHIGHが含まれ得る。
-「低リスク」「監視だけでよい」という結論にはしない。
+計算ルールと閾値の正本は[SPEC](../SPEC.md#priority-rules)。
+P0〜P3は対応順の目安であり、対応期限（SLA）やリスク受容の判断ではない。
+数値CVSSがないHIGHのFindingもP3になり得るため、「低リスク」とは読まない。
+理由にはスコア不足と閾値未満を区別して表示する。
 
-対応期限（SLA）は別の運用方針であり、製品は現在期限を計算しない。
-資産重要度・公開範囲を使うルールも、人が確認してから別途導入する。
+最終判断はセキュリティ担当と資産担当が行う。sbom-opsは例外を承認せず、
+DTのAnalysis・VEX・抑制を自動変更しない。資産重要度や公開申告だけではP0〜P3を変えない。
+既知の実悪用をP0にするドメインルールはあるが、現在の同期が渡す実悪用入力はKEV一致と同じ値。
+KEV以外の悪用確認を独立に取り込む機能はまだない。KEV未掲載を「実悪用なし」と解釈しない。
 
-## Triage ownership
+SQLite台帳は担当・サービス・配布単位・環境・稼働/公開申告をFindingに結び付ける。
+承認済みのProject UUID・名・版と申告の成果物IDが一致した場合だけ利用する。
+未紐付け・撤回・期限切れ・未来日時・矛盾から、稼働や公開状態を推測しない。
+期限内の申告も独立した実稼働証明ではなく、自己申告という出所を残す。
+資産情報から送信先repoを自動決定しない。照合済み資産を使う修正Issueのまとめ方は
+[SPECのWorkflow Rules](../SPEC.md#workflow-rules)に従う。
 
-Priority is an operational decision generated from Dependency-Track data and
-the configured policy. Security team owns the final triage decision, including
-whether a finding is exploitable, not affected, a false positive, suppressed,
-or accepted as risk.
+## PoCで変えるのは同等条件の表示順
 
-sbom-ops may recommend a priority and create or update a GitHub Issue, but it
-must not automatically approve exceptions, accept risk, or change
-Dependency-Track analysis state.
+P0→P3の順を保ち、同じProject・優先度・KEV・severity・数値CVSS・EPSS・
+Analysis・抑制状態の組の中で、有効なPoC報告があるFindingを先に表示する。
+それ以外の同一優先度の行の位置は保つ。内部のFinding処理順、P0〜P3、Issue操作は変えない。
 
-Priority expresses work ordering; an SLA expresses a due date and escalation
-policy. They must remain separate domain concepts. Asset criticality, exposure,
-reachability, and compensating controls are future `PriorityContext` inputs and
-must not be inferred from CVSS alone.
-The optional reviewed asset inventory now displays criticality, deployment,
-owner, and exposure by Project and environment. It does not yet change P0–P3,
-Issue routing, or closure. The fictional scenario in the README makes this
-boundary visible before a real organizational policy is selected.
-The SQLite registry's separate human deployment report is also output-only:
-even an exact, current Project/version join is not independent proof that the
-artifact is running or internet-facing. Unmatched, expired, future, and
-conflicting claims cannot lower a Finding's priority.
+- 情報源がPoCと分類した `published_poc` をCVEへ結び、有無・情報源別件数・出典・観測時刻を示す。
+  件数を情報源横断で合算したり、件数比例でリスクを加点したりしない。
+- 一般の公開参照、スキャナーテンプレート、悪用報告をPoC件数に混ぜない。
+  Vuls labの `exploit-record` はこの表示順を変える信号ではない。
+- 有効期間はtimezoneを考慮した `observed_at <= 現在 < expires_at`。
+  fresh/availableの有効な報告があればreported。完全取得で有効な情報源別の未観測は
+  not_observedであり、世界中の不存在を証明した意味ではない。
+- 取得失敗・不完全・古い観測・未来・未対応IDはunknown。
+  unknownを「PoCなし」として降格しない。reportedを先にする点ではunknownとnot_observedは同順位。
+- 製品の `poc-fetch` はVulnerability-Lookupから取得し、資産と同じSQLiteへ保存できる。
+  非CVE IDの採用済みCVE対応は `--use-reviewed-identifiers` でPoC用途だけへ明示接続する。
+  通常の取得、再利用、更新失敗と採用取消の境界は[運用ガイド](operations.md#poc報告を明示的に取得する)と[SPEC](../SPEC.md)を参照。
 
-## PoC review ordering
+PoCの実行や有効性評価は本PJの役割ではない。PoCありは実悪用確認でも、
+以下の「悪用の自動化可能性」でもない。段階の引上げや期限変更には別の承認済み方針が必要。
+その際は資産文脈と、PoCなどの信号をEPSSと二重に評価する影響も確認する。
 
-Within the same calculated P0–P3 priority, prefer a Finding whose CVE has a
-source-reported public PoC over an otherwise equivalent Finding without such a
-report. This is a work-order tie-break, not a claim that sbom-ops executed or
-validated the PoC. Keep the source, observation time, and per-source count;
-do not count generic public references, scanner templates, or exploitation
-reports as PoCs, or add duplicate provider counts into one total. A failed,
-incomplete, stale, or unsupported lookup is `unknown`, not `no PoC`, and must
-not reduce the Finding's priority or place it below a source-scoped negative
-report merely because evidence is missing. A positive report can still move
-ahead of both. The number of reported PoCs is context, not a linear score.
+## BOD 26-04から参考にすること
 
-When a loaded advisory snapshot provides the explicit `published_poc` signal,
-JSON, text, and review output sort P0 through P3 first and apply this tie-break
-among Findings with identical
-Project, P0–P3 category, KEV status, severity, numeric CVSS, EPSS, Analysis
-state, and suppression state. Within a priority, other assessments retain their previous relative
-positions. The internal Finding order, priority engine, and Issue actions are
-unchanged. The Vuls lab exporter provides `exploit-record` (general public
-references), so its snapshot does not claim PoC presence or trigger this
-ordering. The isolated lab can now convert a recorded Vulnerability-Lookup
-PoC Sighting result to the explicit signal; product-runtime acquisition is
-still not implemented.
+これは米連邦政府向けの指令を参考にした設計整理であり、本PJの準拠宣言ではない。
+指令の適用対象・契約・報告義務を一般組織へそのまま適用しない。
+SBOMに含まれない機器や設定脆弱性まで網羅したとも主張しない。
 
-The `published_poc` observation must be source-attributed, declared `fresh`,
-and satisfy `observed_at <= review time < expires_at`, comparing timezone-aware
-instants. Future observations are retained as reported data but have effective
-freshness `unknown`; they establish neither PoC presence nor source-scoped
-absence, and cannot promote a Finding in review order. Another current source
-may still establish presence. Multiple provider counts remain separate.
-No report, expired/stale data, or an incomplete lookup stays `unknown` for
-ordering purposes.
-Any rule that raises the P0–P3 category or changes a remediation deadline
-requires a separately reviewed policy, including asset context and the risk
-of counting a signal already reflected in EPSS. PoC presence is not equivalent
-to confirmed exploitation or BOD 26-04 exploit automation. Human triage still
-owns the final decision; PoC effectiveness is outside sbom-ops scope.
+一次資料は[CISA指令本文・Appendix A](https://www.cisa.gov/news-events/directives/bod-26-04-prioritizing-security-updates-based-risk)、
+[実施ガイダンス](https://www.cisa.gov/news-events/directives/bod-26-04-implementation-guidance-prioritizing-security-updates-based-risk)。
+2026-10-22に本文と公式のTable 1・判断図を照合した。指令の公表日は2026-06-10、
+ガイダンスの表示更新日は2026-08-25。後から変更され得るため、採用時は版と根拠を再確認する。
 
-The current P2 rule uses numeric CVSS, not the textual `HIGH` severity label.
-When Dependency-Track provides `HIGH` but no numeric CVSS, the current rule falls
-through to P3 unless an earlier KEV, active-exploitation, CRITICAL, or EPSS rule
-matches. Assessment output therefore exposes source, severity, CVSS, and EPSS;
-`P3` with a missing score must not be presented as evidence of low risk.
+### 4要素と責任分担
+
+| 判断要素 | CISAの意味 | 本PJで使える情報・不足 | 判断する人 |
+| --- | --- | --- | --- |
+| 資産の公開状態 | 未認証または信頼しない相手が公衆網から資産へ到達できるか | 台帳の成果物/環境別の期限付き申告。SBOMやProjectだけでは証明できない。誤リンク・古い申告は使わない | 資産・ネットワーク担当 |
+| KEV掲載 | 対象CVEがKEVカタログに掲載されているか | 現在は明示的なID照合で優先度に利用。未掲載・取得不能・古いキャッシュを区別して扱う必要がある。掲載は「現在も観測中」の保証ではない | 情報源はCISA、資産への適用確認はセキュリティ担当 |
+| 悪用の自動化可能性 | 攻撃に必要な一連の手順を自動化できるか | 未実装。CISA Vulnrichmentの明示判定が取得候補。PoC有無・件数やEPSSで代用しない | 情報源の判定と根拠をセキュリティ担当が採用 |
+| 悪用後の技術的影響 | 脆弱な対象への部分制御か完全制御か | 未実装。Vulnrichmentの明示判定が取得候補。CVSS合計値やサービスの事業重要度と同一視しない | セキュリティ担当、適用範囲は資産担当と確認 |
+
+ガイダンスは情報不足時に公開状態を補完する手順と、非KEVで情報がない場合の
+Automatable=no／Technical Impact=totalという扱いを示す。
+**本PJではその補完を自動採用しない。** 自社資産との対応が未確認ならunknownを残し、
+「非公開」「自動化不可」と断定しない。この相違も、BOD準拠と称さない理由になる。
+KEV以外の確認済み悪用は独立した証拠として扱い、KEV掲載欄へ代入しない。
+
+### 原文の期限表との比較（製品のSLA設定ではない）
+
+下表はTable 1の16条件を、影響だけが違っても同じ結果となる行をまとめたもの。
+公開/KEV/自動化はいずれも明示的なYes/Noがある場合の参照値で、unknownには適用しない。
+「両方」は部分制御・完全制御のどちらでも同じ結果という意味。
+
+| 公開 | KEV | 自動化 | 影響 | 原文の対応期限 | 侵害確認 |
+| --- | --- | --- | --- | --- | --- |
+| Yes | Yes | Yes | 完全 | 3暦日 | 必要 |
+| Yes | Yes | Yes | 部分 | 3暦日 | — |
+| Yes | Yes | No | 完全 | 3暦日 | 必要 |
+| Yes | Yes | No | 部分 | 14暦日 | — |
+| Yes | No | Yes | 完全 | 3暦日 | — |
+| Yes | No | Yes | 部分 | 14暦日 | — |
+| Yes | No | No | 完全 | 14暦日 | — |
+| Yes | No | No | 部分 | 60暦日 | — |
+| No | Yes | Yes | 完全 | 3暦日 | 必要 |
+| No | Yes | Yes | 部分 | 14暦日 | — |
+| No | Yes | No | 両方 | 14暦日 | — |
+| No | No | Yes | 両方 | 60暦日 | — |
+| No | No | No | 両方 | 次回の予定された主要更新・再構築時 | — |
+
+侵害確認の「—」はこの表による追加指定がないだけで、調査不要の証明ではない。
+「必要」のケースは修正/緩和とforensic triageの両方を扱う。ガイダンスにある
+各調査段階の時間目安は推奨であり、指令の修正期限と混同しない。
+sbom-opsは調査作業を示す役割に留め、自動調査・隔離・「侵害なし」の判定は行わない。
+
+原文の起算は、KEVへの追加と、機関が資産上の脆弱性を列挙/識別してCDMへ更新する事象のうち早い方。
+事実が変われば適用期限も変わる。KEVのdueDate一つを全資産の期限へ複写する方式ではない。
+本PJはCDMへの報告を実装せず、その時刻も保有しない。CVEの公開日、最初のSBOM投入、
+Issue作成時刻で原文の起算を代用してはいけない。
+
+### 本PJでの導入案と承認境界
+
+以下は設計案であり、まだ実装・有効化されたSLAや新しいP0〜P3ではない。
+期限日数・鮮度・不明時の扱いは版付きポリシー設定に置き、コードの固定値にしない。
+
+1. **根拠を揃えて表示する。** 4要素を別々に持ち、各値に出典、出典版、観測日時、
+   有効期限、採用者/理由を付ける。評価時点も保持する。
+   状態は既知・未確認・期限切れ・矛盾を区別し、不明をfalseに潰さない。
+   同一の脆弱性でも、資産側の証拠はサービス/配布単位・環境・成果物ごとに分ける。
+   非CVE Findingは元ID・DT情報源を保持し、DTの明示aliasなど承認した照合方式でCVEを確定できなければ参照期限を算出しない。
+   現在のPoC専用CVE採用をKEV・Vulnrichmentへ自動流用しない。
+2. **参照結果と現在の優先度を並べる。** 情報が揃ったケースだけに、出典版付きの
+   参照期限区分と侵害確認の要否を表示する。欠けた条件は「判定待ち」と必要情報を表示する。
+   KEV以外の悪用報告は別欄に保持し、P0への接続は別途承認する。
+   現在のP0〜P3、PoC順、DT分析、Issue操作は変えない。
+3. **自社期限を採用する場合に起算を決める。** 案は「対象成果物への適用を初めて確認した時刻」を
+   保存し、CVE/KEV公開・掲載時刻、初回観測、採用時刻とは別にする。これはBODの起算と同一ではない。
+   適用確認が遅れた案件を新規扱いで隠さず、観測から確認までの遅れも残す。
+   時刻が不明なら架空の起算や期限を作らず確認待ちにする。
+4. **変化と履歴を管理する。** KEV追加、公開/稼働の変更、成果物更新、証拠の期限切れ・訂正、
+   ポリシー版変更で再評価する。再実行やIssue作成で起算をリセットしない。
+   短縮・延長の候補、前後の根拠、承認者と理由を残し、期限の自動延長はしない。
+   同じ修正Issueへまとめても環境別の期限候補は失わず、一番早い未完了期限を見えるようにする。
+5. **判断と対応を分ける。** セキュリティ/資産担当がポリシーを承認し、期限超過時の連絡先、
+   例外と再確認期限、侵害調査の担当・記録先を決めた後に期限管理へ接続する。
+   DT Analysis/VEX、修正完了、リスク受容、GitHubのopen/closedは別々に確認する。
+
+現行と異なる例として、KEVなら内部の資産でも現在はP0だが、原文の期限は条件により3日または14日。
+一方、KEV未掲載でも公開・自動化可能・完全制御なら原文は3日であり、現在のP段階と一対一ではない。
+P0=3日などの固定変換は採用しない。
+
+### 受入例と次の実装順序
+
+| 例 | 確認すべき結果 |
+| --- | --- |
+| 公開/KEV/完全制御が確認済み、自動化はNo | 原文参照は3日＋侵害確認。PoCの有無で条件を変えない |
+| KEV未掲載、公開・自動化可能・完全制御が確認済み | 原文参照は3日。自動的にP0やKEV掲載へ変換しない |
+| 未承認Project対応、期限切れ/未来/矛盾した公開申告 | 資産の公開状態を借用しない。参照結果は判定待ち |
+| PoC報告ありだが自動化の判定なし | 自動化はunknown。既存の同等条件内PoC表示順だけ適用 |
+| KEV以外の確認済み悪用報告 | KEV未掲載と独立に表示し、人の対応判断へ回す |
+| 非CVE IDにPoC用CVE採用だけがある | BOD参照やKEVへ流用せず、元IDと未確認理由を残す |
+| 申告期限切れ、停止申告、Issue終了 | 修正完了や侵害なしとみなさず、過去の期限/根拠を消さない |
+| 同じ成果物を再評価、別ビルドを同じIssueへ追加 | 起算・履歴を巻き戻さず、環境/成果物別の対象を保つ |
+
+[1サービスの実演記録](../lab/dependency_track/EXPERIMENTS.md#2026-10-19--1サービスの登録新版並存担当変更停止復元)では、
+公開unknown、期限切れ時の実コンテナ継続稼働、停止後もFindingが残ることを確認した。
+このため、台帳の状態をそのまま安全・修正済みの判定に使わない。
+既存の境界は `test_priority.py`、`test_review.py`、`test_asset_registry.py`、
+`test_identifier_review.py` などで検証するが、上記の新しい期限計算を検証した証拠ではない。
+
+次は独立した証拠モデルと合成fixture、公式Vulnrichmentの取得契約の順に設計し、
+16条件・unknown・古い観測・誤リンク・非KEV悪用を回帰テストへ落とす。
+読取り専用の参照表示を先行し、自社ポリシー承認前に優先度や期限を書き換えない。
+進捗・残作業・承認事項の正本は[開発Issue #13](https://github.com/DharmaDoll/sbom-ops/issues/13)。
