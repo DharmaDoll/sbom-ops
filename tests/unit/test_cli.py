@@ -217,6 +217,82 @@ class FakeOrchestrator:
         )
 
 
+def test_sync_reference_selection_reaches_service(tmp_path, monkeypatch, capsys):
+    from datetime import UTC, datetime, timedelta
+
+    from sbom_ops.domain.vulnrichment_snapshot import VulnrichmentSnapshot
+    from sbom_ops.storage.asset_registry import AssetRegistry
+    from sbom_ops.storage.vulnrichment import VulnrichmentStore
+
+    path = tmp_path / "assets.db"
+    with AssetRegistry(path, create_if_missing=True):
+        pass
+    record = json.loads(
+        (Path(__file__).parents[1] / "fixtures/vulnrichment_synthetic.json").read_text()
+    )
+    with VulnrichmentStore(path) as store:
+        key = store.save(
+            VulnrichmentSnapshot.capture(
+                record,
+                cve="CVE-2026-0001",
+                revision="a" * 40,
+                retrieved_at=datetime(2026, 10, 23, tzinfo=UTC),
+                max_age=timedelta(days=3),
+            )
+        )
+    before = path.read_bytes()
+    captured = {}
+
+    class Capturing(FakeOrchestrator):
+        def __init__(self, config, **kwargs):
+            super().__init__(config)
+            captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "Orchestrator", Capturing)
+    config = SimpleNamespace(runtime=SimpleNamespace(sync_log_file=None))
+    args = cli.build_parser().parse_args(
+        [
+            "sync",
+            "--asset-db",
+            str(path),
+            "--triage-environment",
+            "production",
+            "--cisa-snapshot",
+            "CVE-2026-0001",
+            "a" * 40,
+            str(key),
+        ]
+    )
+    assert (
+        cli.run_sync(
+            config,
+            "json",
+            asset_db_path=args.asset_db,
+            triage_environment=args.triage_environment,
+            cisa_selections=args.cisa_snapshot,
+        )
+        == 0
+    )
+    assert captured["triage_input"].environment == "production"
+    assert captured["triage_input"].cisa[0].snapshot_id == key
+    assert path.read_bytes() == before
+    capsys.readouterr()
+
+
+def test_invalid_reference_selection_stops_before_sync(tmp_path, monkeypatch):
+    def unexpected(*args, **kwargs):
+        raise AssertionError("must not start sync")
+
+    monkeypatch.setattr(cli, "Orchestrator", unexpected)
+    with pytest.raises(ValueError, match="triage-environment"):
+        cli.run_sync(
+            SimpleNamespace(),
+            "json",
+            asset_db_path=str(tmp_path / "missing"),
+            cisa_selections=[["CVE-2026-0001", "a" * 40, "1"]],
+        )
+
+
 def test_review_output_retains_non_cve_and_unknown_context(monkeypatch, capsys) -> None:
     config = SimpleNamespace(runtime=SimpleNamespace(sync_log_file=None))
     monkeypatch.setattr(cli, "Orchestrator", FakeOrchestrator)

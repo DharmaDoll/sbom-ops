@@ -142,15 +142,16 @@ HIGHラベルを数値CVSSの代わりにはしない。P3は低リスクの証�
 
 [triage_evidence.py](src/sbom_ops/domain/triage_evidence.py) は、公開状態・KEV・
 悪用の自動化可能性・技術的影響・KEVとは独立した悪用報告を保持する純粋なドメイン処理。
-通常のsyncと期限計算には未接続。CISA入力だけは下記のSQLite保存・独立CLIを利用できる。
+syncの明示的な参照表示で利用できる。期限計算には未接続。
+CISA入力には下記のSQLite保存・独立CLIを利用できる。
 外部入力は[CISA公式データの単一CVE取得と変換](docs/priority-policy.md#cisa公式データの入力契約)を用意する。
 
 [triage_identity.py](src/sbom_ops/domain/triage_identity.py) は、参照評価用のCVE対応を
 Findingの元ID・情報源・Finding key・aliasから分離して返す。元データは書き換えない。
 直接のCVEと明示aliasに含まれるCVEを候補とし、ASCIIの大小文字と前後空白だけを正規化する。
 同じCVEの重複はまとめるが、複数候補・不正なCVE形式・元ID欠落では選択せず理由を残す。
-説明文やPoC専用の採用結果から候補を作らない。これはID対応だけで、資産との結合や
-通常syncへの接続は別途必要。既存の優先度用KEV照合は変更しない。
+説明文やPoC専用の採用結果から候補を作らない。これはID対応だけで、資産との結合は
+下記サービスで行う。既存の優先度用KEV照合は変更しない。
 
 [triage_assets.py](src/sbom_ops/domain/triage_assets.py) は、照合済みProjectと同じ台帳の
 元申告をサービス・配布単位・環境・成果物で照合し、公開状態の根拠へ変換する。
@@ -158,14 +159,27 @@ Findingの元ID・情報源・Finding key・aliasから分離して返す。元�
 申告ID・申告者・理由・元日時を保持し、未来の訂正は適用前の記録として分離する。
 訂正が適用された後は、訂正の期限が切れても旧申告を復活させない。
 未配備や矛盾を非公開Noへ変換しない。申告は実稼働の独立検証ではなく、
-この変換だけではCVE対応・KEV/CISAとのサービス結合や通常syncへの接続は完了しない。
+この変換だけではCVE対応・KEV/CISAとのサービス結合は行わない。
 
 [triage_context.py](src/sbom_ops/services/triage_context.py) は取得済みのFinding、台帳、
 照合済みProject、KEV取得結果、CISA評価を読取り専用で結合する。
 元IDと参照CVEを分け、複数/未確認CVEなら参照コンテキストを作らず候補と理由を返す。
 別Projectや別CVEの情報を渡すことは拒否する。KEV・CISA・資産の観測/期限を維持し、
 不足・期限切れ・未来・矛盾は要素ごとに残す。資産が未確認でも有効な脆弱性情報を捨てない。
-このサービスは通信・保存・優先度変更を行わず、通常sync・CLI・参照期限表示には未接続。
+このサービスは通信・保存・優先度変更を行わない。
+
+`sync --triage-environment NAME --asset-db PATH` で、対象環境の参照情報を別欄へ追加する。
+指定しない場合は `triage_context_status=not_requested` と空配列を返す。
+CISAは任意の `--cisa-snapshot CVE REVISION ID`（CVEごとに1回）で保存記録を明示選択する。
+不正・重複指定、記録欠落・版不一致は同期前にエラーとし、最新行の自動選択・再取得をしない。
+KEVは同じ同期取得で保持した元のsnapshotを使い、追加取得しない。根拠を提供しない
+互換クライアントでは集合や同期時刻から根拠を創作せず、参照欄は未確認とする。
+元Finding・全Projectを用いた資産照合結果・元申告を使い、環境を越えて借用しない。
+JSONの `triage_contexts` は元ID/候補CVE・評価時刻・選択記録ID・出典版・各要素の
+状態と根拠・未確認理由・元申告/適用前訂正を保持する。text/reviewは要約を表示する。
+`evaluated` は評価処理の実施であり、情報が揃ったことを意味しない。
+参照期限の16条件・起算・SLA計算には未接続で、既存の優先度・PoC順・DT・Issue内容を変えない。
+このオプションはGitHub操作を許可も禁止もしない。参照だけの運用は `--no-github` を指定する。
 
 [vulnrichment_snapshot.py](src/sbom_ops/domain/vulnrichment_snapshot.py) はCISA入力の
 SQLite保存に向けた版付きの直列化契約を定義する。CVE、固定コミット、取得日時、

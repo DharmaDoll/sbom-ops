@@ -10,7 +10,7 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sbom_ops.cisa_cli import add_cisa_parser, run_cisa
+from sbom_ops.cisa_cli import add_cisa_parser, load_triage_input, run_cisa
 from sbom_ops.clients.dependency_track import (
     DependencyTrackApiError,
     DependencyTrackClient,
@@ -183,6 +183,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync_parser.add_argument("--log-level")
     sync_parser.add_argument("--wait-for-analysis", action="store_true")
+    sync_parser.add_argument(
+        "--triage-environment",
+        help="show reference evidence for this exact environment; requires --asset-db",
+    )
+    sync_parser.add_argument(
+        "--cisa-snapshot",
+        nargs=3,
+        action="append",
+        default=[],
+        metavar=("CVE", "REVISION", "ID"),
+        help="select a saved CISA record, repeat once per CVE; no fetching",
+    )
     sync_parser.add_argument(
         "--refresh-kev",
         action="store_true",
@@ -489,6 +501,27 @@ def print_review_queue(result: RunResult) -> None:
         print(f"  {action}")
 
 
+def print_triage_contexts(result: RunResult) -> None:
+    if result.triage_context_status == "not_requested":
+        return
+    print("\n参照情報（優先度・対応期限は変更しません）:")
+    for entry in result.triage_contexts:
+        context = entry.context
+        print(
+            f"  Finding={context.identity.finding_key} "
+            f"CVE={context.identity.cve or '未確認'} 環境={entry.environment}"
+        )
+        if context.evidence:
+            for factor in context.evidence.factors:
+                print(
+                    f"    {factor.factor.value}: {factor.value.value} "
+                    f"({factor.status.value})"
+                )
+        if context.reasons:
+            print(f"    確認事項: {', '.join(context.reasons)}")
+        print("    出典・元の申告・日時の詳細: --output json")
+
+
 def run_sync(
     config: AppConfig,
     output_format: str = "text",
@@ -500,7 +533,12 @@ def run_sync(
     poc_db_path: str | None = None,
     use_reviewed_identifiers: bool = False,
     audit: WorkflowAudit | None = None,
+    triage_environment: str | None = None,
+    cisa_selections: list[list[str]] | None = None,
 ) -> int:
+    triage_input = load_triage_input(
+        asset_db_path, triage_environment, cisa_selections or []
+    )
     if advisory_snapshot_path and poc_db_path:
         raise ValueError("choose either advisory snapshot or PoC DB")
     asset_registry = None
@@ -553,6 +591,8 @@ def run_sync(
         orchestrator_kwargs["asset_inventory"] = asset_inventory
     if asset_registry is not None:
         orchestrator_kwargs["asset_registry"] = asset_registry
+    if triage_input is not None:
+        orchestrator_kwargs["triage_input"] = triage_input
     orchestrator = Orchestrator(config=config, **orchestrator_kwargs)
     result = orchestrator.run(audit=audit) if audit is not None else orchestrator.run()
     if use_reviewed_identifiers:
@@ -592,7 +632,9 @@ def run_sync(
         return 0
     if output_format == "review":
         print_review_queue(result)
+        print_triage_contexts(result)
         return 0
+    print_triage_contexts(result)
     print(
         "sync result: "
         f"run_id={result.run_id} "
@@ -1311,6 +1353,8 @@ def main() -> int:
                 poc_db_path=args.poc_db,
                 use_reviewed_identifiers=args.use_reviewed_identifiers,
                 audit=audit,
+                triage_environment=args.triage_environment,
+                cisa_selections=args.cisa_snapshot,
             )
         parser.error(f"unsupported command: {args.command}")
     except IssueJournalBusy as exc:

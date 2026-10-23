@@ -131,6 +131,150 @@ class FakeKev:
         return {"CVE-2026-0001"}
 
 
+def test_reference_context_is_explicitly_not_requested_by_default() -> None:
+    settings = config()
+    settings = replace(settings, github=replace(settings.github, enabled=False))
+    result = Orchestrator(
+        settings, dependency_track=FakeDependencyTrack(), kev=FakeKev()
+    ).run()
+    assert result.as_dict().get("triage_context_status") == "not_requested"
+    assert result.as_dict().get("triage_contexts") == []
+
+
+@pytest.mark.parametrize("environment", ["production", "staging"])
+def test_reference_context_preserves_sources_and_workflow(environment, capsys) -> None:
+    import json
+    from datetime import timedelta
+
+    from sbom_ops.domain.kev import KevSnapshot
+    from sbom_ops.domain.triage_input import SelectedCisaSnapshot, TriageInput
+    from sbom_ops.domain.vulnrichment_snapshot import VulnrichmentSnapshot
+
+    class LinkedDT(FakeDependencyTrack):
+        def list_projects(self):
+            return [DependencyTrackProject("project-1", "service-a", "build-1")]
+
+    class EvidenceKev(FakeKev):
+        calls = 0
+
+        def get_known_exploited_vulnerabilities(self, *, force_refresh=False):
+            self.calls += 1
+            self.last_snapshot = KevSnapshot(
+                "https://cisa.example/feed",
+                frozenset({"CVE-2026-0001"}),
+                datetime(2026, 1, 1, tzinfo=UTC),
+                datetime(2099, 1, 1, tzinfo=UTC),
+                "cache",
+                "fixture-v1",
+                datetime(2025, 1, 1, tzinfo=UTC),
+                True,
+            )
+            return super().get_known_exploited_vulnerabilities(
+                force_refresh=force_refresh
+            )
+
+    registry = AssetRegistrySnapshot(
+        (RegisteredService("service-a", "team", BusinessCriticality.HIGH, "test"),),
+        (
+            ReviewedProjectLink(
+                "project-1",
+                "service-a",
+                "build-1",
+                "service-a",
+                "api",
+                "operator",
+                "2026-01-01T00:00:00Z",
+            ),
+        ),
+        (
+            ReportedDeployment(
+                "service-a",
+                "api",
+                "production",
+                "build-1",
+                DeploymentStatus.DEPLOYED,
+                ExposureStatus.CONFIRMED,
+                "operator",
+                "synthetic",
+                "2026-01-01T00:00:00Z",
+                "2099-01-01T00:00:00Z",
+                1,
+            ),
+        ),
+    )
+    snapshot = VulnrichmentSnapshot.capture(
+        json.loads(
+            (
+                Path(__file__).parents[1] / "fixtures/vulnrichment_synthetic.json"
+            ).read_text()
+        ),
+        cve="CVE-2026-0001",
+        revision="a" * 40,
+        retrieved_at=datetime(2026, 10, 22, tzinfo=UTC),
+        max_age=timedelta(hours=1),
+    )
+    before_gh, after_gh = FakeGitHub(), FakeGitHub()
+    baseline = Orchestrator(
+        config(), LinkedDT(), FakeKev(), before_gh, asset_registry=registry
+    ).run()
+    kev = EvidenceKev()
+    result = Orchestrator(
+        config(),
+        LinkedDT(),
+        kev,
+        after_gh,
+        asset_registry=registry,
+        triage_input=TriageInput(environment, (SelectedCisaSnapshot(7, snapshot),)),
+    ).run()
+    assert kev.calls == 1
+    assert result.assessments == baseline.assessments
+    assert after_gh.created == before_gh.created
+    assert after_gh.updated_bodies == before_gh.updated_bodies
+    assert after_gh.closed == before_gh.closed
+    rows = result.as_dict()["triage_contexts"]
+    assert len(rows) == 2
+    row = rows[0]
+    assert row["cisa"]["snapshot_id"] == 7
+    assert row["cisa"]["exploitation"] == "poc"
+    assert row["kev"]["checked_at"] == "2026-01-01T00:00:00+00:00"
+    factors = {item["factor"]: item for item in row["evidence"]["factors"]}
+    assert factors["automatable"]["status"] == "expired"
+    assert factors["automatable"]["value"] == "unknown"
+    assert factors["kev"]["value"] == "yes"
+    assert factors["public_exposure"]["value"] == (
+        "yes" if environment == "production" else "unknown"
+    )
+    assert rows[1]["cisa"] is None
+    assert "cisa_unavailable" in rows[1]["reasons"]
+    assert not row["priority_changed"] and not row["deadline_calculated"]
+    json.dumps(result.as_dict())
+    from sbom_ops.cli import print_triage_contexts
+
+    print_triage_contexts(result)
+    text = capsys.readouterr().out
+    assert "優先度・対応期限は変更しません" in text
+    assert "automatable: unknown (expired)" in text
+    assert f"環境={environment}" in text
+
+
+def test_reference_context_legacy_kev_does_not_invent_provenance() -> None:
+    from sbom_ops.domain.triage_input import TriageInput
+
+    settings = config()
+    settings = replace(settings, github=replace(settings.github, enabled=False))
+    result = Orchestrator(
+        settings,
+        FakeDependencyTrack(),
+        FakeKev(),
+        asset_registry=AssetRegistrySnapshot((), ()),
+        triage_input=TriageInput("production"),
+    ).run()
+    row = result.as_dict()["triage_contexts"][0]
+    assert row["kev"] is None
+    assert "kev_unavailable" in row["reasons"]
+    assert row["evidence"]["asset_link_verified"] is False
+
+
 class FakeGitHub:
     def __init__(
         self,

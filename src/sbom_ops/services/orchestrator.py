@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from functools import partial
 from typing import Protocol, TypeVar
 
@@ -48,6 +49,7 @@ from sbom_ops.domain.issue_labels import (
     label_names,
     plan_issue_labels,
 )
+from sbom_ops.domain.kev import KevSnapshot
 from sbom_ops.domain.models import (
     AnalysisSnapshotStatus,
     AnalysisState,
@@ -69,6 +71,7 @@ from sbom_ops.domain.repair_issue import (
 )
 from sbom_ops.domain.review import FindingReview, build_review_queue
 from sbom_ops.domain.routing import ProjectRouter
+from sbom_ops.domain.triage_input import TriageInput
 from sbom_ops.domain.workflow import (
     decide_missing_finding,
     require_github_write_permission,
@@ -78,6 +81,7 @@ from sbom_ops.services.asset_registry import (
     observe_registry_deployments,
     observe_registry_projects,
 )
+from sbom_ops.services.triage_sync import SyncTriageContext, build_sync_triage
 from sbom_ops.storage.issue_journal import IssueJournal
 
 _WriteResult = TypeVar("_WriteResult")
@@ -148,6 +152,8 @@ class RunResult:
     issues_updated: int
     issues_closed: int
     dry_run: bool
+    triage_context_status: str = "not_requested"
+    triage_contexts: tuple[SyncTriageContext, ...] = ()
     registry_snapshot_status: RegistrySnapshotStatus = (
         RegistrySnapshotStatus.NOT_REQUESTED
     )
@@ -196,6 +202,8 @@ class RunResult:
         """Return an enum-free payload for CLI and downstream adapters."""
         return {
             "status": "succeeded",
+            "triage_context_status": self.triage_context_status,
+            "triage_contexts": [item.as_dict() for item in self.triage_contexts],
             "workflow_events": [event.as_dict() for event in self.workflow_events],
             "audit_persistence_failed": False,
             "absence_verification": decide_missing_finding().as_dict(),
@@ -285,7 +293,15 @@ class Orchestrator:
         advisory_snapshot: AdvisorySnapshot | None = None,
         asset_inventory: AssetInventorySnapshot | None = None,
         asset_registry: AssetRegistrySnapshot | None = None,
+        triage_input: TriageInput | None = None,
     ) -> None:
+        if triage_input is not None and (
+            not isinstance(triage_input, TriageInput) or asset_registry is None
+        ):
+            raise ValueError(
+                "reference triage requires explicit inputs and asset registry"
+            )
+        self._triage_input = triage_input
         self._config = config
         self._dependency_track = dependency_track or DependencyTrackClient(
             config.dependency_track.base_url,
@@ -468,6 +484,28 @@ class Orchestrator:
             ]
             for project in projects
         }
+        triage_contexts: tuple[SyncTriageContext, ...] = ()
+        if self._triage_input is not None:
+            # Use the very same KEV retrieval; never synthesize freshness from IDs.
+            kev_snapshot = getattr(self._kev, "last_snapshot", None)
+            if not isinstance(kev_snapshot, KevSnapshot):
+                kev_snapshot = None
+            evaluated_at = datetime.now(UTC)
+            project_observations = {
+                item.project_uuid: item for item in registry_projects
+            }
+            triage_contexts = tuple(
+                build_sync_triage(
+                    item.finding,
+                    self._asset_registry,
+                    project_observations[project.uuid],
+                    self._triage_input,
+                    kev=kev_snapshot,
+                    now=evaluated_at,
+                )
+                for project in projects
+                for item in prioritized_by_project[project.uuid]
+            )
         assessments = [
             self._assessment(item)
             for items in prioritized_by_project.values()
@@ -863,6 +901,10 @@ class Orchestrator:
             issues_updated=updated,
             issues_closed=closed,
             dry_run=self._config.runtime.dry_run,
+            triage_context_status=(
+                "evaluated" if self._triage_input is not None else "not_requested"
+            ),
+            triage_contexts=triage_contexts,
             registry_snapshot_status=(
                 RegistrySnapshotStatus.LOADED
                 if self._asset_registry is not None

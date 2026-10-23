@@ -233,3 +233,49 @@ def test_storage_failure_is_not_success(
         assert (
             db.execute("SELECT COUNT(*) FROM vulnrichment_snapshots").fetchone()[0] == 0
         )
+
+
+def test_load_explicit_sync_selection_is_read_only(
+    tmp_path, monkeypatch, capsys, source
+):
+    path = tmp_path / "assets.db"
+    assert invoke(monkeypatch, path, "fetch", "--max-age-hours", "1", "--execute") == 0
+    capsys.readouterr()
+    before = path.read_bytes()
+    result = cisa_cli.load_triage_input(
+        str(path), "production", [["CVE-2026-0001", "a" * 40, "1"]]
+    )
+    assert result.cisa[0].snapshot_id == 1
+    assert result.cisa[0].snapshot.report().exploitation == "poc"
+    assert path.read_bytes() == before
+    assert len(source) == 1
+
+
+@pytest.mark.parametrize(
+    "environment, selections",
+    [
+        (None, [["CVE-2026-0001", "a" * 40, "1"]]),
+        ("", []),
+        ("production", [["CVE-2026-0001", "main", "1"]]),
+        ("production", [["CVE-2026-0001", "a" * 40, "0"]]),
+        ("production", [["CVE-2026-0001", "a" * 40, str(2**63)]]),
+        ("production", [["CVE-2026-0001", "a" * 40, "1"]] * 2),
+    ],
+)
+def test_invalid_sync_selections_fail_before_storage(tmp_path, environment, selections):
+    path = tmp_path / "missing.db"
+    with pytest.raises(ValueError):
+        cisa_cli.load_triage_input(str(path), environment, selections)
+    assert not path.exists()
+
+
+def test_sync_selection_requires_registry_and_exact_record(tmp_path):
+    with pytest.raises(ValueError, match="asset-db"):
+        cisa_cli.load_triage_input(None, "production", [])
+    path = tmp_path / "assets.db"
+    with AssetRegistry(path, create_if_missing=True):
+        pass
+    with pytest.raises(ValueError, match="not found"):
+        cisa_cli.load_triage_input(
+            str(path), "production", [["CVE-2026-0001", "a" * 40, "1"]]
+        )

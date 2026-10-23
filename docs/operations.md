@@ -1345,6 +1345,28 @@ sbom-ops cisa show --db var/assets.sqlite3 --snapshot 1 \
 終了値0でも評価の欠落や期限切れはあり得る。これはCISA入力の確認であり、
 資産の公開状態やKEVを結合したBOD参照結果の表示ではない。
 
+### 同期結果に参照情報を添える
+
+登録済みの資産台帳とCISA記録を使い、DTのFindingに各要素の根拠を添えて確認する。
+以下の `1` は取得結果の記録ID、`production` は台帳で申告した環境名に置き換える。
+
+```bash
+sbom-ops sync --config examples/config.yaml --no-github \
+  --asset-db var/assets.sqlite3 --triage-environment production \
+  --cisa-snapshot CVE-2024-25522 "$CISA_REVISION" 1 --output json
+```
+
+通常の同期と同じDT/KEV取得は行うが、CISAの再取得はしない。資産/CISAのDBは読取専用。
+KEVキャッシュや同期ログの既存動作は変わらない。
+別のCVEには `--cisa-snapshot CVE REVISION ID` を追加する。同じCVEの複数指定は拒否する。
+指定しなかったCVE、CVEの対応が曖昧なFinding、未照合の資産、別環境の申告、期限切れは
+未確認のまま残す。情報が揃ったFindingだけに絞り込む機能ではない。
+`triage_contexts` に元ID・CVE対応・出典・観測/評価日時・有効期限・元申告を表示する。
+`triage_context_status=evaluated` は評価を実施したという意味で、全要素の確認済みを示さない。
+`--output review` または `text` では値と状態の要約を表示する。
+この段階では16条件の参照期限や自社SLAを計算せず、既存のP0〜P3を変更しない。
+参照オプション自体はGitHub操作の許可設定を変えないため、参照だけなら `--no-github` を付ける。
+
 ## YAML configuration
 
 設定例は[examples/config.yaml](../examples/config.yaml)、契約は

@@ -5,11 +5,47 @@ import json
 from datetime import UTC, datetime, timedelta
 
 from sbom_ops.clients.vulnrichment import VulnrichmentClient
+from sbom_ops.domain.triage_input import SelectedCisaSnapshot, TriageInput
 from sbom_ops.domain.vulnrichment import VULNRICHMENT_SOURCE, validate_request
 from sbom_ops.domain.vulnrichment_snapshot import VulnrichmentSnapshot
 from sbom_ops.services.vulnrichment import collect_vulnrichment
 from sbom_ops.storage.asset_registry import AssetRegistry
 from sbom_ops.storage.vulnrichment import VulnrichmentStore
+
+
+def load_triage_input(
+    db_path: str | None,
+    environment: str | None,
+    selections: list[list[str]],
+) -> TriageInput | None:
+    if environment is None:
+        if selections:
+            raise ValueError("CISA selections require --triage-environment")
+        return None
+    TriageInput(environment)
+    if not db_path:
+        raise ValueError("reference triage requires --asset-db")
+    # Validate all choices before opening storage or starting sync/network work.
+    targets = []
+    for cve, revision, raw_id in selections:
+        validate_request(cve, revision)
+        if not raw_id.isascii() or not raw_id.isdecimal() or len(raw_id) > 19:
+            raise ValueError("invalid CISA snapshot ID")
+        key = int(raw_id)
+        if not 1 <= key < 2**63:
+            raise ValueError("invalid CISA snapshot ID")
+        targets.append((cve, revision, key))
+    if len({cve for cve, _, _ in targets}) != len(targets):
+        raise ValueError("choose only one CISA snapshot per CVE")
+    loaded = []
+    if targets:
+        with VulnrichmentStore(db_path, read_only=True) as store:
+            for cve, revision, key in targets:
+                snapshot = store.get(key, cve=cve, revision=revision)
+                if snapshot is None:
+                    raise ValueError("selected CISA snapshot not found")
+                loaded.append(SelectedCisaSnapshot(key, snapshot))
+    return TriageInput(environment, tuple(loaded))
 
 
 def add_cisa_parser(subparsers: argparse._SubParsersAction) -> None:
