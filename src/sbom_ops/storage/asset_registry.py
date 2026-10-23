@@ -27,6 +27,7 @@ from sbom_ops.storage.identifier_candidates import (
     IDENTIFIER_SCHEMA,
 )
 from sbom_ops.storage.poc import POC_SCHEMA, POC_SOURCE_SCHEMA
+from sbom_ops.storage.vulnrichment import VULNRICHMENT_SCHEMA
 
 _DEPLOYMENT_REPORTS_SCHEMA = """
     CREATE TABLE deployment_reports (
@@ -83,7 +84,7 @@ _LIFECYCLE_SCHEMA = """
     )
 """
 
-CURRENT_SCHEMA_VERSION = 9
+CURRENT_SCHEMA_VERSION = 10
 
 
 class AssetRegistry:
@@ -143,7 +144,7 @@ class AssetRegistry:
 
     def _initialize(self, *, create_if_missing: bool) -> None:
         version = self._db.execute("PRAGMA user_version").fetchone()[0]
-        if version in (1, 2, 3, 4, 5, 6, 7, 8, 9):
+        if version in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
             self._schema_version = version
             return
         if version != 0:
@@ -213,7 +214,8 @@ class AssetRegistry:
             self._db.execute(POC_SOURCE_SCHEMA)
             self._db.execute(IDENTIFIER_SCHEMA)
             self._db.execute(IDENTIFIER_REVIEW_SCHEMA)
-            self._db.execute("PRAGMA user_version = 9")
+            self._db.execute(VULNRICHMENT_SCHEMA)
+            self._db.execute("PRAGMA user_version = 10")
         self._schema_version = CURRENT_SCHEMA_VERSION
 
     def migrate(self) -> bool:
@@ -239,8 +241,10 @@ class AssetRegistry:
                 self._db.execute(POC_SOURCE_SCHEMA)
             if self._schema_version < 8:
                 self._db.execute(IDENTIFIER_SCHEMA)
-            self._db.execute(IDENTIFIER_REVIEW_SCHEMA)
-            self._db.execute("PRAGMA user_version = 9")
+            if self._schema_version < 9:
+                self._db.execute(IDENTIFIER_REVIEW_SCHEMA)
+            self._db.execute(VULNRICHMENT_SCHEMA)
+            self._db.execute("PRAGMA user_version = 10")
             self.check_integrity()
         self._schema_version = CURRENT_SCHEMA_VERSION
         return True

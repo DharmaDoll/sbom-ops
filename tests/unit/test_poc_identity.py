@@ -378,6 +378,7 @@ def test_old_schema_or_missing_db_does_not_create_or_migrate(
         cli.run_poc_fetch(args)
     assert not missing.exists()
     with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE vulnrichment_snapshots")
         db.execute("DROP TABLE identifier_reviews")
         db.execute("PRAGMA user_version=8")
     before = path.read_bytes()

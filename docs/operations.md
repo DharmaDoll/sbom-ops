@@ -443,7 +443,9 @@ JSON取込はサービス・配布単位だけに限定し、DT Project対応の
 以後は`assets list`で旧申告を`freshness=superseded`と表示する。
 指定しない相反する申告は引き続き`conflict`となる。既存のschema v1/v2 DBは
 読み取り可能で、訂正機能を使う前に`assets migrate --backup PATH`で
-バックアップを作成し、明示的にv9へ移行する。新規DBはv9で作成する。
+バックアップを作成し、明示的にv10へ移行する。新規DBはv10で作成する。
+CISA入力の保存テーブルも追加されるが、取得・表示CLIへの接続はまだ行っていない。
+既存のPoC・CVE対応候補・採用履歴は保持する。
 既存の`sync --asset-inventory`は別の読み取り専用評価入力であり、
 このJSON取込で資産DBに登録する形式とは互換ではない。
 担当・重要度・公開状況は、AWSからの推測で決めない。手入力の稼働申告も
@@ -502,7 +504,7 @@ v4を扱えない旧版へ戻す場合は更新を止め、移行前バックア
 v5の廃止・撤回は旧DBに含まれないため、旧DBへ戻すと以前の対応も戻る点に注意する。
 
 ```bash
-sbom-ops assets --db var/assets.sqlite3 migrate --backup var/assets-before-v9.sqlite3
+sbom-ops assets --db var/assets.sqlite3 migrate --backup var/assets-before-v10.sqlite3
 ```
 
 配布単位だけを廃止する例。まず対象と`before.links`の影響範囲を確認する。
@@ -812,10 +814,10 @@ PoCの保存先は資産と同じ `var/assets.sqlite3`（専用テーブル）�
 既存DBがv1〜v6の場合だけ、先にバックアップ付きで移行する。自動移行はしない。
 
 ```bash
-sbom-ops assets --db var/assets.sqlite3 migrate --backup var/assets-before-poc-v9.sqlite3
+sbom-ops assets --db var/assets.sqlite3 migrate --backup var/assets-before-poc-v10.sqlite3
 ```
 
-新規DBなら移行は不要。以下の `poc-fetch --execute` でv9を作成する。
+新規DBなら移行は不要。以下の `poc-fetch --execute` でv10を作成する。
 v6はsyncでの読取、v7はPoCの読取・更新を継続できる。
 
 ```bash
@@ -976,9 +978,9 @@ python examples/poc_scenario.py
 sbom-ops id-candidates --findings var/poc/findings.json --db var/assets.sqlite3
 # 多い場合は、一覧で確認したIDを1件選ぶ
 sbom-ops id-candidates --findings var/poc/findings.json --id "$DT_VULNERABILITY_ID"
-# 候補取得はv8でも動作する。採用・取消も使うならv9へ明示移行する
-sbom-ops assets --db var/assets.sqlite3 migrate --backup var/assets-before-identifiers-v9.sqlite3
-# 送るIDを確認してから実行。DBがなければv9を作成する
+# 候補取得はv8でも動作する。採用・取消にはv9以降が必要。移行コマンドは最新v10へ進める
+sbom-ops assets --db var/assets.sqlite3 migrate --backup var/assets-before-identifiers-v10.sqlite3
+# 送るIDを確認してから実行。DBがなければv10を作成する
 sbom-ops id-candidates --findings var/poc/findings.json \
   --id "$DT_VULNERABILITY_ID" --db var/assets.sqlite3 --execute
 # 保存済み履歴の直近100件を表示（通信・DB変更なし）
@@ -1037,7 +1039,7 @@ sbom-ops id-review --db var/assets.sqlite3 revoke \
 
 ### 採用したCVE対応をPoC取得・表示へ使う
 
-同じv9のDBにPoC観測と採用履歴を保存する。既存DBが古い場合は先にバックアップ付きで移行する。
+同じv9以降のDBにPoC観測と採用履歴を保存する。既存DBが古い場合は先にバックアップ付きで移行する。
 以下は通常のsyncで保存した`var/sync.json`と、確認して採用した対応を使う例。
 
 ```bash

@@ -165,6 +165,7 @@ def test_success_then_failure_preserved_and_no_poc_join(db_path):
 
 def test_v7_compatibility_migration_backup_and_rollback(db_path, tmp_path, monkeypatch):
     with sqlite3.connect(db_path) as db:
+        db.execute("DROP TABLE vulnrichment_snapshots")
         db.execute("DROP TABLE identifier_reviews")
         db.execute("DROP TABLE identifier_observations")
         db.execute("PRAGMA user_version=7")
@@ -301,6 +302,7 @@ def test_cli_old_db_and_duplicate_never_call_provider(
             == "identifier_update_already_running"
         )
     with sqlite3.connect(db_path) as db:
+        db.execute("DROP TABLE vulnrichment_snapshots")
         db.execute("DROP TABLE identifier_reviews")
         db.execute("DROP TABLE identifier_observations")
         db.execute("PRAGMA user_version=7")

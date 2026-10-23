@@ -172,6 +172,7 @@ def test_transaction_failure_rolls_back_decision(path, monkeypatch):
 
 def test_v8_migration_preserves_candidates_and_backup(path, tmp_path, monkeypatch):
     with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE vulnrichment_snapshots")
         db.execute("DROP TABLE identifier_reviews")
         db.execute("PRAGMA user_version=8")
     before = path.read_bytes()

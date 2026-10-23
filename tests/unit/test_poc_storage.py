@@ -173,6 +173,7 @@ def test_v5_requires_explicit_migration_and_backup_restores_old_schema(
     db_path, tmp_path
 ):
     with sqlite3.connect(db_path) as db:
+        db.execute("DROP TABLE vulnrichment_snapshots")
         db.execute("DROP TABLE identifier_reviews")
         db.execute("DROP TABLE identifier_observations")
         db.execute("DROP TABLE poc_source_state")
@@ -186,7 +187,7 @@ def test_v5_requires_explicit_migration_and_backup_restores_old_schema(
         original = registry.list_services()
         registry.backup_to(tmp_path / "v5.sqlite3")
         assert registry.migrate()
-        assert registry.schema_version == 9
+        assert registry.schema_version == 10
         assert registry.list_services() == original
     with AssetRegistry(tmp_path / "v5.sqlite3", read_only=True) as registry:
         assert registry.schema_version == 5
@@ -197,6 +198,7 @@ def test_v5_requires_explicit_migration_and_backup_restores_old_schema(
 
 def test_poc_migration_failure_rolls_back_all_ddl(db_path, monkeypatch):
     with sqlite3.connect(db_path) as db:
+        db.execute("DROP TABLE vulnrichment_snapshots")
         db.execute("DROP TABLE identifier_reviews")
         db.execute("DROP TABLE identifier_observations")
         db.execute("DROP TABLE poc_source_state")

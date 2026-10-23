@@ -49,7 +49,7 @@ class IdentifierStore:
         )
         self._db.execute("PRAGMA foreign_keys=ON")
         self.version = self._db.execute("PRAGMA user_version").fetchone()[0]
-        if self.version not in (8, 9):
+        if self.version not in (8, 9, 10):
             self._db.close()
             raise ValueError(
                 "identifier candidates require schema v8; back up and migrate"

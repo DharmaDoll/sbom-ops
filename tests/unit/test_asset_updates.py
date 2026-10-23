@@ -136,6 +136,7 @@ def test_update_rejects_rename_noop_and_missing_service(tmp_path):
 def downgrade(path: Path, version: int) -> None:
     """Build a legacy fixture, never touch the operator's actual DB."""
     with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE vulnrichment_snapshots")
         db.execute("DROP TABLE identifier_reviews")
         db.execute("DROP TABLE identifier_observations")
         db.execute("DROP TABLE poc_source_state")
@@ -166,7 +167,7 @@ def test_legacy_read_preview_migration_backup_and_new_history(tmp_path, version)
         backup = registry.backup_to(tmp_path / "before.sqlite3")
         assert registry.migrate() is True
         assert registry.migrate() is False
-        assert registry.schema_version == 9
+        assert registry.schema_version == 10
         registry.update_service(plan(registry, owner="team-b"))
     with AssetRegistry(backup, read_only=True) as registry:
         assert registry.schema_version == version
