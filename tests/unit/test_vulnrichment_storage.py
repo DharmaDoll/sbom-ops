@@ -73,7 +73,7 @@ def test_wrong_target_is_rejected(path: Path, field: str, value: str) -> None:
             store.get(key, **target)
 
 
-@pytest.mark.parametrize("key", [True, 0, -1, "1"])
+@pytest.mark.parametrize("key", [True, 0, -1, "1", 2**63])
 def test_invalid_record_id_is_rejected(path: Path, key: object) -> None:
     with VulnrichmentStore(path) as store:
         with pytest.raises(ValueError, match="positive integer"):

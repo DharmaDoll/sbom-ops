@@ -444,7 +444,7 @@ JSON取込はサービス・配布単位だけに限定し、DT Project対応の
 指定しない相反する申告は引き続き`conflict`となる。既存のschema v1/v2 DBは
 読み取り可能で、訂正機能を使う前に`assets migrate --backup PATH`で
 バックアップを作成し、明示的にv10へ移行する。新規DBはv10で作成する。
-CISA入力の保存テーブルも追加されるが、取得・表示CLIへの接続はまだ行っていない。
+CISA入力の保存テーブルも追加される。[専用CLI](#cisa評価の取得保存表示)から取得・表示できる。
 既存のPoC・CVE対応候補・採用履歴は保持する。
 既存の`sync --asset-inventory`は別の読み取り専用評価入力であり、
 このJSON取込で資産DBに登録する形式とは互換ではない。
@@ -1308,6 +1308,42 @@ sbom-ops sync --config examples/config.yaml \
 各操作の期待値・結果・Issue番号・run ID、ローカル証跡の場所、未確認事項を残し、
 開発Issue #7へ秘密値や非公開の本文を転載せず検証要約を反映する。
 限定検証の成功は本番全体や定期実行の承認ではない。展開範囲・保管・同時実行の条件を別途確認する。
+
+## CISA評価の取得・保存・表示
+
+`cisa` は単一CVEのCISA評価を確認する独立コマンド。DTやGitHubのキーは不要で、
+通常のsyncや優先度を変更しない。固定版からの取得であり、最新版の確認ではない。
+以下の版は過去に取得確認した例。168時間は動作確認用で、運用の推奨期間ではない。
+評価が古ければ、取得が成功しても `effective_status=expired` になる。
+
+```bash
+mkdir -p var
+CISA_REVISION=efd7f7117a7d725d0d535472ef4b3f2e078a0b5f
+# 対象と有効期間の確認だけ。通信・DB変更なし
+sbom-ops cisa fetch --cve CVE-2024-25522 --revision "$CISA_REVISION" \
+  --max-age-hours 168 --db var/assets.sqlite3
+# 実行する場合だけ指定。未作成DBは初期化、旧版DBは自動移行しない
+sbom-ops cisa fetch --cve CVE-2024-25522 --revision "$CISA_REVISION" \
+  --max-age-hours 168 --db var/assets.sqlite3 --execute
+```
+
+旧版DBでは先に `assets migrate --backup NEW_PATH` を実行する。
+結果の `snapshot_id` を控え、次の `1` を実際の値に置き換える。
+
+```bash
+# 保存内容を読むだけ。通信・DB更新なし
+sbom-ops cisa show --db var/assets.sqlite3 --snapshot 1 \
+  --cve CVE-2024-25522 --revision "$CISA_REVISION"
+```
+
+`retrieved_at` は取得日時、`assessed_at` はCISA評価日時、`evaluated_at` は表示時の判定日時。
+元の `reported_value` と現在の `effective_status` を合わせて確認する。
+再表示や再取得で古い評価日時を新しくしない。`latest_verified=false` は固定版の取得だけで
+最新性を確認していないことを示す。取得版や有効期間を変える場合は新しい取得を明示し、
+新旧の記録を区別する。失敗時は終了値2となり、過去の保存成功を代わりに返さない。
+失敗履歴の永続保存はまだ行わないため、コマンドの終了値と標準エラーを実行記録に残す。
+終了値0でも評価の欠落や期限切れはあり得る。これはCISA入力の確認であり、
+資産の公開状態やKEVを結合したBOD参照結果の表示ではない。
 
 ## YAML configuration
 

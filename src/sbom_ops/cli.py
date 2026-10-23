@@ -10,6 +10,7 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from sbom_ops.cisa_cli import add_cisa_parser, run_cisa
 from sbom_ops.clients.dependency_track import (
     DependencyTrackApiError,
     DependencyTrackClient,
@@ -76,6 +77,7 @@ from sbom_ops.storage.run_lock import exclusive_run, poc_lock_path
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sbom-ops")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    add_cisa_parser(subparsers)
 
     workflow = subparsers.add_parser("workflow", help="local GitHub write journal")
     workflow.add_argument("--db", required=True, help="persistent local journal (0600)")
@@ -1253,6 +1255,8 @@ def main() -> int:
     if args.command == "sync":
         audit.start()
     try:
+        if args.command == "cisa":
+            return run_cisa(args)
         if args.command == "workflow":
             if args.workflow_command == "init":
                 IssueJournal.initialize(args.db)

@@ -66,8 +66,10 @@ class VulnrichmentStore:
         revision: str,
     ) -> VulnrichmentSnapshot | None:
         validate_request(cve, revision)
-        if type(snapshot_id) is not int or snapshot_id <= 0:
-            raise ValueError("snapshot ID must be a positive integer")
+        if type(snapshot_id) is not int or not 1 <= snapshot_id <= 2**63 - 1:
+            raise ValueError(
+                "snapshot ID must be a positive integer within SQLite range"
+            )
         row = self._db.execute(
             "SELECT cve, revision, snapshot_json FROM vulnrichment_snapshots "
             "WHERE snapshot_id=?",
