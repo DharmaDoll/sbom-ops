@@ -18,7 +18,8 @@
 
 ## 直近の実装順序
 
-対応一覧・資産更新の基盤を踏まえ、次はPoC運用、1サービスの通し確認、GitHub同期の順とする。
+対応一覧・資産更新・PoC運用・1サービスの通し確認を基盤とし、
+次は下記のSBOMライフサイクル対応を進める。GitHub同期の有効化検証は最後とする。
 個別の完了／未完了はリンク先のIssueで確認する。
 ここでの「高・中・低」は開発の優先度であり、脆弱性のP0〜P3とは別である。
 
@@ -27,6 +28,8 @@
 | 1 | [#18 PoC取得・更新を通常運用へ接続](https://github.com/DharmaDoll/sbom-ops/issues/18) | 高・PoC運用に必須 | CVE対応の根拠を保ち、取得・更新・期限切れ・失敗表示を一連で扱う |
 | 2 | [#11 1サービスで運用を通して確認](https://github.com/DharmaDoll/sbom-ops/issues/11) | 高・運用開始に必須 | 登録→CI投入→紐付け→評価→更新→担当変更→停止を再現し、担当者が次の行動を説明できる |
 | 3 | [#7 GitHub同期の修正と有効化検証](https://github.com/DharmaDoll/sbom-ops/issues/7) | 中・有効化時に必須 | 下記の方針に従い、限定対象で作成・更新を確認 |
+
+上表は既存基盤の依存順。次の追加開発は下記#20〜#23を優先し、#7の実書込み検証は後に置く。
 
 基盤となる作業は[#15 日時判定](https://github.com/DharmaDoll/sbom-ops/issues/15)、
 [#16 対応一覧](https://github.com/DharmaDoll/sbom-ops/issues/16)、
@@ -50,6 +53,31 @@ Vulnerability-Lookupをオンライン候補、Vuls vuls.dbを比較・オフラ
 labを製品からimportせず、対象サービスのCVEを必要な頻度で更新する。
 非CVE ID・未解決alias・通信失敗は「PoCなし」にしない。
 利用先のAPI認証・利用条件・制限を実行前に確認し、一般の公開参照をPoC件数に混ぜない。
+
+## SBOMライフサイクルを運用へ結ぶ計画
+
+[ユーザー提示の指針（固定版）](https://github.com/DharmaDoll/product-security-guidance/blob/7a4b1556f469bb428f257d95c2922bdf68c6c16c/sources/user-supplied/user-supplied-sbom-lifecycle-guidance-ja.md)
+を設計入力として採用する。規格や適合根拠とは扱わない。
+目的は「この脆弱性に関係する成果物が、どのサービス・環境にあり、誰が何を確認するか」を
+説明できること。既存の#11/#12/#16/#17を作り直さず、不足だけを補う。
+
+| 順序 | 作業 | 優先度・必須度 | 目指す成果 |
+| --- | --- | --- | --- |
+| 1 | [#20 情報の役割と識別契約](https://github.com/DharmaDoll/sbom-ops/issues/20) | 高・後続の前提 | Source/Build/稼働情報の役割と更新責任、成果物・元SBOM・ソースcommitの結合を定義 |
+| 2 | [#21 必要な差分だけを実装](https://github.com/DharmaDoll/sbom-ops/issues/21) | 高・仕様で確認した不足に必要 | 不変の成果物ID、観測の種類・根拠、未知や矛盾を保った結合 |
+| 3 | [#22 Quick Startの切替シナリオ](https://github.com/DharmaDoll/sbom-ops/issues/22) | 高・運用理解に必要 | 同一ソースの異なる成果物、新旧並存、配置切替・停止を保存済み教材で再現 |
+| 4 | [#23 CVE・部品からの逆引き](https://github.com/DharmaDoll/sbom-ops/issues/23) | 中・影響調査の効率化 | 既存一覧からサービス・環境・担当・確認事項を探し、元の根拠へ戻る |
+
+依存は#20→#21→#22→#23。#22の教材設計は#20後に進められるが、動作確認は必要な
+#21の差分検証後とする。#13のSLA承認・#7のGitHub実書込みには依存しない。
+仕様はSPEC、操作は既存運用ガイド、教材の入口はREADMEへ置き、進捗と受入条件はIssueだけで管理する。
+
+Build SBOMを特定成果物の構成根拠とするが、完全性は保証しない。Source SBOMや稼働申告で
+上書きせず、ソースcommitだけで同一成果物と判断しない。再ビルド・再配備・SBOM訂正・停止を
+区別し、停止やFindingの欠落を修正完了にしない。人の申告を実稼働やメモリ観測の証明にしない。
+CI→DT直接投入とSQLiteを維持し、新しい中間サーバ・グラフDB・Runtime収集基盤は作らない。
+供給元SBOMの署名検証・隔離受入、共通base imageの署名済み配布基盤は、実際の調達・
+プラットフォーム要件が生じた場合の別計画とする。記載品質の評価を署名検証済みと扱わない。
 
 ## GitHub同期を有効にする前の必須事項
 
