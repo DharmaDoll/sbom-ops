@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -10,6 +11,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -20,6 +22,7 @@ from dt_lab.domain import (
     AnalysisJustification,
     AnalysisResponse,
     AnalysisState,
+    BomProcessingObservation,
     BomUpload,
     BomUploadAttempt,
     CorpusArtifact,
@@ -1030,6 +1033,7 @@ class DependencyTrackLabApi(Protocol):
         *,
         timeout: float = 120.0,
         poll_interval: float = 5.0,
+        on_progress: Callable[[BomProcessingObservation], None] | None = None,
     ) -> None: ...
 
     def upload_vex_for_project(
@@ -1142,6 +1146,29 @@ def _write_json(path: Path, payload: Any) -> None:
         f"{json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)}\n",
         encoding="utf-8",
     )
+
+
+def _write_measurement_json(path: Path, payload: Any) -> None:
+    """Replace a measurement only after its complete JSON has been written."""
+    content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    temporary: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(f"{content}\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _project_record_dict(record: LabProjectRecord) -> dict[str, Any]:
@@ -3557,6 +3584,11 @@ def _run_scenario_steps(
                     upload.token,
                     timeout=processing_timeout,
                     poll_interval=poll_interval,
+                    on_progress=lambda item, directory=step_directory: (
+                        _write_measurement_json(
+                            directory / "bom-processing.json", item.as_dict()
+                        )
+                    ),
                 )
                 lookup = read_client.observe_project_lookup(
                     project_name, project_version

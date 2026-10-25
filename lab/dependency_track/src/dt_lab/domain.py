@@ -1,9 +1,25 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any
+
+
+@dataclass(frozen=True)
+class BomProcessingObservation:
+    """Local wait measurement; token idle is not proof of import success."""
+
+    status: str
+    elapsed_seconds: float
+    poll_attempts: int
+    valid_responses: int
+    last_processing: bool | None
+    timeout_seconds: float
+    poll_interval_seconds: float
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"schema_version": 1, **asdict(self)}
 
 
 class LabManifestError(ValueError):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +13,7 @@ from dt_lab.domain import (
     AnalysisJustification,
     AnalysisResponse,
     AnalysisState,
+    BomProcessingObservation,
     BomUpload,
     BomUploadAttempt,
     DependencyTrackObservation,
@@ -936,7 +938,14 @@ class FakeLabClient:
         *,
         timeout: float = 120.0,
         poll_interval: float = 5.0,
+        on_progress: Callable[[BomProcessingObservation], None] | None = None,
     ) -> None:
+        if on_progress is not None:
+            on_progress(
+                BomProcessingObservation(
+                    "token_idle", 0.1, 1, 1, False, timeout, poll_interval
+                )
+            )
         return None
 
     def _observation(self, path: str, payload: object) -> DependencyTrackObservation:
@@ -1567,6 +1576,12 @@ def test_lab_runner_verifies_parent_child_relationship_and_risk_projection(
     assert result.steps[1].project_uuid == "project-2"
     assert result.steps[1].observation_count == 9
     assert (Path(result.steps[0].snapshot_directory) / "bom-upload.json").is_file()
+    wait_record = json.loads(
+        (Path(result.steps[0].snapshot_directory) / "bom-processing.json").read_text()
+    )
+    assert wait_record["status"] == "token_idle"
+    assert wait_record["poll_attempts"] == 1
+    assert wait_record["elapsed_seconds"] == 0.1
     assert (Path(result.steps[1].snapshot_directory) / "bom-upload.json").is_file()
     assert not (Path(result.steps[1].snapshot_directory) / "delta.json").exists()
     hierarchy = json.loads(

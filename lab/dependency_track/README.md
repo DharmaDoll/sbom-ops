@@ -29,6 +29,37 @@ src/sbom_ops -----------------------------------------------X-> dt_lab
 
 ## Decision Loop
 
+### BOM処理待ちの計測
+
+通常のBOM投入ステップは、upload応答を`bom-upload.json`、その後のtoken待機を
+`bom-processing.json`へ記録する。後者は各確認の前後と終了時に更新し、経過秒、
+poll開始回数、有効な応答回数、最後のprocessing値、待機設定を保持する。
+poll回数は論理的なAPI呼出し数で、HTTP層の内部再試行回数ではない。
+token・APIキー・応答本文・例外文はこの計測記録へ入れない。
+
+状態はwaiting/token_idle/timed_out/failed/interrupted。token_idleはBOM取込み成功や
+全解析完了の証明ではない。公式の[event API実装（4.14.3）](https://github.com/DependencyTrack/dependency-track/blob/4.14.3/src/main/java/org/dependencytrack/resources/v1/EventResource.java)
+でもfalseはtokenの有効性を保証しない。後続のProject/Component読戻しとは別に扱う。
+待機時間はupload応答後にクライアントが待機を始めてからの測定で、サーバー処理時間ではない。
+期限は次のpoll開始とsleepを制限するが、進行中HTTP要求/再試行を強制終了しない。
+HTTP設定は`SBOM_OPS_DT_TIMEOUT_SECONDS`（既定30秒）、
+`SBOM_OPS_DT_MAX_RETRIES`（既定3回の再試行）、
+`SBOM_OPS_DT_RETRY_BACKOFF_SECONDS`（既定1秒）で別に指定する。
+一時的な通信失敗は初回を含め最大`max_retries + 1`回試み、待ち時間は最大30秒。
+サーバーが30秒を超えるRetry-Afterを要求した場合は短縮して再試行せず失敗する。
+HTTP timeoutも全体の処理時間を保証するものではない。再投入を避けたい実測では
+`SBOM_OPS_DT_MAX_RETRIES=0`を明示し、失敗後は保存記録を確認してから判断する。
+VEXなど別経路の待機はこの保存対象に含めない。
+
+KeyboardInterrupt等を捕捉できれば途中経過を残して再送せず終了する。
+計測JSONは同じディレクトリの専用一時ファイルへ書き、flush/fsync後に置き換える。
+置換前に保存が失敗しても直前のJSONは変更せず、例外を伝えて処理を止める。
+一時ファイルと更新後のJSONは所有者だけが読み書きできる。捕捉可能な失敗では
+今回作った一時ファイルだけを削除する。SIGKILLでは一時ファイルが残る場合がある。
+ディレクトリ自体のfsyncは行わず、停電時の永続性までは保証しない。
+SIGKILL・停電・保存失敗は最終記録を保証しない。waitingのままのファイルから
+現在の処理稼働や成功を推定しない。未完了を理由に自動再投入・自動cleanupしない。
+
 The lab exists to find the shortest reliable route to the project goal by using
 Dependency-Track's existing capabilities as fully as practical. It is not a
 scenario-completion project.

@@ -1,5 +1,81 @@
 # Dependency-Track Lab Experiment Ledger
 
+## 2026-10-25 — 大規模SBOMの処理待ちを1回だけ実測
+
+- 目的: #9で未保存だったBOM処理待ち時間とpoll回数を測り、規模に関する説明の穴を埋める。
+- 対象: ローカルの`dependencytrack/bundled:4.14.3`（実行前healthy確認）。
+- 入力: 固定済みOpenProject 17.7.2 schema-valid派生SBOM。14,113,899 bytes、
+  17,831 components、869 dependencies。catalogのSHA-256照合とdry-run成功後に実行。
+- 実施: `run-corpus --artifact rails-openproject-17-7-2-schema-valid --execute`
+  を1回実行。実行固有の版を持つ検証専用Projectへ投入し、読戻しまで完了した。
+  Analysis/VEX/設定変更・GitHub書込み・再投入・削除は行っていない。
+- 設定: HTTP timeout 30秒、HTTP再試行0回、処理待ち600秒、poll間隔5秒。
+  処理待ちは進行中のHTTP要求を強制終了する壁時計上限ではない。
+- ローカル事前確認: 計測・保存を含むlab129件、製品1460件成功。
+  HTTP再試行/timeoutの既存テスト9件も成功（45 deselected）。
+
+### 観測事実
+
+- upload HTTP 200、応答時間2.932428秒。
+- token待機は106.638992秒、poll開始18回・有効応答18回、最終状態token_idle。
+  途中のwaiting記録から最終JSONへの更新も確認できた。
+- Component読戻し16,742件、65.068772秒。Finding読戻し689件、0.374352秒。
+  今回の689件を以前の630件と同じと扱わない。取得時点のデータであり原因比較は未実施。
+- CLIは終了コード0、run.jsonはcompleted。生応答とProject識別情報はignored領域のみ。
+
+### 判断と限界
+
+処理待ちとupload時間を分離して記録できた。約107秒はクライアントの待機時間であり、
+DT内部処理時間そのものでも全解析完了の保証でもない。単発の検証であり、並列負荷・
+冷キャッシュ・運用SLOの保証には使わない。追加の大型入力や反復実験は不要と判断する。
+製品は不完全な読取りを解決扱いしない既存動作を維持する。
+保存失敗・中断は模擬テストで確認したが、今回の実測では発生していない。
+Projectは残しており、削除は別途のrun-scoped確認手順でのみ行う。
+
+証拠: 2026-10-25 UTC開始の`var/dt-lab/runs/<run>/run.json`と
+`rails-openproject-17-7-2-schema-valid/01-import/{bom-upload,bom-processing,components,findings,summary}.json`。
+
+## 2026-10-25 — 大規模SBOMの既存証拠を再点検（新規通信なし）
+
+- 目的: #9の残件を、新しい大規模実験を増やす前に保存済み記録から整理する。
+- 対象: 過去のDT 4.14.3 OpenProject schema-valid入力のローカル記録。
+  今回DTへの通信・投入・設定変更・削除は行っていない。
+- 実施: run.jsonの日時/状態、bom-upload.jsonの応答ステータス/所要時間だけを抽出し、
+  9月24日・26日の台帳と照合。製品の読取失敗・ページ不整合テストを再実行した。
+
+### 確認できた事実
+
+| 保存記録の開始日時（UTC） | upload応答 | upload所要時間 | run全体の経過時間 |
+| --- | --- | --- | --- |
+| 2026-09-11 09:08:49 | 200 | 0.732543秒 | 145.922425秒 |
+| 2026-09-23 11:32:06 | 200 | 1.970445秒 | 165.338637秒 |
+
+両runは保存上completed。全体時間は開始・終了の壁時計差で、アップロード・処理待ち・
+各読取り等を含む。非同期処理時間ではない。記録の日付を9月24日の測定として読み替えない。
+9月26日の台帳には16,742部品、630 Findings、Component全応答26,521,391 bytes、
+ページサイズ100〜5,000の全件取得と時間が記録済み。キャッシュ・並列負荷を制御した測定ではない。
+
+現行コードはupload応答のduration_secondsを保存する一方、BOM tokenの待機は
+完了までの所要時間・poll回数を結果として保存しない。該当する既存OpenProject記録にも
+その測定ファイルは見つからなかった。全体時間や固定poll間隔から回数を逆算しない。
+
+### 製品判断と残る確認
+
+- `test_dependency_track_client.py`と`test_orchestrator.py`のpagination/malformed/
+  read_failure/partial/timeout選択で19テスト成功（126 deselected、7dd2eb9上）。
+  総件数の消失/変化、途中空ページ、不正要素を拒否し、DT読取失敗時に製品Issueを
+  作成・更新・closeしないことを確認。これは通信を模擬した回帰確認で、実負荷検証ではない。
+- 製品のBOM待機・Finding安定待機は期限到達を例外にし、空の成功結果へ置き換えない。
+  ただし各HTTP要求/再試行が進行中の場合、待機ループの設定時間は厳密な壁時計上限ではない。
+  「120秒設定なら必ず120秒以内に戻る」と保証しない。
+- #9の処理時間・poll回数は未検証。次はlabに限定した計測結果保存を整え、
+  timeout/中断時も部分記録が残ることを模擬テストで確認する。その後に必要最小限の
+  明示実行を1回行う。入力の大型化・新しいエコシステム追加・自動cleanupは不要。
+
+証拠: `var/dt-lab/runs/<run>/run.json`と
+`rails-openproject-17-7-2-schema-valid/01-import/bom-upload.json`。
+生payload・環境固有UUID・認証情報は転記していない。実測不足を完了扱いにしない。
+
 ## 2026-10-19 — 1サービスの登録・新版並存・担当変更・停止・復元
 
 - 結果: #11の限定した運用演習を実施。1サービス・1配布単位・新旧2版で一連の操作を確認した。

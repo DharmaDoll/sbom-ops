@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Callable
+from math import isfinite
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
@@ -10,6 +12,7 @@ from urllib.request import Request
 
 from dt_lab.domain import (
     AnalysisAction,
+    BomProcessingObservation,
     BomUpload,
     BomUploadAttempt,
     DependencyTrackObservation,
@@ -548,23 +551,74 @@ class DependencyTrackLabClient:
         *,
         timeout: float = 120.0,
         poll_interval: float = 5.0,
+        on_progress: Callable[[BomProcessingObservation], None] | None = None,
     ) -> None:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            payload = self._request_json(f"/api/v1/event/token/{token}")
-            processing = (
-                payload.get("processing") if isinstance(payload, dict) else payload
+        if (
+            any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                for value in (timeout, poll_interval)
             )
-            if processing is False:
-                return
-            time.sleep(
-                min(
-                    max(0.0, poll_interval),
-                    max(0.0, deadline - time.monotonic()),
+            or timeout <= 0
+            or poll_interval < 0
+        ):
+            raise ValueError("invalid BOM wait limits")
+        started = time.monotonic()
+        deadline = started + timeout
+        attempts = valid = 0
+        processing: bool | None = None
+
+        def emit(status: str) -> None:
+            if on_progress is not None:
+                on_progress(
+                    BomProcessingObservation(
+                        status,
+                        time.monotonic() - started,
+                        attempts,
+                        valid,
+                        processing,
+                        timeout,
+                        poll_interval,
+                    )
                 )
-            )
+
+        emit("waiting")
+        while time.monotonic() < deadline:
+            attempts += 1
+            emit("waiting")
+            try:
+                payload = self._request_json(f"/api/v1/event/token/{token}")
+                value = payload.get("processing") if isinstance(payload, dict) else None
+                if type(value) is not bool:
+                    raise DependencyTrackLabApiError(
+                        "malformed BOM processing response"
+                    )
+                processing = value
+                valid += 1
+            except BaseException as exc:
+                emit(
+                    "interrupted"
+                    if isinstance(exc, (KeyboardInterrupt, SystemExit))
+                    else "failed"
+                )
+                raise
+            if processing is False:
+                emit("token_idle")
+                return
+            emit("waiting")
+            try:
+                time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+            except BaseException as exc:
+                emit(
+                    "interrupted"
+                    if isinstance(exc, (KeyboardInterrupt, SystemExit))
+                    else "failed"
+                )
+                raise
+        emit("timed_out")
         raise DependencyTrackLabApiError(
-            f"Dependency-Track lab BOM processing timed out: token {token}"
+            "Dependency-Track lab BOM processing timed out"
         )
 
     def observe_project_lookup(
