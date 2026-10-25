@@ -58,6 +58,15 @@ P1→P2の順で並びますが、資産情報で優先度そのものは変わ�
 JSON出力は `python examples/review_scenario.py --output json` で確認できます。
 旧形式の資産JSONを使う比較例は `python examples/asset_scenario.py` で実行できます。
 
+SBOM自体の記載状況も、DTやAPIキーなしで確認できます。
+
+```bash
+sbom-ops sbom-quality examples/sboms/vulnerable-demo.cdx.json
+```
+
+教材の文書9項目と5部品の各8項目、計49件をJSONで報告します。適合認定や署名検証ではありません。
+CIで不足項目を必須化する例は[SBOM品質の確認手順](docs/operations.md#sbom最低要素の確認について)を参照してください。
+
 担当変更・紐付け撤回と再承認・資産廃止も、外部接続なしで試せます。
 `python examples/asset_update_scenario.py` は一時DBだけを使い、終了時に削除します。
 既存の資産台帳は変更しません。実台帳の操作は[担当変更](docs/operations.md#担当重要度を変更する)・[廃止と紐付け訂正](docs/operations.md#資産の廃止と紐付けの訂正)を参照してください。

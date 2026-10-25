@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sbom-ops:quality-report:1",
+  "title": "sbom-ops quality report v1 (not a compliance certificate)",
+  "oneOf": [{"$ref": "#/$defs/evaluated"}, {"$ref": "#/$defs/error"}],
+  "$defs": {
+    "version": {"type": "string", "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$(?![\\s\\S])"},
+    "field": {"enum": ["sbom_author", "sbom_signature", "format_name", "format_version", "generation_context", "timestamp", "tool_name", "tool_version", "sbom_version", "component_producer", "dependency_relationship", "component_hash", "hash_algorithm", "component_identifier", "component_license", "component_name", "component_version"]},
+    "documentField": {"enum": ["sbom_author", "sbom_signature", "format_name", "format_version", "generation_context", "timestamp", "tool_name", "tool_version", "sbom_version"]},
+    "componentField": {"enum": ["component_producer", "dependency_relationship", "component_hash", "hash_algorithm", "component_identifier", "component_license", "component_name", "component_version"]},
+    "state": {"enum": ["present", "missing", "unknown", "withheld", "invalid", "unverifiable"]},
+    "pointer": {"type": "string", "maxLength": 4096, "pattern": "^(?:/(?:[^~/\u0000-\u001f\u007f]|~[01])*)*$(?![\\s\\S])"},
+    "componentSubject": {"type": "string", "maxLength": 4000, "pattern": "^(?:/metadata/component(?:/components/(?:0|[1-9][0-9]*))*|(?:/components/(?:0|[1-9][0-9]*))+)(?![\\s\\S])"},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^[^\u0000-\u001f\u007f]+$(?![\\s\\S])"},
+    "declaration": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "source_path", "reason"],
+      "properties": {
+        "state": {"enum": ["unknown", "withheld"]},
+        "source_path": {"allOf": [{"$ref": "#/$defs/pointer"}, {"minLength": 1}]},
+        "reason": {"$ref": "#/$defs/reason"}
+      }
+    },
+    "check": {
+      "type": "object", "additionalProperties": false,
+      "required": ["field", "subject", "state", "evidence_paths", "reason", "verification", "declaration"],
+      "properties": {
+        "field": {"$ref": "#/$defs/field"}, "subject": {"$ref": "#/$defs/pointer"},
+        "state": {"$ref": "#/$defs/state"},
+        "evidence_paths": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/pointer"}},
+        "reason": {"$ref": "#/$defs/reason"}, "verification": {"const": "not_performed"},
+        "declaration": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/declaration"}]}
+      },
+      "allOf": [
+        {"if": {"properties": {"field": {"$ref": "#/$defs/documentField"}}}, "then": {"properties": {"subject": {"const": ""}}}, "else": {"properties": {"subject": {"$ref": "#/$defs/componentSubject"}}}},
+        {"if": {"properties": {"state": {"const": "present"}}}, "then": {"properties": {"evidence_paths": {"minItems": 1}, "declaration": {"type": "null"}}}},
+        {"if": {"properties": {"state": {"const": "missing"}}}, "then": {"properties": {"evidence_paths": {"maxItems": 0}, "declaration": {"type": "null"}}}},
+        {"if": {"properties": {"state": {"const": "unverifiable"}}}, "then": {"properties": {"declaration": {"type": "null"}}}},
+        {"if": {"properties": {"state": {"const": "unknown"}}}, "then": {"properties": {"evidence_paths": {"maxItems": 0}, "declaration": {"allOf": [{"$ref": "#/$defs/declaration"}, {"properties": {"state": {"const": "unknown"}}}]}}}},
+        {"if": {"properties": {"state": {"const": "withheld"}}}, "then": {"properties": {"evidence_paths": {"maxItems": 0}, "declaration": {"allOf": [{"$ref": "#/$defs/declaration"}, {"properties": {"state": {"const": "withheld"}}}]}}}}
+      ]
+    },
+    "requirement": {
+      "type": "object", "additionalProperties": false, "required": ["field", "allowed_states"],
+      "properties": {"field": {"$ref": "#/$defs/field"}, "allowed_states": {"type": "array", "minItems": 1, "maxItems": 6, "uniqueItems": true, "items": {"$ref": "#/$defs/state"}}}
+    },
+    "violation": {
+      "type": "object", "additionalProperties": false, "required": ["field", "subject", "state", "reason"],
+      "properties": {
+        "field": {"$ref": "#/$defs/field"},
+        "subject": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/pointer"}]},
+        "state": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/state"}]},
+        "reason": {"enum": ["no_applicable_components", "state_not_allowed"]}
+      },
+      "allOf": [{"if": {"properties": {"reason": {"const": "no_applicable_components"}}}, "then": {"properties": {"field": {"$ref": "#/$defs/componentField"}, "subject": {"type": "null"}, "state": {"type": "null"}}}, "else": {"properties": {"subject": {"$ref": "#/$defs/pointer"}, "state": {"$ref": "#/$defs/state"}}}}]
+    },
+    "policy": {
+      "type": "object", "additionalProperties": false, "required": ["mode", "requirements", "violations"],
+      "properties": {
+        "mode": {"enum": ["report", "enforce"]},
+        "requirements": {"type": "array", "maxItems": 17, "uniqueItems": true, "items": {"$ref": "#/$defs/requirement"}},
+        "violations": {"type": "array", "items": {"$ref": "#/$defs/violation"}}
+      },
+      "allOf": [{"if": {"properties": {"mode": {"const": "report"}}}, "then": {"properties": {"requirements": {"maxItems": 0}, "violations": {"maxItems": 0}}}, "else": {"properties": {"requirements": {"minItems": 1}}}}]
+    },
+    "evaluated": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "evaluator_version", "policy_version", "status", "exit_code", "input", "scope", "checks", "summary", "limitations", "policy"],
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "evaluator_version": {"$ref": "#/$defs/version"}, "policy_version": {"$ref": "#/$defs/version"},
+        "status": {"const": "evaluated"}, "exit_code": {"type": "integer", "enum": [0, 1]},
+        "input": {"type": "object", "additionalProperties": false, "required": ["sha256", "byte_count"], "properties": {"sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"}, "byte_count": {"type": "integer", "minimum": 1}}},
+        "scope": {
+          "type": "object", "additionalProperties": false, "required": ["format_name", "format_version", "component_count", "limits"],
+          "properties": {
+            "format_name": {"const": "CycloneDX"}, "format_version": {"enum": ["1.5", "1.6"]}, "component_count": {"type": "integer", "minimum": 0},
+            "limits": {"type": "object", "additionalProperties": false, "required": ["max_bytes", "max_depth", "max_nodes", "max_components"], "properties": {"max_bytes": {"type": "integer", "minimum": 1}, "max_depth": {"type": "integer", "minimum": 1}, "max_nodes": {"type": "integer", "minimum": 1}, "max_components": {"type": "integer", "minimum": 1}}}
+          }
+        },
+        "checks": {"type": "array", "minItems": 9, "items": {"$ref": "#/$defs/check"}},
+        "summary": {"type": "object", "additionalProperties": false, "required": ["present", "missing", "unknown", "withheld", "invalid", "unverifiable"], "properties": {"present": {"type": "integer", "minimum": 0}, "missing": {"type": "integer", "minimum": 0}, "unknown": {"type": "integer", "minimum": 0}, "withheld": {"type": "integer", "minimum": 0}, "invalid": {"type": "integer", "minimum": 0}, "unverifiable": {"type": "integer", "minimum": 0}}},
+        "limitations": {"type": "array", "minItems": 8, "uniqueItems": true, "items": {"enum": ["signature_cryptography_not_verified", "component_artifact_hashes_not_verified", "dependency_completeness_not_verified", "update_and_distribution_practices_not_verified", "full_cyclonedx_schema_not_validated", "identifier_semantics_not_verified", "spdx_catalog_and_expression_not_validated", "no_compliance_certification"]}},
+        "policy": {"$ref": "#/$defs/policy"}
+      },
+      "allOf": [{"if": {"properties": {"exit_code": {"const": 0}}}, "then": {"properties": {"policy": {"properties": {"violations": {"maxItems": 0}}}}}, "else": {"properties": {"policy": {"properties": {"mode": {"const": "enforce"}, "violations": {"minItems": 1}}}}}}]
+    },
+    "error": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "evaluator_version", "policy_version", "status", "exit_code", "error"],
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1}, "evaluator_version": {"$ref": "#/$defs/version"},
+        "policy_version": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/version"}]},
+        "status": {"const": "error"}, "exit_code": {"type": "integer", "enum": [2, 130]},
+        "error": {"type": "object", "additionalProperties": false, "required": ["code"], "properties": {"code": {"type": "string", "maxLength": 128, "pattern": "^[a-z][a-z0-9_]*$(?![\\s\\S])"}}}
+      },
+      "allOf": [{"if": {"properties": {"exit_code": {"const": 130}}}, "then": {"properties": {"error": {"properties": {"code": {"const": "interrupted"}}}}}, "else": {"properties": {"error": {"properties": {"code": {"not": {"const": "interrupted"}}}}}}}]
+    }
+  }
+}

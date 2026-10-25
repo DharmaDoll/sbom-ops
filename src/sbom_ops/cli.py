@@ -44,6 +44,7 @@ from sbom_ops.domain.poc import PocRunBusy, select_poc_targets
 from sbom_ops.domain.poc_retry import PocRetryPolicy
 from sbom_ops.domain.workflow import decide_missing_finding
 from sbom_ops.domain.workflow_audit import WorkflowAudit
+from sbom_ops.sbom_quality_cli import add_quality_parser, run_quality
 from sbom_ops.services.advisory_snapshot import load_advisory_snapshot
 from sbom_ops.services.asset_import import load_asset_registration
 from sbom_ops.services.asset_inventory import load_asset_inventory
@@ -78,6 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sbom-ops")
     subparsers = parser.add_subparsers(dest="command", required=True)
     add_cisa_parser(subparsers)
+    add_quality_parser(subparsers)
 
     workflow = subparsers.add_parser("workflow", help="local GitHub write journal")
     workflow.add_argument("--db", required=True, help="persistent local journal (0600)")
@@ -519,6 +521,25 @@ def print_triage_contexts(result: RunResult) -> None:
                 )
         if context.reasons:
             print(f"    確認事項: {', '.join(context.reasons)}")
+        reference = entry.reference_result()
+        if reference["status"] == "pending":
+            print(f"    参照期限: 判定待ち ({', '.join(reference['missing'])})")
+        else:
+            deadline = (
+                f"{reference['calendar_days']}暦日"
+                if reference["calendar_days"] is not None
+                else "次回の予定された主要更新・再構築時"
+            )
+            forensic = (
+                "表による追加指定あり（担当者による侵害確認が必要）"
+                if reference["forensic_triage"] == "specified_by_reference"
+                else "表による追加指定なし（調査不要・侵害なしの意味ではありません）"
+            )
+            print(f"    参照期限区分: {deadline} / 侵害確認: {forensic}")
+        print(
+            f"    参照版: {reference['policy_version']}"
+            "（固定版・自社SLAではありません）"
+        )
         print("    出典・元の申告・日時の詳細: --output json")
 
 
@@ -1292,6 +1313,8 @@ def _run_poc_fetch(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    if args.command == "sbom-quality":
+        return run_quality(args)
     active_config: AppConfig | None = None
     audit = WorkflowAudit()
     if args.command == "sync":

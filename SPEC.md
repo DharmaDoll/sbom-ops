@@ -178,7 +178,10 @@ KEVは同じ同期取得で保持した元のsnapshotを使い、追加取得し
 JSONの `triage_contexts` は元ID/候補CVE・評価時刻・選択記録ID・出典版・各要素の
 状態と根拠・未確認理由・元申告/適用前訂正を保持する。text/reviewは要約を表示する。
 `evaluated` は評価処理の実施であり、情報が揃ったことを意味しない。
-参照期限の16条件・起算・SLA計算には未接続で、既存の優先度・PoC順・DT・Issue内容を変えない。
+各参照欄の `reference` は固定版の16条件に照合し、日数区分・侵害確認の追加指定・不足要素を返す。
+資産照合と4要素のknownが必要で、不足時はpending。出典・確認日・ルール版・参照行を保持する。
+最新版の保証ではなく、起算・実期限日・自社SLAは計算しない。
+既存の優先度・PoC順・DT・Issue内容を変えない。
 このオプションはGitHub操作を許可も禁止もしない。参照だけの運用は `--no-github` を指定する。
 
 [vulnrichment_snapshot.py](src/sbom_ops/domain/vulnrichment_snapshot.py) はCISA入力の
@@ -609,9 +612,206 @@ Google Cloudはローカル運用の前提ではない。導入する場合も�
 基盤の変更には脅威モデルへの影響・戻し方・検証方法を記録する。
 実行用資料は[infra/gcp/poc](infra/gcp/poc/README.md)を参照する。
 
+## SBOM品質評価の受入仕様（開発中）
+
+[#12](https://github.com/DharmaDoll/sbom-ops/issues/12)の実装契約。現行のuploadやQuick Startが
+次の検査を行うという意味ではない。CIで元SBOMを検査してから直接DTへ投入し、中間サーバは設けない。
+初期対象はCycloneDX JSON 1.5/1.6とし、その他の版・XML・SPDXは未対応を明示する。
+対応形式を絞ることと、2026年版の全要素を満たしたとの主張は区別する。
+
+基準は2026-10-24に確認した[共同執筆機関の公開本文・付録A/B](https://www.cyber.gov.au/publication/2026-minimum-elements-for-a-software-bill-of-materials-sbom)。
+下表はその要素に対する本PJの対応案であり、公式なCycloneDX適合判定表ではない。
+表現は[CycloneDX 1.5](https://cyclonedx.org/docs/1.5/json/)と
+[1.6スキーマ](https://cyclonedx.org/schema/bom-1.6.schema.json)に照合する。
+`C` はmetadata.componentおよびcomponents内の入れ子を含む各対象部品。
+生成ツール・サービスを対象ソフトの部品へ無条件に混ぜない。
+
+| 2026要素 | 元BOMの確認場所・本PJの扱い |
+| --- | --- |
+| 作成主体 | metadata.authors。1.6ではmetadata.manufacturerも対象。toolとは別 |
+| 作成者署名 | BOM直下signature、または別添署名。部品の署名で代用しない |
+| データ形式名 | bomFormat |
+| データ形式版 | specVersion |
+| 生成コンテキスト | metadata.lifecycles。独自名は対応未確認の理由を残す |
+| 更新日時 | metadata.timestamp。ファイル更新日時を代入しない |
+| ツール名 | metadata.toolsの旧配列またはcomponents/servicesの各name |
+| ツール版 | 同じツールのversion。別ツールの版と組み合わせない |
+| SBOM版 | 文書直下version。省略値を入力に記載された証拠としない |
+| 部品の作成主体 | C.author、1.6のC.authors/manufacturer。対象ソフトの旧metadata.manufactureも区別して保持 |
+| 依存関係 | dependenciesのref/dependsOn。参照先と対象部品の対応を検査 |
+| 部品ハッシュ値 | C.hashes[].content。実行可能成果物との照合は別の検証 |
+| ハッシュ方式 | 同じhashes要素のalg。方式と値を別の行から継ぎ合わせない |
+| 部品識別子 | C.purl/cpe/swid等。bom-refだけで外部識別の十分性を証明しない |
+| ライセンス | C.licenses。文書自体のmetadata.licensesを流用しない |
+| 部品名 | C.name |
+| 部品版 | C.version |
+
+2021年版から追加されたのは、署名・形式名/版・生成コンテキスト・ツール名/版・SBOM版・
+ハッシュ値/方式・ライセンスの10項目。既存の7項目も、特に作成主体、部品識別子、
+部品の作成主体、部品版の意味を見直す。単なる必須キーの追加として扱わない。
+
+supplier/publisher/groupは作成主体の自動代用にしない。1.5のauthorや旧manufactureなど
+表現の制約・非推奨項目は報告し、原文の意味との対応が確定しない場合は検証不能を残す。
+署名、実際の依存関係の網羅、生成・訂正の運用、配布先のアクセスは、BOM単体では証明しない。
+
+### 結果・副作用・受入確認
+
+`domain/sbom_quality.py` は項目単位の不変モデルと申告照合を提供する。
+元BOMの項目抽出・集計・独立CLIは接続済み。対応範囲の限界を示し、適合認定とはしない。
+`domain/sbom_quality_document.py`は文書9項目の抽出と文書向け申告照合を提供する。
+作成者はauthorsのname/email、1.6の作成組織はmanufacturer.nameを確認し、
+人物/組織を特定できないオブジェクトは検証不能とする。生成ツールや部品の作成主体で代用しない。
+日時はタイムゾーン付きの形式と暦を確認するが、うるう秒や不明オフセットは検証不能を残す。
+ツールの旧配列/新components・servicesを読み分け、複数ツールで一部の名前/版が欠ける場合や
+別ツールの名前と版しかない場合はinvalidとする。SBOM版の省略値1は補完しない。
+署名は単一/signers/chainの基本的な構造を観測するだけで、アルゴリズム・鍵・証明書の信頼性を
+検証しない。別添署名の入力は未対応で、BOM内に無ければmissingとなる。
+独自名の生成コンテキストは検証不能を残す。
+
+`domain/sbom_quality_components.py`は対象ソフト・入れ子を含む部品8項目を観測する。
+作成主体や版、申告を親から子へ継承しない。旧metadata.manufactureは対象ソフトだけに適用する。
+ハッシュ値と方式を同じ配列要素から確認し、方式別の長さ不一致や不正な16進表現はinvalid。
+BLAKE3の可変長の扱いは検証不能を残す。既存の弱い方式名の記載も観測するが、その方式で
+ハッシュを計算・推奨しない。成果物との照合は全方式で未実施。
+識別子はpurl/cpe/swidの基本構造を観測し、bom-refだけで代用しない。完全な識別子構文・
+意味の検証ではない。名前付きライセンスは記載を確認し、SPDXのID/式は対応表・式解析が
+未実装のためunverifiableとする。metadata.licensesを部品ライセンスへ転用しない。
+`domain/sbom_quality_dependencies.py`はbom-ref重複、依存行の重複、未解決のローカル参照を
+検出する。参照対象は部品/サービスであり、作者等のbom-refを依存先として採用しない。
+グラフ全体の不整合は各部品の依存項目をinvalidにし、0部品なら入力エラーにする。
+依存行の欠落はmissing、行があってdependsOn未指定ならunverifiable、明示的な空配列は
+記載ありとするが、実際の依存関係の網羅性を認定しない。外部参照は取得しない。
+`services/sbom_quality.py`は元ファイル読取→文書/部品抽出→申告照合→全体集計を通信なしで実行する。
+項目IDは`domain/sbom_quality.py`の `QualityField` の17値。`subject` は文書全体なら空文字、
+部品ならそのオブジェクトのJSON Pointer。`evidence_paths` は実際の値の場所であり、
+欠落時の想定パスを存在する証拠として入れない。モデルはパスを解決せず、抽出器が実在を確認する。
+申告は同じ項目/対象のunknownまたはwithheld、申告元の場所、理由を必要とする。
+欠落とのみ両立し、記載済み・不正・検証不能な観測を申告で隠さずinvalidにする。
+再申告による上書きは拒否する。理由は最大2,048文字、位置は最大4,096文字で制御文字を認めない。
+JSON化した項目は `verification=not_performed` を返し、認証や暗号学的検証を表現しない。
+
+明示申告の初期規約は、本PJ独自の任意propertiesとして
+`sbom-ops:quality:<項目ID>:state` と `sbom-ops:quality:<項目ID>:reason` の2項目を使う。
+stateは文字列unknown/withheld、reasonは空でない理由。標準の適合証明や免除ではない。
+文書項目はmetadata.properties、部品項目はその部品のpropertiesに置き、親から子へ継承しない。
+同じキーの重複、片方だけの指定、未知の項目/接尾辞、対象種別違いは入力エラーにする。
+名前と値は完全一致で解釈し、推測・空白除去・大文字小文字の補正はしない。
+同じproperties配列にある他社の通常プロパティは申告に使わない。
+申告の無い外部SBOMを、この独自規約が無いという理由だけで不正扱いしない。
+
+- 項目ごとに `present / missing / unknown / withheld / invalid / unverifiable` と理由、
+  対象部品、元データのJSON Pointerを保持する。unknown/withheldには明示申告の場所を必要とし、
+  欠落や空文字から創作しない。値と申告が矛盾すればinvalidとする。
+- 記載状態と真偽の検証を分ける。署名やハッシュがpresentでも、別の検証結果がなければ
+  verifiedにはしない。BOM内の鍵やURLを信頼根拠として自動採用・取得しない。
+- JSON結果には評価器版・方針版・元BOMのダイジェスト・検査範囲・検証不能事項を含める。
+  このダイジェストは評価対象ファイルの識別用であり、部品ハッシュや署名の代わりではない。
+- 既定は報告のみ。選択した必須項目と許容状態を明示した場合だけCIの失敗条件にする。
+  未対応形式、不正JSON、読込失敗を正常な空レポートにしない。通常uploadへ暗黙適用しない。
+- 構造検査と外部証拠の検証を区別する。重複bom-ref、未解決依存参照、不正な日時/ハッシュ、
+  型違い、重複JSONキーを失敗例に含める。dependenciesの空配列やcompositionsの申告だけで
+  実際の依存関係が完全と認定しない。入力サイズ・深さ・部品数の上限を設ける。
+- 受入テストは両版、対象ソフトと入れ子部品、旧/新tools、欠落/明示不明/非開示、
+  署名未検証、上記不正入力、未対応形式、報告/必須化の差を含む。
+  入力ファイル不変、外部通信なし、DT/優先度/GitHub不変も検証する。
+- CIは生成器・成果物・元BOM・実行記録と必要な別添証拠を保持し、評価器は元BOMを読み取る。
+  DT再エクスポートを元BOMの代わりにしない。更新頻度・訂正・配布の運用証拠は別途確認する。
+  教材に架空の署名やハッシュを加えて適合済みに見せない。
+
+### ファイル入力・全体レポート・終了コードの契約
+
+以下は#12の読取サービスと`sbom-ops sbom-quality BOM_PATH`の実装契約。
+初期版はローカルの通常ファイルをUTF-8のJSONとして読み、圧縮ファイル、標準入力、URL、
+FIFOやデバイスは受け付けない。JSONの重複キー、NaN/Infinity（数値の桁あふれを含む）、
+不正なUTF-8や単独のサロゲート、
+文書直下がオブジェクトでない入力は拒否する。未知の通常プロパティは保持してよいが、
+入力値やファイルの絶対パスをエラー文へ転記しない。
+
+資源制限の初期値は32 MiB、JSONのコンテナ深さ64、値のノード数250,000、対象部品数10,000。
+MiBは1,048,576バイト、深さは文書直下を1とし、ノード数はコンテナと各値を数える
+（オブジェクトのキー文字列は数えない）。対象部品にはmetadata.componentとその子、
+componentsの全階層を含める。生成ツールはこの部品数に含めない。
+境界値は許容し、超過は部分成功ではなく入力エラーとする。
+読取は最大バイト数+1で打ち切り、深さはJSON復号前にも確認し、部品走査は再帰に依存しない。
+上限は読取設定で明示し、正の整数以外や無制限指定は拒否する。
+これらは初期の保護上限であって、大規模SBOMの性能保証ではない。
+
+読取サービス`services/sbom_quality_input.py`はこの入力境界を実装する。
+ファイルを開いた後にも通常ファイルか検査し、元バイト列の識別と対象部品の位置を返す。
+構造の検査は完全なCycloneDXスキーマ検証でも、17項目の評価でもない。
+エラーコードは`read_failed / not_regular_file / invalid_limits / invalid_utf8 /
+invalid_unicode / invalid_json / duplicate_json_key / unsupported_format /
+invalid_document_structure / invalid_component_structure`、上限超過は
+`byte_limit_exceeded / depth_limit_exceeded / node_limit_exceeded / component_limit_exceeded`。
+この読取結果は内部入力として項目抽出・全体集計・独立CLIへ接続済み。
+
+全体JSONは`schema_version=1`、`evaluator_version`、`policy_version`、`status`を持つ。
+評価できた場合は`status=evaluated`とし、次を必須とする。
+
+- `input`: 元ファイルの全バイト列のSHA-256とバイト数。再整形後のJSONをハッシュしない。
+- `scope`: 形式・版、対象部品数、実際に適用した入力上限。
+- `checks`: 既存の項目モデルの配列。文書9項目と各部品8項目を省略せず、
+  `(subject, field)`の組を重複させない。対象・項目ID順で安定出力する。
+- `summary`: 6状態すべての件数。合計はchecksの要素数と一致する。
+- `limitations`: 署名の暗号学的検証、成果物ハッシュ照合、依存関係の実際の網羅、
+  更新・配布運用を検証していないこと。全項目presentでも適合認定を出さない。
+- `policy`: 報告のみか必須化か、その要求と違反した対象/項目。未指定の方針を補わない。
+
+`domain/sbom_quality_report.py`は読取結果と項目別観測からこの全体JSONを組み立てる。
+文書9項目と対象部品ごとの8項目が揃わない、重複する、別対象が混ざる場合は集計を拒否する。
+項目の観測値を変更せず、件数と終了コードを算出する。観測自体の正しさは抽出器の責務であり、
+この集計処理だけでは元BOMの17項目を評価したことにならない。
+
+必須化方針は版と、項目IDごとの空でない許容状態一覧で明示する。同じ項目の重複指定は拒否する。
+要求が空なら報告のみ。指定された部品項目は対象部品すべてに適用し、0部品なら
+`no_applicable_components`の違反（subject/stateはnull）を返す。その他の違反は
+`state_not_allowed`として対象位置と実際の状態を返す。必須化しない項目は失敗条件にしない。
+6状態は明示的に選択できるが、missing/unknown/withheld/invalid/unverifiableを許容しても
+観測はpresentに変わらず、適合認定や例外承認を意味しない。暗黙の許容は追加しない。
+`exit_code`をJSONにも含め、違反があれば1、なければ0。方針・項目の指定順で結果を変えない。
+CLIは`--require FIELD`を繰り返して指定し、その項目のpresentのみを許容する。
+`--policy-version`は要求がある場合だけ指定できる。未指定なら要求ありは`cli-required-v1`、
+報告のみは`report-only-v1`。重複項目や空の版、無効な上限値は入力エラーにする。
+入力上限は`--max-bytes / --max-depth / --max-nodes / --max-components`で設定する。
+このコマンドはDT/GitHubの設定読込・接続、資産DBやworkflow記録を必要としない。
+`--policy PATH`ではJSON方針を読み、項目ごとの許容状態を明示できる。`--require`とは排他で、
+`--policy-version`によるファイルの版の上書きも拒否する。
+方針JSONのキーは`schema_version`（整数1）、`version`、`requirements`のみ。
+各要求は`field`と`allowed_states`（状態文字列の空でない配列）のみとし、
+未知キー/項目/状態、重複項目/状態、未対応版、型違いは拒否する。要求は最大17件、状態は最大6件。
+要求配列が空なら、そのファイルの版で報告のみとする。項目・許容状態の省略を補完しない。
+方針はUTF-8の通常ファイルに限定し、最大32 KiB・コンテナ深さ8で重複JSONキー等を拒否する。
+BOMの上限オプションでこの方針上限を緩和しない。読取失敗は`policy_`を付けたエラーコード、
+方針構造/値の不正は`invalid_policy`とし、未読の方針を既定の報告のみへ置き換えない。
+結果の構造契約は同梱する[data/sbom-quality-report.schema.json](src/sbom_ops/data/sbom-quality-report.schema.json)
+（JSON Schema Draft 2020-12、schema_version=1）で定義する。評価済みと入力エラーを排他的にし、
+型・必須キー・未検証表示・状態と申告/証拠の関係・終了コードと違反有無を検査する。
+参照は同一ファイル内だけで、検証時に元BOM内のURLや外部スキーマを取得しない。
+件数の合計、全対象/項目の網羅、証拠位置の実在、方針に従う違反の正しさはこのスキーマだけでは
+証明できない。抽出/集計モデルとそのテストで確認する。スキーマ適合もSBOMの適合認定ではない。
+
+形式未対応、読取失敗、構造を安全に走査できない入力、上限超過、申告規約違反では
+`status=error`と安定した`error.code`を返し、checksや成功件数を出さない。
+一方、走査可能な項目の不正な日時・ハッシュ等はその項目のinvalidとして報告する。
+文書が評価できたことと、項目が要求を満たすことを混同しない。
+
+| 終了コード | 意味 |
+| --- | --- |
+| 0 | 評価完了。報告のみ、または明示した必須条件をすべて満たした。適合認定ではない |
+| 1 | 評価完了したが、明示した必須条件に違反。違反を含む全体JSONを出力する |
+| 2 | 入力・設定・未対応形式のエラー。品質不足による1と区別する |
+| 130 | 利用者による中断。成功レポートを出さない |
+
+CLIの引数解析エラーは標準エラーへの使用法表示と2を許容する。それ以外の評価結果・
+入力エラーは標準出力にJSONを1件だけ出し、進捗文を混ぜない。DTや資産DBの設定・接続を
+必要とせず、既存upload/syncへこの終了コードや検査を暗黙適用しない。
+境界値/超過、重複キー、深い入れ子、無通信、元バイト列の不変、件数一致、
+同じ入力に対する結果の安定性、報告のみ/必須化の終了コード差を受入テストで確認する。
+
 ## Open Items
 
-未完了の作業と優先順位は[ROADMAP](ROADMAP.md)のみで管理する。
+未完了の作業・進捗・優先度はGitHub Issuesで管理し、[ROADMAP](ROADMAP.md)には
+実装順序・見送り理由とIssueへのリンクを残す。
 将来のVEX書込では、参照を解決してComponent/Projectの対象範囲と全Finding差分を
 承認に結び付け、投入後に対象集合を照合する。Componentの承認をProject全体へ拡大しない。
 未解決参照・追加/欠落変更は失敗として扱い、コメント付き更新を無条件に再試行しない。

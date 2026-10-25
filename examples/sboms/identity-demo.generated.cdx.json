@@ -1,0 +1,129 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:fd7fdabb-7ebd-4587-9d43-4b5cf8713c85",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-10-24T07:46:29+00:00",
+    "tools": {
+      "components": [
+        {
+          "type": "application",
+          "manufacturer": {
+            "name": "Aqua Security Software Ltd."
+          },
+          "group": "aquasecurity",
+          "name": "trivy",
+          "version": "dev"
+        }
+      ]
+    },
+    "component": {
+      "bom-ref": "5609d4a1-a8c2-4853-9bb6-e42e38313138",
+      "type": "container",
+      "name": "var/identity-demo/ci/38013801200/image.tar",
+      "properties": [
+        {
+          "name": "aquasecurity:trivy:DiffID",
+          "value": "sha256:cda5ff4f43c23802feef2fdcbdb7240fd178c4911a3881d2f61af99964336d66"
+        },
+        {
+          "name": "aquasecurity:trivy:ImageID",
+          "value": "sha256:2a7c1422b6f660c8e956aa948e28ff5085eee760548379419199423885d4caa7"
+        },
+        {
+          "name": "aquasecurity:trivy:SchemaVersion",
+          "value": "2"
+        },
+        {
+          "name": "aquasecurity:trivy:Size",
+          "value": "8133120"
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "797cd4be-a48d-4417-a12f-71864a6c8521",
+      "type": "application",
+      "name": "demo",
+      "properties": [
+        {
+          "name": "aquasecurity:trivy:Class",
+          "value": "lang-pkgs"
+        },
+        {
+          "name": "aquasecurity:trivy:Type",
+          "value": "gobinary"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:golang/example.com/sbom-ops/identity-demo",
+      "type": "library",
+      "name": "example.com/sbom-ops/identity-demo",
+      "purl": "pkg:golang/example.com/sbom-ops/identity-demo",
+      "properties": [
+        {
+          "name": "aquasecurity:trivy:LayerDiffID",
+          "value": "sha256:cda5ff4f43c23802feef2fdcbdb7240fd178c4911a3881d2f61af99964336d66"
+        },
+        {
+          "name": "aquasecurity:trivy:PkgID",
+          "value": "example.com/sbom-ops/identity-demo"
+        },
+        {
+          "name": "aquasecurity:trivy:PkgType",
+          "value": "gobinary"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:golang/stdlib@v1.24.4",
+      "type": "library",
+      "name": "stdlib",
+      "version": "v1.24.4",
+      "purl": "pkg:golang/stdlib@v1.24.4",
+      "properties": [
+        {
+          "name": "aquasecurity:trivy:LayerDiffID",
+          "value": "sha256:cda5ff4f43c23802feef2fdcbdb7240fd178c4911a3881d2f61af99964336d66"
+        },
+        {
+          "name": "aquasecurity:trivy:PkgID",
+          "value": "stdlib@v1.24.4"
+        },
+        {
+          "name": "aquasecurity:trivy:PkgType",
+          "value": "gobinary"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "5609d4a1-a8c2-4853-9bb6-e42e38313138",
+      "dependsOn": [
+        "797cd4be-a48d-4417-a12f-71864a6c8521"
+      ]
+    },
+    {
+      "ref": "797cd4be-a48d-4417-a12f-71864a6c8521",
+      "dependsOn": [
+        "pkg:golang/example.com/sbom-ops/identity-demo"
+      ]
+    },
+    {
+      "ref": "pkg:golang/example.com/sbom-ops/identity-demo",
+      "dependsOn": [
+        "pkg:golang/stdlib@v1.24.4"
+      ]
+    },
+    {
+      "ref": "pkg:golang/stdlib@v1.24.4",
+      "dependsOn": []
+    }
+  ],
+  "vulnerabilities": []
+}

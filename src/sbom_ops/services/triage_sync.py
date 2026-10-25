@@ -11,6 +11,8 @@ from sbom_ops.domain.kev import KevSnapshot
 from sbom_ops.domain.models import Finding
 from sbom_ops.domain.triage_identity import resolve_triage_cve
 from sbom_ops.domain.triage_input import SelectedCisaSnapshot, TriageInput
+from sbom_ops.domain.triage_reference import evaluate_reference
+from sbom_ops.services.reference_policy import load_reference_policy
 from sbom_ops.services.triage_context import (
     FindingTriageContext,
     compose_triage_context,
@@ -24,6 +26,11 @@ class SyncTriageContext:
     evaluated_at: datetime
     selected_cisa: SelectedCisaSnapshot | None
 
+    def reference_result(self) -> dict[str, object]:
+        return evaluate_reference(
+            self.context.evidence, load_reference_policy()
+        ).as_dict()
+
     def as_dict(self) -> dict[str, object]:
         context = self.context
         cisa = context.cisa
@@ -34,6 +41,7 @@ class SyncTriageContext:
             "evaluated_at": self.evaluated_at.isoformat(),
             "reasons": list(context.reasons),
             "evidence": context.evidence.as_dict() if context.evidence else None,
+            "reference": self.reference_result(),
             "asset_reports": (
                 [asdict(item) for item in context.assets.reports]
                 if context.assets

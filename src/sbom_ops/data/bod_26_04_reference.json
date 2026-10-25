@@ -1,0 +1,23 @@
+{
+  "version": "bod-26-04-table1-observed-2026-10-22",
+  "source": "https://www.cisa.gov/news-events/directives/bod-26-04-prioritizing-security-updates-based-risk",
+  "observed_on": "2026-10-22",
+  "rules": [
+    {"conditions": ["yes", "yes", "yes", "total"], "calendar_days": 3, "forensic_triage": true},
+    {"conditions": ["yes", "yes", "yes", "partial"], "calendar_days": 3, "forensic_triage": false},
+    {"conditions": ["yes", "yes", "no", "total"], "calendar_days": 3, "forensic_triage": true},
+    {"conditions": ["yes", "yes", "no", "partial"], "calendar_days": 14, "forensic_triage": false},
+    {"conditions": ["yes", "no", "yes", "total"], "calendar_days": 3, "forensic_triage": false},
+    {"conditions": ["yes", "no", "yes", "partial"], "calendar_days": 14, "forensic_triage": false},
+    {"conditions": ["yes", "no", "no", "total"], "calendar_days": 14, "forensic_triage": false},
+    {"conditions": ["yes", "no", "no", "partial"], "calendar_days": 60, "forensic_triage": false},
+    {"conditions": ["no", "yes", "yes", "total"], "calendar_days": 3, "forensic_triage": true},
+    {"conditions": ["no", "yes", "yes", "partial"], "calendar_days": 14, "forensic_triage": false},
+    {"conditions": ["no", "yes", "no", "total"], "calendar_days": 14, "forensic_triage": false},
+    {"conditions": ["no", "yes", "no", "partial"], "calendar_days": 14, "forensic_triage": false},
+    {"conditions": ["no", "no", "yes", "total"], "calendar_days": 60, "forensic_triage": false},
+    {"conditions": ["no", "no", "yes", "partial"], "calendar_days": 60, "forensic_triage": false},
+    {"conditions": ["no", "no", "no", "total"], "calendar_days": null, "forensic_triage": false},
+    {"conditions": ["no", "no", "no", "partial"], "calendar_days": null, "forensic_triage": false}
+  ]
+}

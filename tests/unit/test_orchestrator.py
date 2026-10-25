@@ -142,13 +142,29 @@ def test_reference_context_is_explicitly_not_requested_by_default() -> None:
 
 
 @pytest.mark.parametrize("environment", ["production", "staging"])
-def test_reference_context_preserves_sources_and_workflow(environment, capsys) -> None:
+@pytest.mark.parametrize("case", ["expired", "required", "not_required", "maintenance"])
+def test_reference_context_preserves_sources_and_workflow(
+    environment: str,
+    case: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import json
     from datetime import timedelta
 
     from sbom_ops.domain.kev import KevSnapshot
     from sbom_ops.domain.triage_input import SelectedCisaSnapshot, TriageInput
     from sbom_ops.domain.vulnrichment_snapshot import VulnrichmentSnapshot
+
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 22, tzinfo=UTC).astimezone(tz)
+
+    monkeypatch.setattr("sbom_ops.services.orchestrator.datetime", FixedClock)
+    kev_ids = (
+        frozenset({"CVE-2026-0001"}) if case in {"expired", "required"} else frozenset()
+    )
 
     class LinkedDT(FakeDependencyTrack):
         def list_projects(self):
@@ -161,7 +177,7 @@ def test_reference_context_preserves_sources_and_workflow(environment, capsys) -
             self.calls += 1
             self.last_snapshot = KevSnapshot(
                 "https://cisa.example/feed",
-                frozenset({"CVE-2026-0001"}),
+                kev_ids,
                 datetime(2026, 1, 1, tzinfo=UTC),
                 datetime(2099, 1, 1, tzinfo=UTC),
                 "cache",
@@ -169,9 +185,7 @@ def test_reference_context_preserves_sources_and_workflow(environment, capsys) -
                 datetime(2025, 1, 1, tzinfo=UTC),
                 True,
             )
-            return super().get_known_exploited_vulnerabilities(
-                force_refresh=force_refresh
-            )
+            return set(kev_ids)
 
     registry = AssetRegistrySnapshot(
         (RegisteredService("service-a", "team", BusinessCriticality.HIGH, "test"),),
@@ -193,7 +207,11 @@ def test_reference_context_preserves_sources_and_workflow(environment, capsys) -
                 "production",
                 "build-1",
                 DeploymentStatus.DEPLOYED,
-                ExposureStatus.CONFIRMED,
+                (
+                    ExposureStatus.REJECTED
+                    if case == "maintenance"
+                    else ExposureStatus.CONFIRMED
+                ),
                 "operator",
                 "synthetic",
                 "2026-01-01T00:00:00Z",
@@ -202,20 +220,26 @@ def test_reference_context_preserves_sources_and_workflow(environment, capsys) -
             ),
         ),
     )
+    payload = json.loads(
+        (Path(__file__).parents[1] / "fixtures/vulnrichment_synthetic.json").read_text()
+    )
+    if case == "maintenance":
+        content = payload["containers"]["adp"][0]["metrics"][0]["other"]["content"]
+        content["options"] = [
+            {"Exploitation": "poc"},
+            {"Automatable": "no"},
+            {"Technical Impact": "partial"},
+        ]
     snapshot = VulnrichmentSnapshot.capture(
-        json.loads(
-            (
-                Path(__file__).parents[1] / "fixtures/vulnrichment_synthetic.json"
-            ).read_text()
-        ),
+        payload,
         cve="CVE-2026-0001",
         revision="a" * 40,
         retrieved_at=datetime(2026, 10, 22, tzinfo=UTC),
-        max_age=timedelta(hours=1),
+        max_age=timedelta(hours=1) if case == "expired" else timedelta(days=2),
     )
     before_gh, after_gh = FakeGitHub(), FakeGitHub()
     baseline = Orchestrator(
-        config(), LinkedDT(), FakeKev(), before_gh, asset_registry=registry
+        config(), LinkedDT(), EvidenceKev(), before_gh, asset_registry=registry
     ).run()
     kev = EvidenceKev()
     result = Orchestrator(
@@ -238,11 +262,36 @@ def test_reference_context_preserves_sources_and_workflow(environment, capsys) -
     assert row["cisa"]["exploitation"] == "poc"
     assert row["kev"]["checked_at"] == "2026-01-01T00:00:00+00:00"
     factors = {item["factor"]: item for item in row["evidence"]["factors"]}
-    assert factors["automatable"]["status"] == "expired"
-    assert factors["automatable"]["value"] == "unknown"
-    assert factors["kev"]["value"] == "yes"
+    assert factors["automatable"]["status"] == (
+        "expired" if case == "expired" else "known"
+    )
+    expected_auto = (
+        "unknown" if case == "expired" else ("no" if case == "maintenance" else "yes")
+    )
+    assert factors["automatable"]["value"] == expected_auto
+    reference = row["reference"]
+    if case == "expired" or environment != "production":
+        assert reference["status"] == "pending"
+        if case == "expired":
+            assert "automatable:expired" in reference["missing"]
+    else:
+        assert reference["status"] == "matched"
+        assert reference["calendar_days"] == (None if case == "maintenance" else 3)
+        assert reference["deadline_kind"] == (
+            "next_major_update_or_rebuild" if case == "maintenance" else "calendar_days"
+        )
+        assert reference["forensic_triage"] == (
+            "specified_by_reference"
+            if case == "required"
+            else "not_specified_by_reference"
+        )
+    assert row["reference"]["due_at"] is None
+    assert row["reference"]["organizational_sla_adopted"] is False
+    assert factors["kev"]["value"] == ("yes" if kev_ids else "no")
     assert factors["public_exposure"]["value"] == (
-        "yes" if environment == "production" else "unknown"
+        ("no" if case == "maintenance" else "yes")
+        if environment == "production"
+        else "unknown"
     )
     assert rows[1]["cisa"] is None
     assert "cisa_unavailable" in rows[1]["reasons"]
@@ -253,7 +302,16 @@ def test_reference_context_preserves_sources_and_workflow(environment, capsys) -
     print_triage_contexts(result)
     text = capsys.readouterr().out
     assert "優先度・対応期限は変更しません" in text
-    assert "automatable: unknown (expired)" in text
+    if case == "expired" or environment != "production":
+        assert "参照期限: 判定待ち" in text
+    elif case == "required":
+        assert "参照期限区分: 3暦日" in text
+        assert "表による追加指定あり" in text
+    else:
+        assert "調査不要・侵害なしの意味ではありません" in text
+        if case == "maintenance":
+            assert "参照期限区分: 次回の予定された主要更新・再構築時" in text
+    assert "固定版・自社SLAではありません" in text
     assert f"環境={environment}" in text
 
 

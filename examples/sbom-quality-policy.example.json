@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "version": "example-inventory-basics-v1",
+  "requirements": [
+    {"field": "component_name", "allowed_states": ["present"]},
+    {"field": "component_version", "allowed_states": ["present", "unknown"]}
+  ]
+}

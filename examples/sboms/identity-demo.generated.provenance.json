@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "purpose": "Generated teaching sample, not a compliance attestation",
+  "generated_at": "2026-10-24T07:46:29Z",
+  "sbom": {
+    "file": "identity-demo.generated.cdx.json",
+    "sha256": "f33af5ec04bff42a943a5db99990152082cd50705a55989d3eac800a39a84585",
+    "byte_count": 3405,
+    "modified_after_generation": false
+  },
+  "artifact": {
+    "source_repository": "https://github.com/DharmaDoll/sbom-ops",
+    "source_commit": "ad021266b9b303df2b37253fd54d2180342ddcab",
+    "ci_run_id": "38013801200",
+    "local_input": "var/identity-demo/ci/38013801200/image.tar",
+    "archive_sha256": "00bd1ce9c231d7e15fe418d6321d46dc27bc3207d1f48630b7f505fb15c7cd8c",
+    "demo_binary_sha256": "ae88314673519179cef00fc660021e716b0c3b368a13960b0a952aef6f7e00a8",
+    "image_id": "sha256:2a7c1422b6f660c8e956aa948e28ff5085eee760548379419199423885d4caa7",
+    "verification": "Local archive and binary matched the previously saved SHA256SUMS; remote CI artifact availability was not rechecked"
+  },
+  "generator": {
+    "name": "trivy",
+    "reported_version": "dev",
+    "go_build_module_version": "v0.64.1",
+    "executable_sha256": "9102a0a9b66a1542cc915a5b2b424205ac6c758b33235f2edd175f787c537908",
+    "arguments_except_output_and_cache_paths": [
+      "image", "--input", "var/identity-demo/ci/38013801200/image.tar",
+      "--format", "cyclonedx", "--offline-scan", "--scanners", "license",
+      "--skip-java-db-update", "--skip-db-update", "--skip-version-check",
+      "--disable-telemetry"
+    ],
+    "output_and_cache": "Separate temporary output file and dedicated temporary cache directory",
+    "exit_code": 0
+  },
+  "limitations": [
+    "No vulnerability scan, signature validation, artifact attestation or dependency completeness proof",
+    "Archive SHA-256 and image ID are distinct identifiers; neither fills component hashes in the SBOM",
+    "Generator reports dev; module metadata does not establish an official release binary",
+    "Timestamp and generated UUIDs can differ on regeneration",
+    "CI artifact retention is finite; regenerate from source when unavailable, and record new artifact identities"
+  ]
+}
