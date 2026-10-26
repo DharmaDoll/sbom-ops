@@ -7,11 +7,31 @@ sbom-opsがKEV・EPSS・CVSSから優先度を計算します。
 人が登録したサービス・担当・稼働申告はSQLiteに保存し、DT Projectと照合します。
 GitHub Issuesへの同期は任意の最終アクションです。
 
-```text
-CI → CycloneDX SBOM → Dependency-Track → sbom-ops → 対応判断 → GitHub Issues（任意）
-                                          ↑
-                                  資産台帳・PoC情報
+## 全体の流れ
+
+```mermaid
+flowchart TD
+    A["① ソースコード・依存関係"] --> B["CI/CD：ビルド・SBOM生成"]
+    B --> C["CycloneDX SBOM"]
+    C --> D["② Dependency-Track"]
+    D --> E["Project・Component・Finding・EPSS・Analysis"]
+    E --> F["④ sbom-ops sync"]
+    K["CISA KEV"] --> F
+    H["③ 人が登録する資産・担当・稼働申告"] --> I[("SQLite 資産台帳")]
+    I --> F
+    P["PoC情報・任意のCISA評価"] --> J[("SQLite 証拠データ")]
+    J -.-> F
+    F --> G["P0〜P3・対応理由・修正作業候補"]
+    G --> L["⑤ Review一覧・JSON・ログ"]
+    L --> M["セキュリティ担当が判断"]
+    M --> N["⑥ 開発チームが調査・修正"]
+    N --> B
+    G -. "任意：本番有効化は保留" .-> O["GitHub Issues 作成・更新"]
 ```
+
+資産台帳と証拠データは役割を分けて描いていますが、同じSQLite DBに保存できます。
+資産とSBOMは、サービス・配布単位・不変の成果物IDと、承認済みDT Project UUIDで結び付けます。
+修正後は再ビルド・SBOM更新を経て確認します。Findingの消失や旧版停止だけでは修正完了と判断しません。
 
 ## 現在できること
 

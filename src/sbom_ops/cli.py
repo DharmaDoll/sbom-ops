@@ -45,6 +45,7 @@ from sbom_ops.domain.poc_retry import PocRetryPolicy
 from sbom_ops.domain.workflow import decide_missing_finding
 from sbom_ops.domain.workflow_audit import WorkflowAudit
 from sbom_ops.lifecycle_cli import print_evidence_review, run_evidence
+from sbom_ops.lookup_cli import add_lookup_parser, run_lookup
 from sbom_ops.sbom_quality_cli import add_quality_parser, run_quality
 from sbom_ops.services.advisory_snapshot import load_advisory_snapshot
 from sbom_ops.services.asset_import import load_asset_registration
@@ -82,6 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     add_cisa_parser(subparsers)
     add_quality_parser(subparsers)
+    add_lookup_parser(subparsers)
 
     workflow = subparsers.add_parser("workflow", help="local GitHub write journal")
     workflow.add_argument("--db", required=True, help="persistent local journal (0600)")
@@ -1340,6 +1342,8 @@ def _run_poc_fetch(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    if args.command == "lookup":
+        return run_lookup(args)
     if args.command == "sbom-quality":
         return run_quality(args)
     active_config: AppConfig | None = None

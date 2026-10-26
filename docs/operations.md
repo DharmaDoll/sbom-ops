@@ -383,6 +383,43 @@ sbom-ops assets --db var/assets.sqlite3 evidence-history --service shop --deploy
 Sourceの場合は`kind: source`と`source_repository`・`source_revision`が必要。
 詳しい入力条件は[SPEC](../SPEC.md#根拠登録v1の入力契約)を参照する。
 
+#### 保存済みの結果からCVE・部品を逆引きする
+
+成功した `sync --output json` の保存結果を検索する。ネットワーク接続・DB書込・Issue操作は行わない。
+Docker/APIキー不要の確認例は、リポジトリのルートで次の通り。
+
+```bash
+mkdir -p var
+python examples/review_scenario.py --output json > var/review-example.json
+sbom-ops lookup --findings var/review-example.json --cve CVE-2026-1000
+sbom-ops lookup --findings var/review-example.json --purl 'pkg:generic/example-library@1.0.0' --output json
+```
+
+このCVEとPURLは教材で3件のFindingに一致する（未紐付けも含む）。実際のPURLは保存JSONの
+`review_queue[].component_purl`をコピーする。非CVEの元IDは
+`--vulnerability-id ID --source SOURCE`を使い、情報源名も保存値に合わせる。
+主ID/情報源/PURLは完全一致。CVEのalias候補やPoC用に採用した対応は検索対象に含めない。
+
+出力はFindingのProject・元ID・部品、資産/担当、配置申告、SBOM根拠を保持する。
+JSONの`source_run_id`で元の取得結果に戻れる。`no_match_in_input`はその保存入力に一致がない
+意味であり、DT全体の影響なしや修正完了を意味しない。保存時点の期限切れ・矛盾・未紐付けを
+そのまま示し、検索時点の状態へ更新しない。最新状態が必要なら別途syncしてから検索する。
+根拠の`not_requested`/`migration_required`/`invalid`は未取得/移行必要/読取不正として区別し、
+空の根拠を保証するものではない。失敗run・不正/不整合な入力は終了コード2で拒否する。
+
+新旧成果物から同じCVEを探し、環境・担当・SBOM訂正履歴まで確認する例:
+
+```bash
+python examples/lifecycle_scenario.py --output sync --stage stopped > var/lifecycle-example.json
+sbom-ops lookup --findings var/lifecycle-example.json --cve CVE-2026-1000
+```
+
+A/Bの2 Findingが残り、本番Aだけ停止、staging Aと本番Bは稼働申告のまま。
+Aの一致する根拠は訂正後の文書、BはB自身の文書となる。`--stage parallel`で新旧並存、
+`unapproved`で未承認、`conflict`で矛盾、`expired`で期限切れも試せる。
+未承認は担当や根拠を別資産から借用しない。CVE・Finding・P2評価は固定の架空教材であり、
+実際のDT取得や優先度計算を行った結果ではない。配置・根拠には既存のローカル演習の判定を使う。
+
 #### 架空のSource・再ビルド・SBOM訂正を登録する
 
 通し演習は `python examples/lifecycle_scenario.py` で実行できる。
@@ -391,7 +428,8 @@ Sourceの場合は`kind: source`と`source_repository`・`source_revision`が必
 配置日時は実行時刻を基準にし、期限切れだけは3日後の読取を模擬する。実機を待った結果ではない。
 毎回新しい一時DBを使い、終了時にそのDBを削除する。DTのProject情報・承認も架空であり、
 実際のDT APIの挙動を検証するものではない。`--output json` で各段階の根拠状態も確認できる。
-この演習はFindingやIssueを処理しないため、停止を脆弱性修正の証明として扱わない。
+既定の演習はFindingやIssueを処理しない。`--output sync`のみ逆引き用の架空Findingを添える。
+いずれも停止を脆弱性修正の証明として扱わない。
 
 確認ポイント:
 

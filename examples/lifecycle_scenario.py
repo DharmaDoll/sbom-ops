@@ -13,7 +13,17 @@ from typing import Any
 
 from sbom_ops.cli import build_parser, run_assets
 from sbom_ops.clients.dependency_track import DependencyTrackProject
-from sbom_ops.domain.asset_registry import AssetRegistrySnapshot
+from sbom_ops.domain.advisory import ExposureStatus
+from sbom_ops.domain.asset_registry import (
+    AssetRegistrySnapshot,
+    RegistryDeploymentObservation,
+    RegistryDeploymentStatus,
+    RegistryProjectObservation,
+    RegistryProjectStatus,
+    RegistrySnapshotStatus,
+)
+from sbom_ops.domain.assets import BusinessCriticality, DeploymentStatus
+from sbom_ops.domain.models import AnalysisState, FindingAssessment, Priority, Severity
 from sbom_ops.services.asset_registry import (
     approve_project_link,
     observe_registry_deployments,
@@ -23,6 +33,7 @@ from sbom_ops.services.lifecycle_evidence import (
     evidence_history,
     project_evidence_views,
 )
+from sbom_ops.services.orchestrator import RunResult
 from sbom_ops.storage.asset_registry import AssetRegistry
 
 
@@ -152,12 +163,106 @@ def run_scenario() -> dict[str, Any]:
     }
 
 
+def sync_example(stage: dict[str, Any]) -> dict[str, object]:
+    """Serialize synthetic Findings plus real local observations via RunResult."""
+    projects = tuple(
+        RegistryProjectObservation(
+            **{
+                **item,
+                "status": RegistryProjectStatus(item["status"]),
+                "criticality": (
+                    BusinessCriticality(item["criticality"])
+                    if item["criticality"]
+                    else None
+                ),
+            }
+        )
+        for item in stage["projects"]
+    )
+    deployments = tuple(
+        RegistryDeploymentObservation(
+            **{
+                **{key: value for key, value in item.items() if key != "source"},
+                "status": RegistryDeploymentStatus(item["status"]),
+                "deployment_status": (
+                    DeploymentStatus(item["deployment_status"])
+                    if item["deployment_status"]
+                    else None
+                ),
+                "exposure_status": (
+                    ExposureStatus(item["exposure_status"])
+                    if item["exposure_status"]
+                    else None
+                ),
+                "report_ids": tuple(item["report_ids"]),
+                "other_artifact_ids": tuple(item["other_artifact_ids"]),
+            }
+        )
+        for item in stage["deployments"]
+    )
+    findings = tuple(
+        FindingAssessment(
+            project_uuid=project.project_uuid,
+            finding_key=f"fictional-{project.dt_version}-finding",
+            vulnerability_id="CVE-2026-1000",
+            vulnerability_source="NVD",
+            severity=Severity.HIGH,
+            cvss_score=8.0,
+            epss_score=None,
+            priority=Priority.P2,
+            analysis_state=AnalysisState.NOT_SET,
+            is_suppressed=False,
+            rationale=("架空の固定評価。実際の脆弱性評価結果ではありません。",),
+            component_purl="pkg:generic/example-library@1.0.0",
+            component_name="example-library",
+            component_version="1.0.0",
+        )
+        for project in projects
+    )
+    return RunResult(
+        run_id=f"fictional-lifecycle-{stage['name']}",
+        duration_seconds=0,
+        kev_used_stale_cache=False,
+        projects_processed=len(projects),
+        findings_processed=len(findings),
+        issues_created=0,
+        issues_updated=0,
+        issues_closed=0,
+        dry_run=True,
+        assessments=findings,
+        registry_snapshot_status=RegistrySnapshotStatus.LOADED,
+        registry_projects=projects,
+        registry_deployments=deployments,
+        lifecycle_evidence_status=stage["evidence_status"],
+        lifecycle_evidence=tuple(stage["evidence"]),
+    ).as_dict()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", choices=("review", "json"), default="review")
+    parser.add_argument(
+        "--output", choices=("review", "json", "sync"), default="review"
+    )
+    parser.add_argument(
+        "--stage",
+        default="stopped",
+        choices=(
+            "unapproved",
+            "old",
+            "parallel",
+            "redeployed",
+            "stopped",
+            "conflict",
+            "expired",
+        ),
+        help="stage to export with --output sync",
+    )
     args = parser.parse_args()
     result = run_scenario()
-    if args.output == "json":
+    if args.output == "sync":
+        stage = next(item for item in result["stages"] if item["name"] == args.stage)
+        print(json.dumps(sync_example(stage), ensure_ascii=False, indent=2))
+    elif args.output == "json":
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         print(
