@@ -334,7 +334,7 @@ DT 4.14のBOM APIでは`BOM_UPLOAD`が必要で、`autoCreate=true`には追加�
 ### ライフサイクルで情報を混同しないための確認
 
 以下は[結合契約](../SPEC.md#sbomライフサイクルの結合契約後続実装の基準)に沿う運用上の確認であり、
-Source/Build根拠やSBOM訂正履歴を一括登録する新CLIはまだない。
+Source/Build根拠は下記CLIで一記録ずつ登録する。一括登録やDTへの自動反映は行わない。
 
 1. 開発時のSource SBOMと配布成果物のBuild SBOMを別の観測として保管する。
    CI側で元SBOM、生成器/実行記録、ソースcommit、実際の成果物IDを残す。
@@ -349,7 +349,50 @@ Source/Build根拠やSBOM訂正履歴を一括登録する新CLIはまだない�
 
 これらの保存/表示で不足する機能は[#21](https://github.com/DharmaDoll/sbom-ops/issues/21)、
 新旧切替の再現教材は[#22](https://github.com/DharmaDoll/sbom-ops/issues/22)で扱う。
-現時点では既存の登録・承認・稼働申告コマンドだけを使い、将来機能を前提に操作しない。
+根拠の登録はProjectの承認・稼働申告とは別であり、これらの代わりにはならない。
+
+#### Source/Build根拠の登録と訂正
+
+サービスと配布単位を先に登録する。既存DBがv10以前なら、バックアップ先を指定した
+`assets --db PATH migrate --backup BACKUP_PATH`で明示移行する。
+入力はUTF-8のJSON一記録（64 KiB以内）。例えば次を`evidence.json`へ保存する。
+以下のIDと参照先は架空の例なので、自分の登録内容に合わせる。
+
+```json
+{
+  "schema_version": 1,
+  "service_id": "shop",
+  "deployable_id": "api",
+  "kind": "build",
+  "artifact_id": "build-a",
+  "sbom_ref": "boms/build-a.cdx.json",
+  "actor": "operator"
+}
+```
+
+```sh
+sbom-ops assets --db var/assets.sqlite3 evidence-register --file evidence.json
+sbom-ops assets --db var/assets.sqlite3 evidence-register --file evidence.json --apply
+sbom-ops assets --db var/assets.sqlite3 evidence-history --service shop --deployable api
+```
+
+最初は確認のみ、`--apply`付きで保存する。出力の`record_id`が記録ID。
+訂正は同じ対象のJSONへ`supersedes_id`（旧記録ID）と`reason`（訂正理由）を追加し、
+同じ手順で確認・保存する。旧記録は残り、訂正済みの記録から分岐する訂正は拒否する。
+独立した登録は併存し、最新日時の記録を自動採用しない。
+Sourceの場合は`kind: source`と`source_repository`・`source_revision`が必要。
+詳しい入力条件は[SPEC](../SPEC.md#根拠登録v1の入力契約)を参照する。
+
+CLIは参照文字列を保存するだけで、SBOMの読込み・DTへの送信・署名検証をしない。
+`sync --asset-db var/assets.sqlite3 --format json`では、`lifecycle_evidence_status`と
+Project別の`lifecycle_evidence`を確認する。`matched`は承認済みProjectの成果物との
+対応だけを示し、保存成功や照合成功を影響評価済み・実稼働確認済みと扱わない。
+日時不明は`observation_unknown`、未来は`future`、独立候補の併存は`multiple_candidates`。
+`migration_required`は明示移行が必要、`invalid`は読取/整合性確認に失敗した状態であり、
+「根拠なし」ではない。通常テキストにも表示する。
+`--format review`では末尾の「SBOM根拠」欄で、Project別の根拠ID・成果物・元SBOM・
+確認事項を日本語で読める。訂正前も履歴として残るため、状態を確認して利用する。
+終了コード1の場合は入力・登録資産・DB版・訂正先の履歴を確認する。
 
 ### DTから読み戻して紐づける方法
 

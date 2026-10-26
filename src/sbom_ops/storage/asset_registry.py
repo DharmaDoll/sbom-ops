@@ -11,6 +11,7 @@ from types import TracebackType
 from sbom_ops.domain.advisory import ExposureStatus
 from sbom_ops.domain.asset_import import AssetRegistrationBatch
 from sbom_ops.domain.asset_registry import (
+    AssetRegistrySnapshot,
     LifecycleAction,
     LifecycleChange,
     RegisteredDeployable,
@@ -22,9 +23,14 @@ from sbom_ops.domain.asset_registry import (
     validate_deployment_supersession,
 )
 from sbom_ops.domain.assets import BusinessCriticality, DeploymentStatus
+from sbom_ops.domain.lifecycle_evidence import RecordedEvidence
 from sbom_ops.storage.identifier_candidates import (
     IDENTIFIER_REVIEW_SCHEMA,
     IDENTIFIER_SCHEMA,
+)
+from sbom_ops.storage.lifecycle_evidence import (
+    LIFECYCLE_EVIDENCE_SCHEMA,
+    LifecycleEvidenceStore,
 )
 from sbom_ops.storage.poc import POC_SCHEMA, POC_SOURCE_SCHEMA
 from sbom_ops.storage.vulnrichment import VULNRICHMENT_SCHEMA
@@ -84,7 +90,7 @@ _LIFECYCLE_SCHEMA = """
     )
 """
 
-CURRENT_SCHEMA_VERSION = 10
+CURRENT_SCHEMA_VERSION = 11
 
 
 class AssetRegistry:
@@ -142,9 +148,28 @@ class AssetRegistry:
     def schema_version(self) -> int:
         return self._schema_version
 
+    def evidence_snapshot(
+        self, scopes: tuple[tuple[str, str], ...]
+    ) -> tuple[
+        AssetRegistrySnapshot, dict[tuple[str, str], tuple[RecordedEvidence, ...]]
+    ]:
+        """Approval and evidence from one SQLite read snapshot."""
+        if self._schema_version != 11:
+            raise ValueError("evidence snapshot requires schema v11")
+        with self._db:
+            self._db.execute("BEGIN")
+            snapshot = AssetRegistrySnapshot(
+                self.list_services(), self.list_links(), **self.lifecycle_state()
+            )
+            records = {
+                scope: LifecycleEvidenceStore.read_records_from(self._db, *scope)
+                for scope in dict.fromkeys(scopes)
+            }
+        return snapshot, records
+
     def _initialize(self, *, create_if_missing: bool) -> None:
         version = self._db.execute("PRAGMA user_version").fetchone()[0]
-        if version in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
+        if version in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
             self._schema_version = version
             return
         if version != 0:
@@ -215,7 +240,8 @@ class AssetRegistry:
             self._db.execute(IDENTIFIER_SCHEMA)
             self._db.execute(IDENTIFIER_REVIEW_SCHEMA)
             self._db.execute(VULNRICHMENT_SCHEMA)
-            self._db.execute("PRAGMA user_version = 10")
+            self._db.execute(LIFECYCLE_EVIDENCE_SCHEMA)
+            self._db.execute("PRAGMA user_version = 11")
         self._schema_version = CURRENT_SCHEMA_VERSION
 
     def migrate(self) -> bool:
@@ -243,8 +269,10 @@ class AssetRegistry:
                 self._db.execute(IDENTIFIER_SCHEMA)
             if self._schema_version < 9:
                 self._db.execute(IDENTIFIER_REVIEW_SCHEMA)
-            self._db.execute(VULNRICHMENT_SCHEMA)
-            self._db.execute("PRAGMA user_version = 10")
+            if self._schema_version < 10:
+                self._db.execute(VULNRICHMENT_SCHEMA)
+            self._db.execute(LIFECYCLE_EVIDENCE_SCHEMA)
+            self._db.execute("PRAGMA user_version = 11")
             self.check_integrity()
         self._schema_version = CURRENT_SCHEMA_VERSION
         return True

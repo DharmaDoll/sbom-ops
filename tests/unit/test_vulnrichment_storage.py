@@ -16,7 +16,7 @@ from sbom_ops.storage.vulnrichment import VulnrichmentStore
 
 def test_new_registry_has_cisa_storage_schema(tmp_path: Path) -> None:
     with AssetRegistry(tmp_path / "assets.db", create_if_missing=True) as registry:
-        assert registry.schema_version == 10
+        assert registry.schema_version == 11
 
 
 def snapshot() -> VulnrichmentSnapshot:
@@ -104,6 +104,7 @@ def test_index_payload_mismatch_is_rejected(path: Path) -> None:
 
 def make_v9(path: Path) -> None:
     with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE lifecycle_evidence")
         db.execute("DROP TABLE vulnrichment_snapshots")
         db.execute("PRAGMA user_version=9")
 

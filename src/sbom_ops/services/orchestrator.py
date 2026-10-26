@@ -158,6 +158,8 @@ class RunResult:
         RegistrySnapshotStatus.NOT_REQUESTED
     )
     registry_projects: tuple[RegistryProjectObservation, ...] = ()
+    lifecycle_evidence_status: str = "not_requested"
+    lifecycle_evidence: tuple[dict[str, object], ...] = ()
     registry_deployments: tuple[RegistryDeploymentObservation, ...] = ()
     analysis_snapshot_status: AnalysisSnapshotStatus = (
         AnalysisSnapshotStatus.NOT_REQUESTED
@@ -218,6 +220,8 @@ class RunResult:
             "dry_run": self.dry_run,
             "registry_snapshot_status": self.registry_snapshot_status.value,
             "registry_projects": [item.as_dict() for item in self.registry_projects],
+            "lifecycle_evidence_status": self.lifecycle_evidence_status,
+            "lifecycle_evidence": list(self.lifecycle_evidence),
             "registry_deployments": [
                 item.as_dict() for item in self.registry_deployments
             ],

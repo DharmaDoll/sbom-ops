@@ -44,6 +44,7 @@ from sbom_ops.domain.poc import PocRunBusy, select_poc_targets
 from sbom_ops.domain.poc_retry import PocRetryPolicy
 from sbom_ops.domain.workflow import decide_missing_finding
 from sbom_ops.domain.workflow_audit import WorkflowAudit
+from sbom_ops.lifecycle_cli import print_evidence_review, run_evidence
 from sbom_ops.sbom_quality_cli import add_quality_parser, run_quality
 from sbom_ops.services.advisory_snapshot import load_advisory_snapshot
 from sbom_ops.services.asset_import import load_asset_registration
@@ -59,6 +60,7 @@ from sbom_ops.services.identifier_review import (
     list_identifier_reviews,
     review_identifier,
 )
+from sbom_ops.services.lifecycle_evidence import project_evidence_views
 from sbom_ops.services.orchestrator import Orchestrator, RunResult
 from sbom_ops.services.poc_identity import (
     attach_reviewed_poc,
@@ -237,6 +239,12 @@ def build_parser() -> argparse.ArgumentParser:
     assets_parser = subparsers.add_parser("assets")
     assets_parser.add_argument("--db", required=True, help="local SQLite asset DB")
     asset_commands = assets_parser.add_subparsers(dest="asset_command", required=True)
+    evidence_parser = asset_commands.add_parser("evidence-register")
+    evidence_parser.add_argument("--file", required=True)
+    evidence_parser.add_argument("--apply", action="store_true")
+    evidence_history_parser = asset_commands.add_parser("evidence-history")
+    evidence_history_parser.add_argument("--service", required=True)
+    evidence_history_parser.add_argument("--deployable", required=True)
     service_parser = asset_commands.add_parser("register-service")
     service_parser.add_argument("--service", required=True)
     service_parser.add_argument("--owner", required=True)
@@ -501,6 +509,7 @@ def print_review_queue(result: RunResult) -> None:
     )
     for action in result.actions:
         print(f"  {action}")
+    print_evidence_review(result.lifecycle_evidence_status, result.lifecycle_evidence)
 
 
 def print_triage_contexts(result: RunResult) -> None:
@@ -616,6 +625,19 @@ def run_sync(
         orchestrator_kwargs["triage_input"] = triage_input
     orchestrator = Orchestrator(config=config, **orchestrator_kwargs)
     result = orchestrator.run(audit=audit) if audit is not None else orchestrator.run()
+    if asset_db_path:
+        try:
+            evidence_status, evidence_views = project_evidence_views(
+                asset_db_path, result.registry_projects, now=datetime.now(UTC)
+            )
+        except (OSError, ValueError, sqlite3.Error, TypeError):
+            evidence_status, evidence_views = "invalid", ()
+            print("warning: lifecycle evidence could not be verified", file=sys.stderr)
+        result = replace(
+            result,
+            lifecycle_evidence_status=evidence_status,
+            lifecycle_evidence=evidence_views,
+        )
     if use_reviewed_identifiers:
         try:
             if snapshot is None:
@@ -667,12 +689,15 @@ def run_sync(
         f"closed={result.issues_closed} "
         f"kev_used_stale_cache={str(result.kev_used_stale_cache).lower()} "
         f"registry_snapshot_status={result.registry_snapshot_status.value} "
+        f"lifecycle_evidence_status={result.lifecycle_evidence_status} "
         f"analysis_snapshot_status={result.analysis_snapshot_status.value} "
         f"asset_inventory_status={result.asset_inventory_status.value} "
         f"advisory_snapshot_status={result.advisory_snapshot_status.value} "
         f"dry_run={result.dry_run}"
     )
     print("解決確認=未確認（同一応答・0件は修正完了の根拠になりません）")
+    for view in result.lifecycle_evidence:
+        print("lifecycle-evidence " + json.dumps(view, ensure_ascii=False))
     for item in result.registry_projects:
         service = (
             f"{item.service_id}/{item.deployable_id}"
@@ -833,6 +858,8 @@ def _asset_dt_client() -> DependencyTrackClient:
 
 
 def run_assets(args: argparse.Namespace) -> int:
+    if args.asset_command in ("evidence-register", "evidence-history"):
+        return run_evidence(args)
     if args.asset_command in ("retire-service", "retire-deployable", "revoke-link"):
         with AssetRegistry(args.db, read_only=not args.apply) as registry:
             registry.check_integrity()

@@ -215,6 +215,7 @@ def test_preview_exposes_wait_without_network_or_changes(
 def test_v6_readable_and_backup_preserves_poc_before_v7_migration(path, tmp_path):
     run(path, Source())
     with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE lifecycle_evidence")
         db.execute("DROP TABLE vulnrichment_snapshots")
         db.execute("DROP TABLE identifier_reviews")
         db.execute("DROP TABLE identifier_observations")

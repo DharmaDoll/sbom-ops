@@ -28,7 +28,7 @@ class VulnrichmentStore:
             timeout=5.0,
         )
         try:
-            if self._db.execute("PRAGMA user_version").fetchone()[0] != 10:
+            if self._db.execute("PRAGMA user_version").fetchone()[0] not in (10, 11):
                 raise ValueError(
                     "CISA storage requires schema v10; back up and migrate"
                 )

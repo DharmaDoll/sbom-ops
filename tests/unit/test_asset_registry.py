@@ -312,6 +312,7 @@ def test_v1_asset_db_requires_explicit_backed_up_migration(tmp_path: Path) -> No
     with AssetRegistry(db_path, create_if_missing=True) as registry:
         _register(registry)
     with sqlite3.connect(db_path) as db:
+        db.execute("DROP TABLE lifecycle_evidence")
         db.execute("DROP TABLE vulnrichment_snapshots")
         db.execute("DROP TABLE identifier_reviews")
         db.execute("DROP TABLE identifier_observations")
@@ -335,7 +336,7 @@ def test_v1_asset_db_requires_explicit_backed_up_migration(tmp_path: Path) -> No
         assert backup.schema_version == 1
         assert backup.list_deployables()[0].project_name == "checkout-api/web"
     with AssetRegistry(db_path, read_only=True) as registry:
-        assert registry.schema_version == 10
+        assert registry.schema_version == 11
         assert len(registry.list_deployment_reports()) == 1
 
 
@@ -417,6 +418,7 @@ def test_v2_asset_db_needs_backup_before_supersession(tmp_path: Path) -> None:
         _register(registry)
         first = registry.register_deployment(_deployment_report())
     with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE lifecycle_evidence")
         db.execute("DROP TABLE vulnrichment_snapshots")
         db.execute("DROP TABLE identifier_reviews")
         db.execute("DROP TABLE identifier_observations")
@@ -434,7 +436,7 @@ def test_v2_asset_db_needs_backup_before_supersession(tmp_path: Path) -> None:
             )
         registry.backup_to(backup_path)
         assert registry.migrate() is True
-        assert registry.schema_version == 10
+        assert registry.schema_version == 11
         assert (
             registry.register_deployment(
                 replace(
@@ -470,6 +472,7 @@ def test_v3_migration_retains_links_and_deployment_corrections(tmp_path: Path) -
         )
         links, reports = registry.list_links(), registry.list_deployment_reports()
     with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE lifecycle_evidence")
         db.execute("DROP TABLE vulnrichment_snapshots")
         db.execute("DROP TABLE identifier_reviews")
         db.execute("DROP TABLE identifier_observations")
