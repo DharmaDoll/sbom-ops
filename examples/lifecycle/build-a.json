@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "service_id": "checkout-api",
+  "deployable_id": "web",
+  "actor": "fictional-operator",
+  "source_repository": "https://example.invalid/checkout",
+  "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "observed_at": "2026-10-01T00:00:00Z",
+  "kind": "build",
+  "artifact_id": "build-a",
+  "artifact_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "sbom_ref": "fictional/build-a.cdx.json",
+  "sbom_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "build_ref": "https://example.invalid/builds/1"
+}

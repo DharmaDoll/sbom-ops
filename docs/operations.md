@@ -383,6 +383,58 @@ sbom-ops assets --db var/assets.sqlite3 evidence-history --service shop --deploy
 Sourceの場合は`kind: source`と`source_repository`・`source_revision`が必要。
 詳しい入力条件は[SPEC](../SPEC.md#根拠登録v1の入力契約)を参照する。
 
+#### 架空のSource・再ビルド・SBOM訂正を登録する
+
+通し演習は `python examples/lifecycle_scenario.py` で実行できる。
+保存済みの4入力を登録し、未承認→旧版Aの本番配置→新版Bとの並存→Aのstaging再配備
+→本番Aだけ停止→Bの申告矛盾→期限切れ、の順に既存の配置判定で確認する。
+配置日時は実行時刻を基準にし、期限切れだけは3日後の読取を模擬する。実機を待った結果ではない。
+毎回新しい一時DBを使い、終了時にそのDBを削除する。DTのProject情報・承認も架空であり、
+実際のDT APIの挙動を検証するものではない。`--output json` で各段階の根拠状態も確認できる。
+この演習はFindingやIssueを処理しないため、停止を脆弱性修正の証明として扱わない。
+
+確認ポイント:
+
+- `parallel`: A/Bの本番が両方 `reported / deployed`。同じソースでも別の成果物。
+- `stopped`: 本番Aだけ `not_deployed`。本番Bとstaging Aは `deployed` のまま。
+- `conflict`: 本番Bは `conflict`。勝手に新しい申告を選んで解消しない。
+- `expired`: 申告済みの配置は `expired`。一度も申告していないstaging Bは `unreported`。
+- JSONの根拠履歴: Sourceは `not_build`、Aの訂正前は `superseded`。
+  別成果物の記録は `different_artifact`。登録や照合の成功を実稼働の証明にしない。
+
+以下は登録操作を一つずつ試す手順。
+
+リポジトリのルートから、インストール済みの `sbom-ops` で試せる。
+Docker・APIキー・外部通信は不要。既存の台帳ではなく、毎回新しい一時DBを使う。
+以下は根拠登録の演習であり、Projectの承認や配置・実稼働の確認はまだ行わない。
+
+```bash
+demo_dir=$(mktemp -d)
+sbom-ops assets --db "$demo_dir/assets.sqlite3" import --file examples/asset-registration.example.json --apply
+sbom-ops assets --db "$demo_dir/assets.sqlite3" evidence-register --file examples/lifecycle/source.json --apply
+sbom-ops assets --db "$demo_dir/assets.sqlite3" evidence-register --file examples/lifecycle/build-a.json
+sbom-ops assets --db "$demo_dir/assets.sqlite3" evidence-register --file examples/lifecycle/build-a.json --apply
+sbom-ops assets --db "$demo_dir/assets.sqlite3" evidence-register --file examples/lifecycle/build-b.json --apply
+sbom-ops assets --db "$demo_dir/assets.sqlite3" evidence-register --file examples/lifecycle/build-a-corrected.json --apply
+sbom-ops assets --db "$demo_dir/assets.sqlite3" evidence-history --service checkout-api --deployable web
+```
+
+履歴には4件が残る。保存しないpreviewは記録IDを消費しない。
+
+| 記録ID | 内容 | 確認すること |
+| --- | --- | --- |
+| 1 | Source | ソース参照はA/Bと共通だが、成果物の構成根拠として代用しない |
+| 2 | Build A | 成果物IDは `build-a` |
+| 3 | Build B | 同じソースcommitでも成果物ID・digest・ビルド実行はAと異なる |
+| 4 | AのSBOM訂正 | 成果物ID・digestはAのまま。SBOM参照・digestだけが変わり、記録2を訂正する |
+
+[入力ファイル](../examples/lifecycle/)のcommit、digest、観測日時、人物名、参照先は
+すべて架空。`fictional/` の元SBOMは実在せず、署名やハッシュの照合もしていない。
+参照先を取得する操作はない。訂正ファイルの `supersedes_id: 2` は上記の新規DBと
+登録順序専用であり、既存台帳へそのまま投入しない。
+実行後の一時DBは `$demo_dir/assets.sqlite3` に残るので履歴を読み直せる。
+既存資産やDT、GitHubは変更しない。配置切替・停止の判定とは別の演習である。
+
 CLIは参照文字列を保存するだけで、SBOMの読込み・DTへの送信・署名検証をしない。
 `sync --asset-db var/assets.sqlite3 --format json`では、`lifecycle_evidence_status`と
 Project別の`lifecycle_evidence`を確認する。`matched`は承認済みProjectの成果物との

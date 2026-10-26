@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "service_id": "checkout-api",
+  "deployable_id": "web",
+  "actor": "fictional-operator",
+  "source_repository": "https://example.invalid/checkout",
+  "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "observed_at": "2026-10-01T00:00:00Z",
+  "kind": "source",
+  "sbom_ref": "fictional/source.cdx.json",
+  "sbom_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+}

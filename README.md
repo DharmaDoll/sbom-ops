@@ -71,6 +71,10 @@ CIで不足項目を必須化する例は[SBOM品質の確認手順](docs/operat
 `python examples/asset_update_scenario.py` は一時DBだけを使い、終了時に削除します。
 既存の資産台帳は変更しません。実台帳の操作は[担当変更](docs/operations.md#担当重要度を変更する)・[廃止と紐付け訂正](docs/operations.md#資産の廃止と紐付けの訂正)を参照してください。
 
+`python examples/lifecycle_scenario.py` で、同じソースからの再ビルド・新旧並存・旧版停止を
+一時DBで試せます。旧版停止後も新版と別環境の旧版を保持し、矛盾・期限切れを区別します。
+[入力と確認ポイント](docs/operations.md#架空のsource再ビルドsbom訂正を登録する)も保存済みです。
+
 `python examples/poc_scenario.py` では架空のPoC報告を使い、SQLiteへの保存・読込・再利用と、
 報告あり／未観測／取得失敗／期限切れと、再試行の待機を外部接続なしで試せます（一時DBのみ）。
 実際の取得は[PoC取得手順](docs/operations.md#poc報告を明示的に取得する)を参照してください。
