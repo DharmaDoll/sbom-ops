@@ -10,6 +10,7 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from sbom_ops.advisory_cli import add_advisory_parser, run_advisories
 from sbom_ops.cisa_cli import add_cisa_parser, load_triage_input, run_cisa
 from sbom_ops.clients.dependency_track import (
     DependencyTrackApiError,
@@ -84,6 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_cisa_parser(subparsers)
     add_quality_parser(subparsers)
     add_lookup_parser(subparsers)
+    add_advisory_parser(subparsers)
 
     workflow = subparsers.add_parser("workflow", help="local GitHub write journal")
     workflow.add_argument("--db", required=True, help="persistent local journal (0600)")
@@ -1344,6 +1346,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "lookup":
         return run_lookup(args)
+    if args.command == "advisories":
+        return run_advisories(args)
     if args.command == "sbom-quality":
         return run_quality(args)
     active_config: AppConfig | None = None

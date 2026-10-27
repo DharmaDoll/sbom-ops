@@ -44,7 +44,7 @@ class LifecycleEvidenceStore:
         self._db.row_factory = sqlite3.Row
         try:
             self._db.execute("PRAGMA foreign_keys=ON")
-            if self._db.execute("PRAGMA user_version").fetchone()[0] != 11:
+            if self._db.execute("PRAGMA user_version").fetchone()[0] not in (11, 12):
                 raise ValueError(
                     "lifecycle evidence requires schema v11; migrate first"
                 )

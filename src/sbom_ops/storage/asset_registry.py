@@ -24,6 +24,7 @@ from sbom_ops.domain.asset_registry import (
 )
 from sbom_ops.domain.assets import BusinessCriticality, DeploymentStatus
 from sbom_ops.domain.lifecycle_evidence import RecordedEvidence
+from sbom_ops.storage.advisory_feed import ADVISORY_FEED_SCHEMA, ADVISORY_POLL_SCHEMA
 from sbom_ops.storage.identifier_candidates import (
     IDENTIFIER_REVIEW_SCHEMA,
     IDENTIFIER_SCHEMA,
@@ -90,7 +91,7 @@ _LIFECYCLE_SCHEMA = """
     )
 """
 
-CURRENT_SCHEMA_VERSION = 11
+CURRENT_SCHEMA_VERSION = 12
 
 
 class AssetRegistry:
@@ -154,7 +155,7 @@ class AssetRegistry:
         AssetRegistrySnapshot, dict[tuple[str, str], tuple[RecordedEvidence, ...]]
     ]:
         """Approval and evidence from one SQLite read snapshot."""
-        if self._schema_version != 11:
+        if self._schema_version not in (11, 12):
             raise ValueError("evidence snapshot requires schema v11")
         with self._db:
             self._db.execute("BEGIN")
@@ -169,7 +170,7 @@ class AssetRegistry:
 
     def _initialize(self, *, create_if_missing: bool) -> None:
         version = self._db.execute("PRAGMA user_version").fetchone()[0]
-        if version in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
+        if version in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12):
             self._schema_version = version
             return
         if version != 0:
@@ -241,7 +242,9 @@ class AssetRegistry:
             self._db.execute(IDENTIFIER_REVIEW_SCHEMA)
             self._db.execute(VULNRICHMENT_SCHEMA)
             self._db.execute(LIFECYCLE_EVIDENCE_SCHEMA)
-            self._db.execute("PRAGMA user_version = 11")
+            self._db.execute(ADVISORY_FEED_SCHEMA)
+            self._db.execute(ADVISORY_POLL_SCHEMA)
+            self._db.execute("PRAGMA user_version = 12")
         self._schema_version = CURRENT_SCHEMA_VERSION
 
     def migrate(self) -> bool:
@@ -271,8 +274,11 @@ class AssetRegistry:
                 self._db.execute(IDENTIFIER_REVIEW_SCHEMA)
             if self._schema_version < 10:
                 self._db.execute(VULNRICHMENT_SCHEMA)
-            self._db.execute(LIFECYCLE_EVIDENCE_SCHEMA)
-            self._db.execute("PRAGMA user_version = 11")
+            if self._schema_version < 11:
+                self._db.execute(LIFECYCLE_EVIDENCE_SCHEMA)
+            self._db.execute(ADVISORY_FEED_SCHEMA)
+            self._db.execute(ADVISORY_POLL_SCHEMA)
+            self._db.execute("PRAGMA user_version = 12")
             self.check_integrity()
         self._schema_version = CURRENT_SCHEMA_VERSION
         return True

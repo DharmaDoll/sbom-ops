@@ -128,7 +128,7 @@ def test_insert_failure_rolls_back_correction(evidence_db: Path) -> None:
         assert store.list_records("shop", "api") == (first,)
 
 
-@pytest.mark.parametrize("version", [0, 10, 12])
+@pytest.mark.parametrize("version", [0, 10, 13])
 def test_store_rejects_unsupported_schema(evidence_db: Path, version: int) -> None:
     with sqlite3.connect(evidence_db) as db:
         db.execute(f"PRAGMA user_version={version}")
@@ -203,7 +203,10 @@ def make_v10(path: Path) -> None:
     with AssetRegistry(path, create_if_missing=True) as registry:
         version = registry.schema_version
     with sqlite3.connect(path) as db:
-        if version == 11:
+        if version == 12:
+            db.execute("DROP TABLE advisory_feed_revisions")
+            db.execute("DROP TABLE advisory_poll_state")
+        if version in (11, 12):
             db.execute("DROP TABLE lifecycle_evidence")
         db.execute("PRAGMA user_version=10")
         db.execute("INSERT INTO services VALUES ('shop', 'team', 'high', 'sales')")
@@ -222,7 +225,7 @@ def test_v10_migration_keeps_rows_and_backup(tmp_path: Path) -> None:
         assert registry.schema_version == 10
         registry.backup_to(backup)
         assert registry.migrate()
-        assert registry.schema_version == 11
+        assert registry.schema_version == 12
         assert not registry.migrate()
     with sqlite3.connect(backup) as db:
         assert list(db.iterdump()) == original
@@ -267,7 +270,7 @@ def test_failed_v10_migration_rolls_back(
 def test_fresh_database_has_empty_evidence_table(tmp_path: Path) -> None:
     path = tmp_path / "assets.db"
     with AssetRegistry(path, create_if_missing=True) as registry:
-        assert registry.schema_version == 11
+        assert registry.schema_version == 12
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT count(*) FROM lifecycle_evidence").fetchone()[0] == 0
 

@@ -153,6 +153,8 @@ def test_failed_v4_migration_preserves_old_schema(tmp_path, monkeypatch):
     path = tmp_path / "assets.sqlite3"
     populate(path)
     with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE advisory_feed_revisions")
+        db.execute("DROP TABLE advisory_poll_state")
         db.execute("DROP TABLE lifecycle_evidence")
         db.execute("DROP TABLE vulnrichment_snapshots")
         db.execute("DROP TABLE identifier_reviews")
@@ -284,6 +286,8 @@ def test_v4_migration_preserves_update_history_and_backup(tmp_path):
         history = registry.list_service_changes("checkout")
         links = registry.list_links()
     with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE advisory_feed_revisions")
+        db.execute("DROP TABLE advisory_poll_state")
         db.execute("DROP TABLE lifecycle_evidence")
         db.execute("DROP TABLE vulnrichment_snapshots")
         db.execute("DROP TABLE identifier_reviews")
@@ -305,7 +309,7 @@ def test_v4_migration_preserves_update_history_and_backup(tmp_path):
             )
         backup = registry.backup_to(tmp_path / "v4-backup.sqlite3")
         assert registry.migrate()
-        assert registry.schema_version == 11
+        assert registry.schema_version == 12
         assert registry.list_service_changes("checkout") == history
         assert registry.list_links() == links
     with AssetRegistry(backup, read_only=True) as registry:

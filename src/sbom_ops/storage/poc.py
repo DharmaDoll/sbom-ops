@@ -60,7 +60,9 @@ class PocStore:
         )
         try:
             version = self._db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (6, 7, 8, 9, 10, 11) or (not read_only and version < 7):
+            if version not in (6, 7, 8, 9, 10, 11, 12) or (
+                not read_only and version < 7
+            ):
                 raise ValueError(
                     "PoC updates require schema v7; back up and migrate the DB"
                 )

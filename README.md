@@ -78,6 +78,9 @@ P1→P2の順で並びますが、資産情報で優先度そのものは変わ�
 JSON出力は `python examples/review_scenario.py --output json` で確認できます。
 旧形式の資産JSONを使う比較例は `python examples/asset_scenario.py` で実行できます。
 
+[架空の速報から資産・担当を探す演習](docs/operations.md#架空の速報から資産担当を確認する外部通信なし)
+も、Docker・APIキーなしで試せます。CVEの一致・未取得・検索範囲内で一致なしを区別します。
+
 SBOM自体の記載状況も、DTやAPIキーなしで確認できます。
 
 ```bash

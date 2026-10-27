@@ -423,6 +423,94 @@ Aの一致する根拠は訂正後の文書、BはB自身の文書となる。`-
 未承認は担当や根拠を別資産から借用しない。CVE・Finding・P2評価は固定の架空教材であり、
 実際のDT取得や優先度計算を行った結果ではない。配置・根拠には既存のローカル演習の判定を使う。
 
+#### 架空の速報から資産・担当を確認する（外部通信なし）
+
+次の教材は実際のJPCERT/CCの注意喚起ではなく、そのRSS形式を使った架空データである。
+`--source jpcert`は解析形式の指定で、JPCERT/CCによる発表・真正性を証明しない。
+保存済みsync結果だけを検索し、DT・GitHubへの通信やDB書込は行わない。
+
+```bash
+mkdir -p var
+python examples/lifecycle_scenario.py --output sync --stage stopped > var/lifecycle-example.json
+sbom-ops advisories review-file --feed examples/advisory-feed.example.rdf --source jpcert --findings var/lifecycle-example.json
+```
+
+3記事について「CVEとFindingの一致」「CVE未取得」「検索範囲内で一致なし」を確認する。
+一致した場合も、担当・配置申告・停止情報を読み、人が対応要否を判断する。
+未取得は未採番と同義ではなく、一致なしも影響なしではない。`example.invalid`のURLは
+架空の原文リンクであり、開く必要はない。機械処理には末尾へ`--output json`を付ける。
+このコマンドは読取専用の確認用で、速報の定期取得・保存コマンドとは別である。
+
+公式RSSを取得して保存する場合は、初期化・移行済みの資産DBを指定する。
+次の一つ目は予定確認だけで通信しない。二つ目は外部通信とSQLite書込を行う。
+
+```bash
+sbom-ops advisories refresh --db var/assets.sqlite3 --source jpcert
+sbom-ops advisories refresh --db var/assets.sqlite3 --source jpcert --execute --output json
+```
+
+Ubuntuは`--source ubuntu`を指定する。取得間隔は既定1時間、`--interval-seconds 3600`
+で変更できる。繰り返し起動しても次回時刻前は取得せず、429/503の待ち時間が長ければ
+そちらを優先する。失敗時も過去の記事と最終成功を保持し、鮮度は不明として表示する。
+成功は最新情報の網羅を保証しない。DBは自動作成・移行しないので、旧版では先に
+`sbom-ops assets --db var/assets.sqlite3 migrate --backup 未使用のバックアップ先`
+を実行する。実行中の競合を避ける`.advisories.lock`は削除しない。
+定期実行の設定は別途行う。通常の`sync`からは自動取得しない。
+
+Unixのcronを使う場合の例（自動登録はしない）。`/opt/sbom-ops`は実際の導入先へ
+置き換え、資産DBを読む・書く権限を持つ専用ユーザーで設定する。
+
+```cron
+0 * * * * /opt/sbom-ops/.venv/bin/sbom-ops advisories refresh --db /opt/sbom-ops/var/assets.sqlite3 --source jpcert --interval-seconds 3600 --execute --output json
+10 * * * * /opt/sbom-ops/.venv/bin/sbom-ops advisories refresh --db /opt/sbom-ops/var/assets.sqlite3 --source ubuntu --interval-seconds 3600 --execute --output json
+```
+
+標準出力・標準エラーと終了コードを運用側で収集する。失敗は終了2、予定確認・成功・
+再取得待ちは終了0。ただし再取得待ちでも前回の失敗が残る場合があるため、終了コードだけで
+健全性を判断せずJSONの`state.error`・`state.last_success`・`freshness`を確認する。
+起動間隔と内部の次回時刻の組み合わせで、次の取得が1周期後になる場合がある。
+停止はスケジュールを無効化するだけでよく、保存記事や状態を消す必要はない。
+通常の`sync`やPoC更新と独立して運用する。Vulnerability-Lookupは既知CVEのPoC補完に使い、
+JPCERT/ベンダー速報の収録範囲・遅延を確認できていないため速報監視の代替にはしない。
+
+保存後は次のコマンドで記事URL・CVE言及・観測日時・内容指紋を確認できる。
+訂正された記事は最新の版を表示し、古い版はDBの履歴に残る。
+
+```bash
+sbom-ops advisories list --db var/assets.sqlite3 --source jpcert --limit 100 --output json
+```
+
+`next_after_id`があれば、その値を`--after-id`に指定して続ける。続きが空なら終了。
+ページ間の更新は固定しないため、訂正された記事が再登場することがある。
+この一覧操作は通信・DB書込を行わない。`poll`に最終成功・直近失敗・鮮度を表示する。
+
+保存済み記事から関連資産・担当へ進むには、成功したsyncのJSONを指定する。
+
+```bash
+sbom-ops advisories review --db var/assets.sqlite3 --source jpcert --findings var/lifecycle-example.json
+```
+
+上例のsync JSONは架空教材なので、実運用では実際のsync出力へ置き換える。
+`--limit`・`--after-id`で続きを読み、`--output json`で機械処理できる。
+記事の保存記録ID・観測日時、元run、CVEの記載元、資産・担当を保持する。
+本文は保存していないが、保存時に抽出したCVEから検索できる。外部通信・DB書込はしない。
+一覧・照合の`poll`で取得状態を確認し、古い記事を最新の速報と誤認しない。
+表示時の鮮度判定は既定1時間。取得間隔に合わせて`--max-age-seconds 3600`で変更できるが、
+これは読取時の判定基準だけで、次回取得時刻やDBを変更しない。
+取得失敗後も記事の照合結果は残るため、検索結果だけでなく`state.error`と`freshness`も読む。
+
+訂正内容を確認するには、一覧JSONの`articles[].metadata.item_key`をそのまま指定する。
+JPCERTのfragment付きURLやUbuntuのguidを加工せず、シェルでは引用符で囲む。
+
+```bash
+sbom-ops advisories history --db var/assets.sqlite3 --source jpcert --item-key '一覧からコピーした記事識別子' --output json
+```
+
+各版の`change.changed_fields`に変更された保存項目、`previous_record_id`に直前の記録を示す。
+変更前後のタイトルやCVE言及を確認できる。本文は保存しないため、指紋だけが変わった場合の
+本文差分は分からない。原文へ戻って確認し、過去の内容への復帰も新しい履歴として扱う。
+これは自分の取得した範囲の履歴であり、配信元の訂正履歴の完全な複製ではない。
+
 #### 架空のSource・再ビルド・SBOM訂正を登録する
 
 通し演習は `python examples/lifecycle_scenario.py` で実行できる。

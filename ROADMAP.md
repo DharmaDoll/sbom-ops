@@ -54,6 +54,15 @@ labを製品からimportせず、対象サービスのCVEを必要な頻度で�
 非CVE ID・未解決alias・通信失敗は「PoCなし」にしない。
 利用先のAPI認証・利用条件・制限を実行前に確認し、一般の公開参照をPoC件数に混ぜない。
 
+## 速報から資産の確認へつなぐ計画
+
+[#24 JPCERT・ベンダー速報と資産の照合](https://github.com/DharmaDoll/sbom-ops/issues/24)
+を開発優先度「中」で進める。#16/#21/#23の一覧・根拠・逆引きを再利用し、
+公式配信の取得→新着/更新の保存→CVE照合→人の確認の順で実装する。
+CVE未採番やDT未反映を確認待ちに残し、PoC取得を速報監視の代わりにしない。
+配信範囲・利用条件を先に確認し、RSSの取得成功を過去記事の網羅性と混同しない。
+#7のGitHub書込み・#13のSLA承認は前提にしない。進捗と完了条件は#24へ集約する。
+
 ## SBOMライフサイクルを運用へ結ぶ計画
 
 [ユーザー提示の指針（固定版）](https://github.com/DharmaDoll/product-security-guidance/blob/7a4b1556f469bb428f257d95c2922bdf68c6c16c/sources/user-supplied/user-supplied-sbom-lifecycle-guidance-ja.md)

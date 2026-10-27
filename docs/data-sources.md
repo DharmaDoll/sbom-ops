@@ -189,6 +189,65 @@ URLは`SBOM_OPS_KEV_FEED_URL`で変更できる。
 KEV該当は業務上の緊急度を示すものであり、Dependency-TrackのAnalysis stateを
 自動変更する根拠にはしない。
 
+## 速報監視の情報源選定（#24）
+
+2026-10-27の公式案内とRSS取得の確認結果。製品の取得コード・パーサーで単発取得も確認した。
+現行のVulnerability-Lookupによる対象CVEのPoC取得とは別の機能として扱う。
+
+| 候補 | 確認できたこと | 採用前に確認すること |
+| --- | --- | --- |
+| [JPCERT/CC RSS](https://www.jpcert.or.jp/rss/) | RSS 1.0。注意喚起・緊急報告の最新6件と最新Weekly Reportの脆弱性情報を配信。お知らせ・統合版とは対象が異なる | RDFの識別子・日時・CVEの有無、記事更新の反映、停止期間の取りこぼし |
+| [Cisco RSS](https://sec.cloudapps.cisco.com/security/center/rss.x) | RSS 1.0/2.0の案内あり。出典表示・全文非掲載・商用利用等の条件が示されている | 想定用途での利用条件、本文/CSAF取得の必要性、配信の保持範囲。利用許諾済みとは扱わない |
+| [Ubuntu Security Notices](https://ubuntu.com/security/notices) | 公式にRSS/Atomの購読を案内。USNは公式パッケージの修正公開通知 | 未修正速報の網羅には使わない。再配布など購読以外の用途の条件を別途確認 |
+| Vulnerability-Lookup | 現行のPoC補完とは役割が異なる | 上記速報の収録範囲・遅延・更新反映・原文参照を実証するまで、公式配信の代替としない |
+
+取得成功は「その応答に含まれる記事を取得できた」ことであり、全記事の取得保証ではない。
+RSSから消えた記事を削除・解決済みにせず、初回取得や停止後の履歴不足を区別する。
+公表日時・更新日時・取得日時を分け、配信側に存在しない日時を作らない。
+フィードにCVEがなければ「未採番」と断定せず「CVEを取得できていない」として原文確認へ回す。
+記事本文を追加取得する場合も、許可する情報源と取得上限を事前に定義し、任意リンクを巡回しない。
+初期対応はJPCERT/CC RSSとUbuntu USN RSS。取得間隔は製品側の初期値1時間、保存は
+SQLiteのメタデータとし、詳細はSPECを参照する。これは配信元の更新保証ではない。
+JPCERT/CCは公式RSS案内で自由な利用を案内し、Ubuntuは公式USNページで購読を案内している。
+本機能は運用担当者向けの購読・原文参照として実装し、記事本文の転載・配布はしない。
+Ubuntuの[知的財産方針](https://canonical.com/legal/intellectual-property-policy)は
+著作物ごとの条件を参照するよう求めており、RSS購読の案内を無制限の再配布許諾と扱わない。
+外部向け再配布・商用データ提供は対象外で、必要になった時点で別途確認する。
+
+### 実配信で確認した識別・日時の制約
+
+2026-10-27にサイズ上限1 MiB・timeout 20秒・リダイレクト追従なしで公式フィードを読取。
+JPCERT/CC RDFは全応答、Ubuntu RSSは先頭部分を確認した。製品による継続監視や
+複数時点の更新追跡を検証したものではない。実記事本文はリポジトリへ保存していない。
+
+- [JPCERT/CC RDF](https://www.jpcert.or.jp/rss/jpcert.rdf): RSS 1.0の`item`に
+  `rdf:about`、`link`、`dc:identifier`、timezone付き`dc:date`がある。
+  観測したWeekly Reportの24項目は同じ`dc:identifier`を共有し、URLのfragmentで区別される。
+  `dc:identifier`だけでupsertすると項目が失われるため、fragmentを保持した記事URLを識別に用いる。
+  タイトルにCVEがある項目・ない項目を確認。`dc:date`一つから公表と更新の両日時を作らない。
+- [Ubuntu RSS](https://ubuntu.com/security/notices/rss.xml): RSS 2.0の`item`に
+  `guid`、`link`、`title`、`description`、`pubDate`がある。
+  観測した先頭部分にはdescription内に複数CVEを持つ項目と、CVE記載のない項目があった。
+  channelの`lastBuildDate`は記事の更新日時に転用しない。
+- いずれもCVE未取得を未採番と断定しない。原文の追加取得の契約は別途必要。
+  変更検知は日時の増加だけに依存せず、記事ごとの内容指紋で行う設計とする。
+  同じ内容の再出現・日時の逆行・配信からの脱落は、解決判定に使わない。
+
+### 製品の取得処理による単発確認
+
+2026-10-27、`AdvisoryFeedClient.fetch`と`parse_advisory_feed`を使い、各配信先を1回取得。
+最初の制限環境では両方ともtransport_error。ネットワーク許可後の実行では以下を確認した。
+
+| 情報源 | 応答サイズ | 解析記事数 | RSS内にCVE言及がある記事数 |
+| --- | ---: | ---: | ---: |
+| JPCERT/CC | 20,494 bytes | 30 | 4 |
+| Ubuntu USN | 10,120 bytes | 10 | 5 |
+
+TLS 1.3以上・証明書検証、リダイレクト非追従、1 MiB上限の製品コードで成功した。
+本文・生応答は保存せず、既存DBも変更していない。数値はこの観測時点だけの結果。
+CVEがない記事は原文確認が必要で、本文巡回をしない本機能だけで全記事の自動照合はできない。
+継続取得・実配信の訂正追跡・停止後の取りこぼしは、この単発成功では未検証である。
+
 ## 3.1 将来の脆弱性Enrichment: Vulnerability-LookupとVuls vuls.db
 
 PoC、公開Exploit、実悪用観測、KEV、EPSS、vendor VEX等を補助情報として扱う

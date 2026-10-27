@@ -149,6 +149,8 @@ def test_preview_does_not_create_or_migrate_db(inputs, tmp_path, capsys) -> None
     assert run(missing, "evidence-register", "--file", str(source)) == 1
     assert not missing.exists()
     with sqlite3.connect(db) as connection:
+        connection.execute("DROP TABLE advisory_feed_revisions")
+        connection.execute("DROP TABLE advisory_poll_state")
         connection.execute("DROP TABLE lifecycle_evidence")
         connection.execute("PRAGMA user_version=10")
     before = db.read_bytes()
@@ -346,6 +348,8 @@ def test_sync_reads_evidence_and_distinguishes_invalid(
             if case == "broken":
                 connection.execute("UPDATE lifecycle_evidence SET evidence_json='{}'")
             elif case == "old":
+                connection.execute("DROP TABLE advisory_feed_revisions")
+                connection.execute("DROP TABLE advisory_poll_state")
                 connection.execute("DROP TABLE lifecycle_evidence")
                 connection.execute("PRAGMA user_version=10")
             elif case == "empty":

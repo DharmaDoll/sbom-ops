@@ -125,6 +125,8 @@ def test_old_db_not_migrated_or_queried(
     with AssetRegistry(path, create_if_missing=True):
         pass
     with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE advisory_feed_revisions")
+        db.execute("DROP TABLE advisory_poll_state")
         db.execute("DROP TABLE lifecycle_evidence")
         db.execute("DROP TABLE vulnrichment_snapshots")
         db.execute("PRAGMA user_version=9")

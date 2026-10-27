@@ -9,6 +9,13 @@ from sbom_ops.services.lookup_input import read_lookup_document
 
 def lookup_file(path: Path, query: LookupQuery) -> dict[str, object]:
     document = read_lookup_document(path)
+    return lookup_validated_document(document, query)
+
+
+def lookup_validated_document(
+    document: dict[str, object], query: LookupQuery
+) -> dict[str, object]:
+    """Select from a document already checked by read_lookup_document."""
     selected = [
         row
         for row in document["review_queue"]
