@@ -59,6 +59,9 @@ DTの管理画面で、アップロード用と読み取り用のAPIキーを別
 | SBOM投入と演習Projectの自動作成 | `BOM_UPLOAD`, `PROJECT_CREATION_UPLOAD` |
 | sbom-opsの読み取り | `VIEW_PORTFOLIO`, `VIEW_VULNERABILITY` |
 
+操作別の内訳と未検証事項は[DT API権限表](dependency-track/api.md#操作ごとの権限dt-4143)を参照。
+`SYSTEM_CONFIGURATION`は設定の変更も許可するため、通常の読取キーには追加しない。
+
 以下の値を置き換えて設定する。以後は同じシェルで実行する。
 `.env`は自動では読み込まれない。キー値はGitや実行結果の記録へ入れない。
 

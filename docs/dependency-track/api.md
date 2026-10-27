@@ -26,6 +26,51 @@ The orchestrator is expected to use API areas related to:
 - EPSS and finding risk metadata
 - Teams/API keys
 
+## 操作ごとの権限（DT 4.14.3）
+
+以下は保存済みのDT 4.14.3 OpenAPIと現在のクライアントを2026-10-27に照合した表。
+現在の接続先で各キーを試した結果ではなく、最小権限の実証済み一覧でもない。
+版更新時は[公式REST API案内](https://docs.dependencytrack.org/integrations/rest-api/)に従い、
+対象サーバーのOpenAPIで再確認する。パスは`/api`から記載する。
+
+| 用途 | メソッド・パス | 契約上の権限 | 本PJでの利用 |
+| --- | --- | --- | --- |
+| Project一覧・個別読取 | `GET /api/v1/project`、`GET /api/v1/project/{uuid}` | `VIEW_PORTFOLIO` | 製品sync・資産照合 |
+| Finding・分析状態読取 | `GET /api/v1/finding/project/{uuid}` | `VIEW_VULNERABILITY` | 製品sync。抑制済みも取得 |
+| 脆弱性・EPSS補完 | `GET /api/v1/vulnerability/project/{uuid}` | `VIEW_PORTFOLIO` | 製品sync |
+| Component一覧 | `GET /api/v1/component/project/{uuid}` | `VIEW_PORTFOLIO` | lab。製品syncはFinding内の部品情報を利用 |
+| 既存ProjectへのSBOM投入 | `POST /api/v1/bom` | `BOM_UPLOAD` | CIスクリプト・明示した製品upload-and-wait・lab |
+| SBOM投入時のProject自動作成 | 同上、`autoCreate=true` | 上記に加え`PROJECT_CREATION_UPLOAD`または`PORTFOLIO_MANAGEMENT` | CI演習・lab。通常は前者を選び、管理権限を付けない |
+| 非同期処理の確認 | `GET /api/v1/event/token/{uuid}` | OpenAPIの個別権限記載なし | アップロード後の待機。認証不要という意味ではない |
+| 自分のチームの確認 | `GET /api/v1/team/self` | OpenAPIの個別権限記載なし | labの事前確認。キー値を記録しない |
+| 設定の読取 | `GET /api/v1/configProperty` | `SYSTEM_CONFIGURATION` | labの明示調査のみ |
+| 設定の変更 | `POST /api/v1/configProperty` | `SYSTEM_CONFIGURATION` | labの明示した管理操作のみ |
+| Analysis履歴読取 | `GET /api/v1/analysis` | `VIEW_VULNERABILITY` | lab。通常syncではFindingに含まれる状態を利用 |
+| Analysisの変更 | `PUT /api/v1/analysis` | `VULNERABILITY_ANALYSIS` | labの明示opt-inのみ。製品では変更しない |
+| Project削除 | `DELETE /api/v1/project/{uuid}` | `PORTFOLIO_MANAGEMENT` | 専用cleanupキーによる実行単位のlab削除のみ |
+
+通常の製品読取には`VIEW_PORTFOLIO`と`VIEW_VULNERABILITY`を使用する。
+Analysis履歴を読むだけなら変更権限は不要。
+一方、`SYSTEM_CONFIGURATION`は設定のGETとPOSTで共通なので、
+「設定を読むためのキー」を読取専用キーと呼ばない。通常syncやPoC取得のために追加しない。
+権限名だけでアクセス範囲が決まるわけではなく、Projectのアクセス制御も別に確認する。
+
+### 最小権限の検証と未確認事項
+
+- 保存済みOpenAPIは`var/dt-lab/openapi.json`（Git管理外）。過去の実測は
+  [実験記録](../../lab/dependency_track/EXPERIMENTS.md)の権限事前確認、Analysis、設定読取を参照。
+  混合権限のキーで成功した結果を、表の権限だけで成功した証拠にはしない。
+- 読取・upload・設定・Analysis・cleanupを用途別に検証することが
+  [#5](https://github.com/DharmaDoll/sbom-ops/issues/5)の残条件。
+  キーを増やすこと自体が目的ではないが、既存の混合権限キーの観測だけでは独立検証を満たさない。
+  新規キーの発行や既存チームの権限変更は、運用者が対象・期間を決めてから行う。
+- 対象版、操作、付与権限名、対象Projectの範囲、HTTP結果、期待結果との一致を記録する。
+  キー値、レスポンス全文、環境固有UUIDは文書に転載しない。
+- 401は認証失敗、403はアクセス拒否として停止する。404だけで権限不足・空一覧・未検出とは断定しない。
+  通信失敗は未確認とし、管理キーへの自動切替や権限の自動追加をしない。
+- 書込検証は使い捨てProjectと明示opt-inが前提。cleanupは名前の接頭辞だけで削除せず、
+  実行記録・対象一致・稼働中処理の終了確認・dry-run・明示実行・監査を維持する。
+
 ## Implementation Rule
 
 All production Dependency-Track API calls must be implemented in:
