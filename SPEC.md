@@ -282,6 +282,38 @@ v5の`retire-service / retire-deployable / revoke-link`は変更者・理由が�
 次のGitHub同期で既存の修正作業の資産対応を確認できなくなった場合は、上書きせず停止する。
 操作は[運用ガイド](docs/operations.md#資産の廃止と紐付けの訂正)を参照。
 
+## SBOMの生成対象と投入タイミング
+
+コンテナ配布では、CIがビルド後の**実際に配布する最終イメージ**からBuild SBOMを
+生成し、DTへ直接送信する。標準の順序はbuild → registryへpush → digest確定 →
+そのdigestのイメージからSBOM生成 → DT投入とする。push前に生成する場合も、
+生成対象とpush・配布対象の同一性を確認する。可変タグだけでは対応を確定しない。
+これは導入CIの運用契約であり、全利用者のCIへの自動組込みを実装済みとするものではない。
+
+- 生成・送信は、リリース候補または配布対象の新しい成果物ができるたびに行う。
+  同じcommitの再ビルドでも成果物が異なれば別対象とする。
+- 入力はCycloneDX SBOM。OSパッケージとアプリケーション依存部品を収録し、
+  OS名・リリース、パッケージ名・版・PURL、利用可能な`distro`情報を保持する。
+  生成器・版・設定による収録漏れを確認し、SBOMが存在するだけで網羅性を保証しない。
+- マルチステージビルドは最終ステージを対象とする。複数アーキテクチャは各配布
+  イメージを対象とし、platform別manifest digestとindex digestを混同しない。
+- Source SBOMは開発時の補助情報として別に扱い、Build SBOMを上書きしない。
+  イメージ外のホストOS・実行ホストのカーネル・設定不備は、このSBOMの評価範囲外。
+- 同一成果物の再配備や新しいCVEの公開だけを理由にSBOMを再生成・再送しない。
+  DTの登録済み構成に対する再解析と、SBOM訂正による再投入を区別する。
+- アップロード受付・BOM処理完了・脆弱性解析結果の取得を別段階として確認する。
+  受付成功やFinding 0件を「解析完了・脆弱性なし」の根拠にしない。
+
+OS脆弱性の検出はDTの版、解析器、有効なデータソースに依存する。DT 4.14の
+Alpine/Debian/Ubuntu向けdistro照合にはPURLの`distro`とOSVデータが必要。
+導入対象OSの代表イメージで、収録部品・既知の検出対象・本PJでの取得を検証する。
+この契約の記載だけでOS別の通し検証を完了したとは扱わない。
+
+根拠: [DT CI/CD](https://docs.dependencytrack.org/usage/cicd/)、
+[DT 4.14のOS照合](https://docs.dependencytrack.org/2026/03/09/v4.14.0/)、
+[Trivyのイメージ対象とSBOM生成](https://trivy.dev/docs/latest/target/container_image/)。
+具体的な確認順は[運用ガイド](docs/operations.md#コンテナのsbomを生成してdtへ送るタイミング)を参照。
+
 ## SBOMライフサイクルの結合契約（後続実装の基準）
 
 この節は#20の設計契約であり、現行CLIが以下の根拠をすべて保存できる意味ではない。
