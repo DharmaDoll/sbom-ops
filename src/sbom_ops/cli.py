@@ -71,6 +71,7 @@ from sbom_ops.services.poc_identity import (
 )
 from sbom_ops.services.poc_refresh import collect_poc_snapshot
 from sbom_ops.services.sync_log import append_sync_event
+from sbom_ops.slack_cli import add_slack_parser, run_slack
 from sbom_ops.storage.asset_registry import CURRENT_SCHEMA_VERSION, AssetRegistry
 from sbom_ops.storage.identifier_candidates import IdentifierStore
 from sbom_ops.storage.issue_journal import IssueJournal
@@ -82,6 +83,7 @@ from sbom_ops.storage.run_lock import exclusive_run, poc_lock_path
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sbom-ops")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    add_slack_parser(subparsers)
     add_cisa_parser(subparsers)
     add_quality_parser(subparsers)
     add_lookup_parser(subparsers)
@@ -1377,6 +1379,8 @@ def _run_poc_fetch(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    if args.command == "slack":
+        return run_slack(args)
     if args.command == "lookup":
         return run_lookup(args)
     if args.command == "advisories":

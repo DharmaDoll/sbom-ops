@@ -1,0 +1,17 @@
+{
+  "enabled": false,
+  "channel": "C00000000",
+  "token_env": "SBOM_OPS_SLACK_BOT_TOKEN",
+  "priorities": ["P0", "P1"],
+  "grouping": "repair",
+  "change_fields": ["priority", "owners", "context", "rationale"],
+  "min_interval_seconds": 3600,
+  "reminder_seconds": 0,
+  "pacing_seconds": 1,
+  "max_messages": 20,
+  "max_attempts": 3,
+  "max_input_age_seconds": 86400,
+  "dt_url": "https://dt.example.invalid",
+  "report_url": "https://reports.example.invalid",
+  "record_url": "https://work.example.invalid"
+}

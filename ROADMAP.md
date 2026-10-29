@@ -10,6 +10,11 @@
 
 ## 基本方針
 
+Slack通知は[#25](https://github.com/DharmaDoll/sbom-ops/issues/25)で扱う。
+標準出力の通知例 → 独立した送信台帳とmock検証 → 限定チャンネル試行の順で、
+通知量・担当への引渡しを調整する。GitHub同期の再開を前提とせず、判断は人が
+既存の作業管理へ記録する。[通知の運用手順](docs/slack-notifications.md)を参照。
+
 - DTをSBOM台帳の正本とし、CIから直接投入する。中間サーバは作らない。
 - 自社のサービス・担当・配布単位・承認したProject対応・期限付き稼働申告はSQLiteで扱う。
 - PoCは有無・情報源別件数・観測時点を扱い、資産と同じSQLiteへ保存する。動作の有効性は評価しない。
@@ -151,7 +156,7 @@ GitHubを使わない段階では、これらを理由に資産・対応一覧�
   [SPECの基盤要件](SPEC.md#google-cloud-deployment-contract)と
   [ADR 0001](docs/adr/0001-gcp-secure-delivery-runtime.md)は維持する。
 - VEX書込：DTを正本とし、対象範囲の解決・差分・人の承認・投入後照合が必要になったとき。
-- 到達可能性、LLM支援、Jira、Slack/Teams、SARIF、ダッシュボード、マルチテナント。
+- 到達可能性、LLM支援、Jira、Slack双方向連携/Teams、SARIF、ダッシュボード、マルチテナント。
 - 追加のPoC品質審査・複数人の判定一致率・大規模lab網羅検証。
   PoCの動作評価は製品の目的に含めない。
 - NFS・停電・ホスト障害の追加実験：実際の配備条件で必要となった場合。
