@@ -270,6 +270,23 @@ def test_reference_context_preserves_sources_and_workflow(
     )
     assert factors["automatable"]["value"] == expected_auto
     reference = row["reference"]
+    guidance = row["guidance"]
+    assert guidance["asset_owner"] == "team"
+    assert guidance["asset"]["service_id"] == "service-a"
+    assert guidance["asset"]["environment"] == environment
+    assert guidance["automatic_actions"] is False
+    actions = {item["code"]: item for item in guidance["actions"]}
+    if case == "expired":
+        assert actions["confirm_automatable"]["reason"] == "expired"
+        assert actions["confirm_automatable"]["role"] == "security"
+        assert actions["confirm_automatable"]["assignee"] is None
+    if environment != "production":
+        assert actions["confirm_public_exposure"]["assignee"] == "team"
+        assert "対象環境" in actions["confirm_public_exposure"]["instruction"]
+    if case == "required" and environment == "production":
+        assert "plan_forensic_triage" in actions
+    else:
+        assert "plan_forensic_triage" not in actions
     if case == "expired" or environment != "production":
         assert reference["status"] == "pending"
         if case == "expired":
@@ -312,6 +329,8 @@ def test_reference_context_preserves_sources_and_workflow(
         if case == "maintenance":
             assert "参照期限区分: 次回の予定された主要更新・再構築時" in text
     assert "固定版・自社SLAではありません" in text
+    assert "次の行動" in text
+    assert "確認先" in text
     assert f"環境={environment}" in text
 
 
@@ -331,6 +350,9 @@ def test_reference_context_legacy_kev_does_not_invent_provenance() -> None:
     assert row["kev"] is None
     assert "kev_unavailable" in row["reasons"]
     assert row["evidence"]["asset_link_verified"] is False
+    assert row["guidance"]["asset_owner"] is None
+    assert row["guidance"]["asset"] is None
+    assert all(item["assignee"] is None for item in row["guidance"]["actions"])
 
 
 class FakeGitHub:

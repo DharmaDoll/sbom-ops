@@ -554,6 +554,39 @@ def print_triage_contexts(result: RunResult) -> None:
             "（固定版・自社SLAではありません）"
         )
         print("    出典・元の申告・日時の詳細: --output json")
+        guidance = entry.guidance()
+        print(
+            "    対象資産・担当: "
+            + json.dumps(
+                {key: guidance[key] for key in ("asset", "asset_owner")},
+                ensure_ascii=False,
+            )
+        )
+        for action in guidance["actions"]:
+            role = (
+                "資産・ネットワーク担当"
+                if action["role"] == "asset"
+                else "セキュリティ担当"
+            )
+            assignee = (
+                json.dumps(action["assignee"], ensure_ascii=False)
+                if action["assignee"]
+                else "未割当"
+            )
+            reason = {
+                "missing": "情報が未取得",
+                "unknown": "不明",
+                "expired": "期限切れ",
+                "future": "観測日時が未来",
+                "conflict": "根拠が矛盾",
+                "owner_unassigned": "資産担当が未登録",
+                "cve_unresolved": "CVEとの対応が未確認",
+                "asset_link_unverified": "資産との対応が未確認",
+                "reference_matched": "参照表の条件に一致",
+                "specified_by_reference": "参照表で侵害確認を追加指定",
+            }.get(action["reason"], action["reason"])
+            print(f"    確認先: {role} / {assignee} / 理由: {reason}")
+            print(f"      次の行動: {action['instruction']}")
 
 
 def run_sync(

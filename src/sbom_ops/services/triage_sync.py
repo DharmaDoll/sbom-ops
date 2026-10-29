@@ -9,6 +9,7 @@ from sbom_ops.domain.asset_registry import (
 )
 from sbom_ops.domain.kev import KevSnapshot
 from sbom_ops.domain.models import Finding
+from sbom_ops.domain.triage_guidance import actions_as_dict, suggest_triage_actions
 from sbom_ops.domain.triage_identity import resolve_triage_cve
 from sbom_ops.domain.triage_input import SelectedCisaSnapshot, TriageInput
 from sbom_ops.domain.triage_reference import evaluate_reference
@@ -25,6 +26,20 @@ class SyncTriageContext:
     environment: str
     evaluated_at: datetime
     selected_cisa: SelectedCisaSnapshot | None
+    asset_owner: str | None = None
+
+    def guidance(self) -> dict[str, object]:
+        asset = self.context.assets.asset if self.context.assets else None
+        reference = evaluate_reference(self.context.evidence, load_reference_policy())
+        owner = self.asset_owner if asset is not None else None
+        return {
+            "asset": asdict(asset) if asset else None,
+            "asset_owner": owner,
+            "actions": actions_as_dict(
+                suggest_triage_actions(reference, asset_owner=owner)
+            ),
+            "automatic_actions": False,
+        }
 
     def reference_result(self) -> dict[str, object]:
         return evaluate_reference(
@@ -42,6 +57,7 @@ class SyncTriageContext:
             "reasons": list(context.reasons),
             "evidence": context.evidence.as_dict() if context.evidence else None,
             "reference": self.reference_result(),
+            "guidance": self.guidance(),
             "asset_reports": (
                 [asdict(item) for item in context.assets.reports]
                 if context.assets
@@ -107,4 +123,11 @@ def build_sync_triage(
         kev=kev,
         cisa=selected.snapshot.report() if selected else None,
     )
-    return SyncTriageContext(context, inputs.environment, now, selected)
+    asset = context.assets.asset if context.assets else None
+    owners = [
+        service.owner
+        for service in registry.services
+        if asset is not None and service.service_id == asset.service_id
+    ]
+    owner = owners[0] if len(owners) == 1 else None
+    return SyncTriageContext(context, inputs.environment, now, selected, owner)

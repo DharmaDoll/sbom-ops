@@ -81,6 +81,10 @@ JSON出力は `python examples/review_scenario.py --output json` で確認でき
 [架空の速報から資産・担当を探す演習](docs/operations.md#架空の速報から資産担当を確認する外部通信なし)
 も、Docker・APIキーなしで試せます。CVEの一致・未取得・検索範囲内で一致なしを区別します。
 
+[BOD参照から次の行動を考える演習](docs/operations.md#bod参照の判断支援を架空データで試す)は
+`python examples/triage_scenario.py`で実行できます。同じCVEの公開・内部環境、
+情報不足・期限切れ・担当未登録を比較し、誰に何を確認するかを確認できます。
+
 SBOM自体の記載状況も、DTやAPIキーなしで確認できます。
 
 ```bash

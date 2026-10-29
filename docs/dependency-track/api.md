@@ -60,8 +60,9 @@ Analysis履歴を読むだけなら変更権限は不要。
 - 保存済みOpenAPIは`var/dt-lab/openapi.json`（Git管理外）。過去の実測は
   [実験記録](../../lab/dependency_track/EXPERIMENTS.md)の権限事前確認、Analysis、設定読取を参照。
   混合権限のキーで成功した結果を、表の権限だけで成功した証拠にはしない。
-- 読取・upload・設定・Analysis・cleanupを用途別に検証することが
-  [#5](https://github.com/DharmaDoll/sbom-ops/issues/5)の残条件。
+- 読取・upload・設定・Analysis・cleanupを用途別に検証する案を
+  [#5](https://github.com/DharmaDoll/sbom-ops/issues/5)で検討したが、全用途の独立検証は見送る。
+  実導入時に使用する読取・アップロード経路を確認する。未検証を検証済みとは扱わない。
   キーを増やすこと自体が目的ではないが、既存の混合権限キーの観測だけでは独立検証を満たさない。
   新規キーの発行や既存チームの権限変更は、運用者が対象・期間を決めてから行う。
 - 対象版、操作、付与権限名、対象Projectの範囲、HTTP結果、期待結果との一致を記録する。

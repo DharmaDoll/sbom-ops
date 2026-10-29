@@ -11,6 +11,12 @@
 VEX書き込み、到達可能性分析、LLM、Jiraは未実装。
 外部EPSSの `EpssClient` はスタブであり、設定したURLへの自動フォールバックはない。
 
+DTのPolicy Violations（ライセンス・セキュリティ・運用ポリシー違反）は初期製品の対象外。
+違反の取得・分析状態変更・作業起票を行わず、Findingの優先度へ混ぜない。
+このため製品にPolicy Violations用の追加権限・状態遷移は導入しない。
+必要な組織はDT側で確認し、担当への振り分け需要が具体化した時点で別途検討する。
+この対象外判断は、Findingと資産情報を用いるBOD参照表示には影響しない。
+
 ## Design Constraints
 
 - SBOM構成・Finding・Analysisの正本はDT。対応状況の正本はGitHub Issues。
@@ -182,6 +188,13 @@ JSONの `triage_contexts` は元ID/候補CVE・評価時刻・選択記録ID・�
 資産照合と4要素のknownが必要で、不足時はpending。出典・確認日・ルール版・参照行を保持する。
 最新版の保証ではなく、起算・実期限日・自社SLAは計算しない。
 既存の優先度・PoC順・DT・Issue内容を変えない。
+`triage_contexts[].guidance` は同じ対象の資産範囲・資産担当・人向けの次の行動を返す。
+各行動はcode/reason/role/assignee/instructionを持ち、automatic_actionsはfalse。
+照合済み資産のサービスが台帳で一意に確認できる場合だけ資産担当を表示する。
+未照合・未登録・重複は未割当。セキュリティ担当の実名は推測せず役割だけを示す。
+不足理由（未取得・不明・期限切れ・未来・矛盾）を保ち、確認する情報と依頼先を示す。
+条件が揃った場合は修正・緩和計画の確認を案内し、参照表の追加指定がある場合だけ
+侵害確認の計画を案内する。担当割当・通知・期限確定・調査の実行は行わない。
 このオプションはGitHub操作を許可も禁止もしない。参照だけの運用は `--no-github` を指定する。
 
 [vulnrichment_snapshot.py](src/sbom_ops/domain/vulnrichment_snapshot.py) はCISA入力の

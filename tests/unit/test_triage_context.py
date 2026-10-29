@@ -135,6 +135,43 @@ def factors(result):
     return {item.factor: item for item in result.evidence.factors}
 
 
+@pytest.mark.parametrize(
+    "case", ["matched", "unlinked", "revoked", "other_service", "duplicate"]
+)
+def test_sync_guidance_owner_requires_unique_verified_service(inputs, case):
+    from sbom_ops.domain.asset_registry import RegisteredService
+    from sbom_ops.domain.assets import BusinessCriticality
+    from sbom_ops.domain.triage_input import TriageInput
+    from sbom_ops.services.triage_sync import build_sync_triage
+
+    service = RegisteredService(
+        "other" if case == "other_service" else "shop",
+        "asset-team",
+        BusinessCriticality.HIGH,
+        "synthetic",
+    )
+    registry = replace(
+        inputs["snapshot"],
+        services=(service, service) if case == "duplicate" else (service,),
+        revoked_project_uuids=("project-1",) if case == "revoked" else (),
+    )
+    project = inputs["project"]
+    if case == "unlinked":
+        project = replace(project, status=RegistryProjectStatus.UNLINKED)
+    result = build_sync_triage(
+        inputs["finding"],
+        registry,
+        project,
+        TriageInput("production"),
+        kev=inputs["kev"],
+        now=inputs["now"],
+    ).as_dict()
+    guidance = result["guidance"]
+    assert guidance["asset_owner"] == ("asset-team" if case == "matched" else None)
+    if case != "matched":
+        assert all(a["assignee"] is None for a in guidance["actions"])
+
+
 def test_combines_sources_without_changing_identity_or_clocks(inputs) -> None:
     original = asdict(inputs["finding"])
     result = compose_triage_context(**inputs)

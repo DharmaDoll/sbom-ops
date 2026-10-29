@@ -1,0 +1,34 @@
+{
+  "fictional": true,
+  "evaluated_at": "2026-10-23T00:00:00Z",
+  "service_id": "checkout",
+  "deployable_id": "api",
+  "artifact_id": "build-1",
+  "owner": "checkout-team",
+  "cve": "CVE-2026-0001",
+  "cases": [
+    {"name": "public", "label": "公開環境", "environment": "production", "exposure": "confirmed", "expires_at": "2026-10-24T00:00:00Z", "owner_registered": true},
+    {"name": "internal", "label": "内部環境", "environment": "internal", "exposure": "rejected", "expires_at": "2026-10-24T00:00:00Z", "owner_registered": true},
+    {"name": "missing", "label": "公開状態が不明", "environment": "production", "exposure": "unknown", "expires_at": "2026-10-24T00:00:00Z", "owner_registered": true},
+    {"name": "expired", "label": "公開申告の期限切れ", "environment": "production", "exposure": "confirmed", "expires_at": "2026-10-22T18:00:00Z", "owner_registered": true},
+    {"name": "unassigned", "label": "資産担当が未登録", "environment": "production", "exposure": "confirmed", "expires_at": "2026-10-24T00:00:00Z", "owner_registered": false}
+  ],
+  "cisa_record": {
+    "dataType": "CVE_RECORD",
+    "dataVersion": "5.1",
+    "cveMetadata": {"cveId": "CVE-2026-0001", "state": "PUBLISHED"},
+    "containers": {
+      "adp": [{
+        "providerMetadata": {"orgId": "134c704f-9b21-4f2e-91b3-4a467353bcc0", "shortName": "CISA-ADP"},
+        "metrics": [{"other": {
+          "type": "ssvc",
+          "content": {
+            "id": "CVE-2026-0001", "role": "CISA Coordinator", "version": "2.0.3",
+            "timestamp": "2026-10-22T00:00:00Z",
+            "options": [{"Exploitation": "active"}, {"Automatable": "no"}, {"Technical Impact": "total"}]
+          }
+        }}]
+      }]
+    }
+  }
+}

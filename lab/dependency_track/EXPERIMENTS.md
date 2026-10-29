@@ -3932,3 +3932,23 @@ component UUID; and output compatibility for consumers of the JSON format.
 
 - `var/dt-lab/runs/20260929-product-component-identity/summary.json` (sanitized
   counts and sample, no UUIDs or raw API data)
+
+## 2026-10-29 — PHP2Shellの登録状況（読取のみ）
+
+- 目的: PHP2Shellの情報がローカルDTに取り込まれているか、登録済みProjectへの紐づけと区別して確認する。
+- 対象: 設定済みローカルDT。API契約は保存済み4.14.3 OpenAPIで確認。稼働版は今回は再取得していない。
+- 操作: 既存読取キーで `GET /api/v1/vulnerability/source/NVD/vuln/{cve}` と
+  同パスの `/projects` を2件のCVEについて実行。データ・設定・権限は変更しない。
+- 初回はHTTP応答を得られず失敗。ネットワーク制限外で再実行すると1件目のレコードは200。
+  Project応答のヘッダーを辞書と誤認した診断コードが停止したため、タプル形式を処理して全件を再確認した。
+- 確認できた事実: CVE-2026-109618、CVE-2026-109619ともNVDレコード取得は200。
+  更新日時はそれぞれ2026-10-28T04:17:46Z、2026-10-28T04:17:54Z。
+  両方の影響Project取得は200で空配列、X-Total-Countは0。
+- 解釈: このDTには両CVEの情報がある。ただし、現在のキーで確認できる影響Projectはない。
+  情報の登録とSBOMの部品への検出・紐づけは別であり、0件を安全の保証にしない。
+- 未確認: PHPを含む全資産のSBOM収録状況、部品識別子と影響版の照合、別権限から見えるProject、
+  実環境の悪用可能性。検証用SBOMの投入・スキャン・強制再解析は行っていない。
+- 証拠: この作業のAPI診断出力（CVE・HTTP結果・件数・公開/更新日時のみ）。ローカル証拠ファイルは未作成。
+  生の応答、キー、環境固有UUIDは保存・転載していない。
+- 公開情報との対応: [UbuntuのPHP2Shell告知](https://ubuntu.com/blog/php2shell-vulnerability-fixes-available)
+  に記載された2件を対象とした。派生する別CVEまで確認したという意味ではない。
