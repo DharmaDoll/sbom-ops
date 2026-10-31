@@ -8,6 +8,14 @@
 実装仕様は[SPEC](SPEC.md)、操作は[運用ガイド](docs/operations.md)、
 観測事実は各labのEXPERIMENTSに残す。過去の実験日誌はここへ重複掲載しない。
 
+## 利用者向け導線の整備
+
+[#26 利用シーンと手順の分離](https://github.com/DharmaDoll/sbom-ops/issues/26)では、
+文書配置の整理 → 初回導入 → 日常操作・調査の入口の順に整える。
+利用シーンから必要な操作へ直接進める構成とし、旧見出しリンクを維持する。
+生成器別のCI例とSlack通知はそれぞれ計画2・計画3として分け、導線再編を理由に
+製品のGitHub同期を有効化しない。配置先は[文書配置表](docs/documentation-map.md)を参照。
+
 ## 基本方針
 
 Slack通知は[#25](https://github.com/DharmaDoll/sbom-ops/issues/25)で扱う。
@@ -195,3 +203,10 @@ ROADMAPは成果・順序・見送り理由、GitHub Issuesは個別作業の範
 [脅威情報の検証記録](lab/exploit_intelligence/EXPERIMENTS.md)を参照する。
 追加labは、実装に必要なDT挙動が既存の証拠から判断できない場合だけ実施する。
 失敗・部分結果を含め記録し、実験一覧を消化すること自体を目標にしない。
+
+## 開発者・CI担当のSBOM供給導線
+
+[#27](https://github.com/DharmaDoll/sbom-ops/issues/27)でnpm／uvのSource生成と、
+最終イメージのBuild生成・DT投入・運用担当への引渡しを一本の導線へ結ぶ。
+Source確認→digest確定→Project照合→明示投入の順とし、CIは資産台帳へ直接書かない。
+既存の登録・承認・稼働申告を使い、未検証のSBOM結合とパッケージ管理方式の変更は行わない。

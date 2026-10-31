@@ -2,22 +2,20 @@
 
 ## Daily Flow
 
-1. CI generates CycloneDX SBOM.
-2. CI uploads SBOM to Dependency-Track.
-3. Dependency-Track analyzes components and vulnerabilities.
-4. Orchestrator polls Dependency-Track findings.
-5. Orchestrator enriches findings with KEV and EPSS.
-6. Orchestrator creates GitHub Issues for P0/P1 findings.
-7. Developers remediate issues.
-8. CI uploads updated SBOM.
-9. Orchestrator verifies analysis readiness and observes whether findings are absent.
-10. Absence remains unverified; it does not authorize closing an Issue.
-11. Automatic closure is not supported and its enablement setting is rejected.
+1. CI uploads a Build SBOM when a new artifact is built or an existing SBOM is corrected.
+2. Dependency-Track analyzes the registered inventory; daily checks do not require re-uploading unchanged SBOMs.
+3. The orchestrator reads findings and analysis state, supplements KEV, and calculates priority using DT EPSS/CVSS.
+4. Security staff review the output, asset context, and missing information with `--no-github`.
+5. Developers remediate; CI produces a new artifact and SBOM, and operators verify deployment and old-version shutdown.
+6. A person checks the artifact, analysis results and remediation evidence. Absence remains unverified and does not authorize closing an Issue.
+
+GitHub synchronization is optional, disabled by default, and its production enablement is on hold in
+[issue #7](https://github.com/DharmaDoll/sbom-ops/issues/7). Automatic closure is not supported and its enablement setting is rejected.
 
 Reviewed assets allow findings from multiple builds to share one repair Issue
 per repository. Finding identities and DT analysis decisions remain separate.
 See the [current workflow contract](../../SPEC.md#workflow-rules) and
-[operator guide](../operations.md#github同期の確認) for matching, migration and write opt-in.
+[operator guide](../github-sync.md#github同期の確認) for matching, migration and write opt-in.
 
 ## Operational Ownership
 

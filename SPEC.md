@@ -1215,3 +1215,24 @@ Webhookより導入負担は増えるが、応答tsの保存と後続スレッ�
 固定HTTPS宛先、証明書検証、リダイレクト禁止、応答サイズ制限、POST自動再送なし。
 単一ホストの永続DBで運用し、一時Actions runnerへの導入は対象外。
 実Slack試験と通知量・有用性の運用評価はユーザー指示で保留（2026-10-29）。
+
+
+## SBOM供給例の引渡し契約
+
+`examples/sbom-producers/`は導入用の例で、runtime CLIと資産台帳への自動登録を追加しない。
+SourceはPRのlock／ソースに対応しCI保管のみ。Buildは単一platformの最終イメージ
+manifest digestに対応し、元CycloneDXとSHA-256・生成器版・ソースcommit・CI参照を保持する。
+DT名はservice/deployable、版と台帳artifact IDはイメージmanifest digestとする。
+Source commitやImageIDをmanifest digestの代わりにしない。
+
+投入例は既定で入力確認のみ。明示実行では既存DTクライアントで対象UUID・名・版の
+一意な一致を確認し、送信意図を保存してから投入する。API実装は製品クライアントに限定。
+HTTP自動再試行は0回。受付不明・BOM処理不明・Finding読取不明を独立して記録し、
+空一覧・token idle・CI成功から解析完了／修正完了を推論しない。
+結果ファイルは新規名を要求し、保存失敗／取消では残るintentとDT状態の照合を必要とする。
+再実行のexactly-onceや結果の真正性・SBOM完全性を保証するものではない。
+
+CIは資産SQLiteへ書かず、運用担当が候補照合・明示承認・根拠登録・配置申告を行う。
+PRには資格情報を渡さず、配布と投入は保護されたmain／Environmentに分離する。
+この例の採用で製品のGitHub同期・Slack送信・DT Analysis変更を有効にしない。
+操作と失敗時対応は[供給ガイド](docs/sbom-producers.md)を正本とする。

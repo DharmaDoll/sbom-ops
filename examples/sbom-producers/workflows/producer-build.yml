@@ -1,0 +1,88 @@
+name: producer-build
+on:
+  workflow_dispatch:
+    inputs:
+      producer:
+        type: choice
+        options: [npm, uv]
+        required: true
+permissions:
+  contents: read
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    environment: sbom-producer-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PRODUCER: ${{ inputs.producer }}
+      # Configure a lowercase GHCR repository prefix, e.g. ghcr.io/acme/checkout.
+      IMAGE_PREFIX: ${{ vars.SBOM_IMAGE_PREFIX }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Validate inputs
+        run: |
+          [[ "$PRODUCER" == npm || "$PRODUCER" == uv ]]
+          [[ "$IMAGE_PREFIX" =~ ^ghcr.io/[a-z0-9._-]+/[a-z0-9._/-]+$ ]]
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+        with:
+          version: v0.23.0
+      - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        id: build
+        with:
+          context: examples/sbom-producers/${{ inputs.producer }}
+          platforms: linux/amd64
+          push: true
+          # Single-platform manifest identity; do not confuse an index with a child manifest.
+          provenance: false
+          sbom: false
+          tags: ${{ vars.SBOM_IMAGE_PREFIX }}-${{ inputs.producer }}:${{ github.sha }}-${{ github.run_attempt }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+      - name: Collect exact image and handoff
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          source examples/sbom-producers/tools.env
+          mkdir -p out
+          IMAGE="${IMAGE_PREFIX}-${PRODUCER}@${IMAGE_DIGEST}"
+          docker run --rm --user "$(id -u):$(id -g)" --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
+            -e TRIVY_USERNAME -e TRIVY_PASSWORD "$TRIVY_IMAGE" image \
+            --cache-dir /tmp/cache --image-src remote --platform "$PLATFORM" \
+            --format cyclonedx --scanners license --skip-db-update --skip-java-db-update \
+            --offline-scan "$IMAGE" > out/build.cdx.json
+          # Supplemental application evidence from the same image, without running its entrypoint.
+          if [[ "$PRODUCER" == npm ]]; then file=/app/application-packages.json; else file=/app/application-packages.txt; fi
+          docker pull "$IMAGE"
+          container=$(docker create "$IMAGE")
+          docker cp "${container}:${file}" out/application-packages.txt
+          docker rm "$container"
+          PYTHONPATH=src python3 examples/sbom-producers/handoff.py prepare \
+            --bom out/build.cdx.json --image "$IMAGE" --producer "$PRODUCER" \
+            --revision "$GITHUB_SHA" --run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --output out/handoff.json
+          cp examples/sbom-producers/tools.env out/generator-images.txt
+          sha256sum out/build.cdx.json out/application-packages.txt > out/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.producer }}-build
+          path: out/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Handoff to operations
+        if: always()
+        env:
+          RESULT: ${{ job.status }}
+        run: |
+          printf 'Build result: %s. CI owner checks failures. Operations uses the build artifact to create/verify the DT Project; then dispatch producer-upload.\n' "$RESULT" >> "$GITHUB_STEP_SUMMARY"

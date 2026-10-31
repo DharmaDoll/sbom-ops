@@ -1,0 +1,14 @@
+[project]
+name = "checkout-api-example"
+version = "1.0.0"
+requires-python = ">=3.12"
+dependencies = ["idna==3.10"]
+
+[project.optional-dependencies]
+async = ["sniffio==1.3.1"]
+
+[dependency-groups]
+dev = ["packaging==25.0"]
+
+[tool.uv]
+package = false

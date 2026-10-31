@@ -7,6 +7,14 @@ sbom-opsがKEV・EPSS・CVSSから優先度を計算します。
 人が登録したサービス・担当・稼働申告はSQLiteに保存し、DT Projectと照合します。
 GitHub Issuesへの同期は任意の最終アクションです。
 
+## 最初に読むページ
+
+- 担当と作業のタイミングを知る: [5つの利用シーン](docs/use-cases.md)
+- まず動かしてみる: [外部通信なしの初回確認](docs/getting-started.md#最短の初回確認外部通信なし)
+- やることが決まっている: [作業別の運用ガイド](docs/operations.md)
+
+npm・uv・Trivyを使う開発者・CI担当は[SBOM供給と資産登録の手順](docs/sbom-producers.md)へ進む。
+
 ## 全体の流れ
 
 ```mermaid
@@ -37,7 +45,7 @@ flowchart TD
 含むCycloneDX SBOMを生成し、新しい成果物ごとにDTへ送信**します。
 イメージdigestで生成対象と配布対象を対応付けます。
 [生成対象・投入タイミングの仕様](SPEC.md#sbomの生成対象と投入タイミング)と
-[CIでの確認順](docs/operations.md#コンテナのsbomを生成してdtへ送るタイミング)を参照してください。
+[CIでの確認順](docs/sbom-input.md#コンテナのsbomを生成してdtへ送るタイミング)を参照してください。
 
 ## 利用者が作業するタイミングと場所
 
@@ -74,7 +82,7 @@ CIへの組込みは利用者側で行います。配備先の自動発見や実
 
 資産情報は判断の参考として表示し、優先度を自動変更しません。
 PoC取得の失敗後は、SQLiteに残した待機時刻まで再取得を見送ります。
-定期実行用の[更新スクリプトと運用手順](docs/operations.md#poc更新を定期実行する)を用意しています。
+定期実行用の[更新スクリプトと運用手順](docs/investigation.md#poc更新を定期実行する)を用意しています。
 通常のsyncは取得を行いません。
 PoCの動作検証は本PJでは行いません。DTの分析判断・抑制・例外承認も自動変更しません。
 現在の制限と実装順序は[ROADMAP](ROADMAP.md)を参照してください。
@@ -104,10 +112,10 @@ P1→P2の順で並びますが、資産情報で優先度そのものは変わ�
 JSON出力は `python examples/review_scenario.py --output json` で確認できます。
 旧形式の資産JSONを使う比較例は `python examples/asset_scenario.py` で実行できます。
 
-[架空の速報から資産・担当を探す演習](docs/operations.md#架空の速報から資産担当を確認する外部通信なし)
+[架空の速報から資産・担当を探す演習](docs/investigation.md#架空の速報から資産担当を確認する外部通信なし)
 も、Docker・APIキーなしで試せます。CVEの一致・未取得・検索範囲内で一致なしを区別します。
 
-[BOD参照から次の行動を考える演習](docs/operations.md#bod参照の判断支援を架空データで試す)は
+[BOD参照から次の行動を考える演習](docs/investigation.md#bod参照の判断支援を架空データで試す)は
 `python examples/triage_scenario.py`で実行できます。同じCVEの公開・内部環境、
 情報不足・期限切れ・担当未登録を比較し、誰に何を確認するかを確認できます。
 
@@ -118,22 +126,22 @@ sbom-ops sbom-quality examples/sboms/vulnerable-demo.cdx.json
 ```
 
 教材の文書9項目と5部品の各8項目、計49件をJSONで報告します。適合認定や署名検証ではありません。
-CIで不足項目を必須化する例は[SBOM品質の確認手順](docs/operations.md#sbom最低要素の確認について)を参照してください。
+CIで不足項目を必須化する例は[SBOM品質の確認手順](docs/sbom-input.md#sbom最低要素の確認について)を参照してください。
 
 担当変更・紐付け撤回と再承認・資産廃止も、外部接続なしで試せます。
 `python examples/asset_update_scenario.py` は一時DBだけを使い、終了時に削除します。
-既存の資産台帳は変更しません。実台帳の操作は[担当変更](docs/operations.md#担当重要度を変更する)・[廃止と紐付け訂正](docs/operations.md#資産の廃止と紐付けの訂正)を参照してください。
+既存の資産台帳は変更しません。実台帳の操作は[担当変更](docs/assets.md#担当重要度を変更する)・[廃止と紐付け訂正](docs/assets.md#資産の廃止と紐付けの訂正)を参照してください。
 
 `python examples/lifecycle_scenario.py` で、同じソースからの再ビルド・新旧並存・旧版停止を
 一時DBで試せます。旧版停止後も新版と別環境の旧版を保持し、矛盾・期限切れを区別します。
-[入力と確認ポイント](docs/operations.md#架空のsource再ビルドsbom訂正を登録する)も保存済みです。
+[入力と確認ポイント](docs/assets.md#架空のsource再ビルドsbom訂正を登録する)も保存済みです。
 
 `python examples/poc_scenario.py` では架空のPoC報告を使い、SQLiteへの保存・読込・再利用と、
 報告あり／未観測／取得失敗／期限切れと、再試行の待機を外部接続なしで試せます（一時DBのみ）。
-実際の取得は[PoC取得手順](docs/operations.md#poc報告を明示的に取得する)を参照してください。
-CVE対応がないIDは、[対応候補の取得手順](docs/operations.md#cve対応候補を確認する)で
+実際の取得は[PoC取得手順](docs/investigation.md#poc報告を明示的に取得する)を参照してください。
+CVE対応がないIDは、[対応候補の取得手順](docs/investigation.md#cve対応候補を確認する)で
 OSVの候補をSQLiteに保存・確認できます。期限付き採用後は、
-[明示オプション](docs/operations.md#採用したcve対応をpoc取得表示へ使う)でPoC取得・表示につなげられます。
+[明示オプション](docs/investigation.md#採用したcve対応をpoc取得表示へ使う)でPoC取得・表示につなげられます。
 上の架空演習では、この接続と期限切れ・取消も試せます。P0〜P3やDT分析は変わりません。
 
 SQLiteへの登録例も、書き込まずに確認できます。
@@ -143,7 +151,7 @@ sbom-ops assets --db var/assets.sqlite3 import \
   --file examples/asset-registration.example.json
 ```
 
-プレビューはDBを作成しません。登録方法は[運用ガイド](docs/operations.md#sbomと稼働資産を結ぶ運用フロー一部実装)にあります。
+プレビューはDBを作成しません。登録方法は[運用ガイド](docs/assets.md#登録単位と新規サービスの開始順序)にあります。
 
 ### DTを使って一件確認する
 
@@ -159,7 +167,7 @@ curl -fsS -o /dev/null http://localhost:8080/api/openapi.json
 新規環境の初期ログインは `admin / admin` です。ログイン後にパスワードを変更してください。
 既存環境では現在の認証情報を使います。
 
-続けて[運用担当者向けの初回演習](docs/operations.md#運用担当者向けの初回演習)へ進んでください。
+続けて[運用担当者向けの初回演習](docs/getting-started.md#運用担当者向けの初回演習)へ進んでください。
 キー作成、サービス登録、SBOMのDTへの直接投入、UI確認、紐付け承認、
 読み取り専用の同期まで、必要なコマンドを順番に掲載しています。
 最初はFindingを一件選び、DT画面とCLIの値・判断理由を照合します。

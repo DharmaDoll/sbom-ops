@@ -1,5 +1,34 @@
 # Dependency-Track Lab Experiment Ledger
 
+## 2026-10-30 — npm／uv供給例の限定投入（#27）
+
+- 目的: 固定digestの最終イメージから生成したBuild SBOMを、CI→運用の引渡し例で扱えるか確認する。
+- 対象: ローカルDT bundled 4.14.3（healthy確認）、Node 22.16.0/npm 10.9.2、uv 0.11.21、Trivy 0.69.3。
+- 安全境界: 実行固有`dt-lab-producers-*`の新規Projectだけを使う。既存Project、Analysis、VEX、抑制、設定、製品GitHub／Slackを書き換えない。Project削除は実施しない。
+- 事前検証: npm／uvともSource CycloneDX 1.5とBuild CycloneDX 1.6を生成。元文書のmanifest digest参照をローカルレジストリと照合。npm Buildは312部品、uv Buildは602部品（DT取込前の生部品数）。代表OS libc6はDebian distro付きPURL、アプリはpicocolors 1.1.1／idna 3.10の各エコシステムPURLを確認。
+
+### 試行と観測事実
+
+- 最初のsandbox内試行は初回Project照合で接続失敗。送信・Project作成に進まなかった。
+- 外側の限定実行では、実行固有名のnpm Projectを空のbootstrap BOMで作成した後、供給例の事前照合が停止した。結果はidentity段階、acceptance=not_attempted、BOM処理・Findingは未実施。
+- 読取キーのProject一覧取得は成功、アップロードキーの同じ読取はHTTP 403。キーの値・権限設定は変更していない。
+- 供給例を読取キーとアップロードキーに分離した。同じnpm Projectを再利用し、未作成のuv Projectだけ同じ実行範囲で追加した。両方で受付accepted→token_idle→Finding読取成功を確認した。
+- DTのComponent読戻しはnpm 291件、uv 602件。代表のDebian libc6、npm picocolors 1.1.1／PyPI idna 3.10をPURLで確認。元npm BOMの312とDTの291は異なるため件数一致を要件にしない（統合後の部品数として観測。差分原因の全件分析は本試行の対象外）。
+- Finding読取はその時点でnpm 51件、uv 14件。解析完了・安全・修正完了の証明には使わず、analysis_complete=unverifiedを維持した。
+- 別の専用SQLiteへ初回登録preview→applyと候補照合・npm承認を実施。最初の根拠previewは実験スクリプトの絶対パス／独自scheme参照を既存入力規則が拒否。相対パスへ修正後、npm／uvの承認と各Build根拠1件のpreview→apply→履歴読戻し、SQLite整合性検査に成功した。稼働申告は実施していない。
+
+### 判断と未確認範囲
+
+CIの送信権限を読取に流用せず、照合／Findingには読取キーを使う。HTTP 403を空一覧・未登録として処理しない。送信・読取の分離で処理が通った。キー権限を変更せずに既存の製品APIアダプターを利用できることを判断根拠とする。
+最小権限の全用途独立検証、GitHub hosted runnerからのHTTPS到達、Environment承認、GHCR公開はこのローカル試行では検証していない。
+新旧並存・旧版停止は既存の架空ライフサイクル演習の対象で、実デプロイ済みとはしない。
+専用ローカルregistryは検証後停止した。元イメージ・SBOM・台帳・DT検証Projectは保持する。
+関連製品／例45テストとDT lab129テスト、Actions例3件のactionlint確認が成功した。
+
+証拠: `var/sbom-producers/plan2/*-{source,build}.cdx.json`、
+`var/dt-lab/producer-plan2/dt-lab-producers-*/{run,resumed-run}.json`と段階別結果。
+キー、生payload、環境固有UUIDはこの台帳へ転記しない。未コミットの教材作業ツリーによるローカル実行であり、保存したHEADは基準版で、公開済みCI実行を表さない。
+
 ## 2026-10-25 — 大規模SBOMの処理待ちを1回だけ実測
 
 - 目的: #9で未保存だったBOM処理待ち時間とpoll回数を測り、規模に関する説明の穴を埋める。

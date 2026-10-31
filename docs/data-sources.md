@@ -507,7 +507,7 @@ v2:{project_uuid}:sha256(machine_identity)
 表示用のcomponent name/versionへfallbackする。旧形式の表示由来keyは移行期間中
 の照合にも使う。修正作業の組は`repair-v1:` keyで識別し、元の現行/旧Finding keyを残す。
 同期条件・本文形式・移行・送信記録は[SPEC](../SPEC.md#workflow-rules)と
-[運用ガイド](operations.md#github同期の確認)を正本とする。
+[運用ガイド](github-sync.md#github同期の確認)を正本とする。
 
 ## 優先度計算への入力関係
 

@@ -1,0 +1,88 @@
+name: producer-upload
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful producer-build workflow run ID
+        required: true
+      producer:
+        type: choice
+        options: [npm, uv]
+        required: true
+      project_uuid:
+        description: Operations-verified DT Project UUID for the exact digest
+        required: true
+permissions:
+  contents: read
+jobs:
+  upload:
+    if: github.ref == 'refs/heads/main'
+    environment: sbom-producer-upload
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    env:
+      BUILD_RUN_ID: ${{ inputs.build_run_id }}
+      PRODUCER: ${{ inputs.producer }}
+      PROJECT_UUID: ${{ inputs.project_uuid }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Verify the producing workflow before consuming its data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$PRODUCER" == npm || "$PRODUCER" == uv ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID" > run.json
+          python3 - <<'PY'
+          import json
+          r = json.load(open('run.json'))
+          assert r['event'] == 'workflow_dispatch'
+          assert r['head_branch'] == 'main' and r['conclusion'] == 'success'
+          assert r['path'] == '.github/workflows/producer-build.yml'
+          PY
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.build_run_id }}
+          name: ${{ inputs.producer }}-build
+          path: out/
+      - name: Verify source revision and artifact bytes without DT credentials
+        run: |
+          python3 - <<'PY'
+          import json, os
+          r = json.load(open('run.json'))
+          h = json.load(open('out/handoff.json'))
+          assert h['source_revision'] == r['head_sha']
+          assert h['build_ref'] == r['html_url']
+          assert h['deployable_id'] == os.environ['PRODUCER']
+          PY
+          PYTHONPATH=src python3 examples/sbom-producers/handoff.py upload \
+            --handoff out/handoff.json --bom out/build.cdx.json --project "$PROJECT_UUID" \
+            --result out/upload-result.json
+      - name: Explicit DT upload (no asset database access)
+        env:
+          SBOM_OPS_DT_BASE_URL: ${{ vars.DT_BASE_URL }}
+          SBOM_OPS_SBOM_UPLOAD_API_KEY: ${{ secrets.DT_UPLOAD_KEY }}
+          SBOM_OPS_DT_API_KEY: ${{ secrets.DT_READ_KEY }}
+        run: |
+          PYTHONPATH=src python3 examples/sbom-producers/handoff.py upload \
+            --handoff out/handoff.json --bom out/build.cdx.json --project "$PROJECT_UUID" \
+            --result out/upload-result.json --execute
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: ${{ inputs.producer }}-upload-${{ github.run_attempt }}
+          path: out/
+          retention-days: 30
+          if-no-files-found: warn
+      - name: Return status to CI and operations owners
+        if: always()
+        env:
+          RESULT: ${{ job.status }}
+        run: |
+          printf 'Upload job: %s. Inspect upload-result.json stages; absent result means no completion evidence. CI owner handles failure/timeout; operations verifies the DT inventory. Analysis and remediation completion remain unverified.\n' "$RESULT" >> "$GITHUB_STEP_SUMMARY"

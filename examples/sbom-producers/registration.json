@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "services": [{
+    "service_id": "checkout-api",
+    "owner": "team-checkout",
+    "criticality": "high",
+    "impact_reason": "Fictional checkout service for producer onboarding"
+  }],
+  "deployables": [
+    {"service_id": "checkout-api", "deployable_id": "npm"},
+    {"service_id": "checkout-api", "deployable_id": "uv"}
+  ]
+}
