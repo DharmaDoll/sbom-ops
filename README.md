@@ -9,9 +9,8 @@ GitHub Issuesへの同期は任意の最終アクションです。
 
 ## 最初に読むページ
 
-- 担当と作業のタイミングを知る: [5つの利用シーン](docs/use-cases.md)
 - まず動かしてみる: [外部通信なしの初回確認](docs/getting-started.md#最短の初回確認外部通信なし)
-- やることが決まっている: [作業別の運用ガイド](docs/operations.md)
+- 担当・作業順・日常の手順を確認する: [運用ガイド](docs/operations.md)
 
 npm・uv・Trivyを使う開発者・CI担当は[SBOM供給と資産登録の手順](docs/sbom-producers.md)へ進む。
 
@@ -45,25 +44,13 @@ flowchart TD
 含むCycloneDX SBOMを生成し、新しい成果物ごとにDTへ送信**します。
 イメージdigestで生成対象と配布対象を対応付けます。
 [生成対象・投入タイミングの仕様](SPEC.md#sbomの生成対象と投入タイミング)と
-[CIでの確認順](docs/sbom-input.md#コンテナのsbomを生成してdtへ送るタイミング)を参照してください。
+[CIでの確認順](docs/sbom-producers.md#コンテナのsbomを生成してdtへ送るタイミング)を参照してください。
 
 ## 利用者が作業するタイミングと場所
 
-最初にサービス・配布単位・担当を登録し、ビルドした成果物のSBOMをDTへ送り、
-その成果物がどこで動いているかを運用担当が結び付けます。
-
-| いつ | 誰が・どこで | すること |
-| --- | --- | --- |
-| 導入時 | サービス担当・運用担当／sbom-ops CLI | サービス・配布単位・担当を登録する |
-| PR・依存更新時 | 開発担当／開発CI | Source SBOMで依存関係を早期確認する（補助情報） |
-| 配布イメージのビルド後 | CI担当／ビルドCI → DT | 最終イメージのBuild SBOMを生成・送信し、digestと処理結果を残す |
-| デプロイ・更新・停止時 | 運用担当／配備先とsbom-ops CLI | 実際の成果物を確認し、DT Projectとの対応・稼働申告を登録／訂正する |
-| 日常・脆弱性の速報時 | セキュリティ担当／DTとsbom-ops CLI | 検出結果・影響候補・担当・不足情報を確認し、対応を判断する |
-| 修正後 | 開発担当・運用担当／CIと配備先 | 再ビルド・SBOM更新・新版配備を行い、修正と旧版停止を確認する |
-
-操作手順と確認結果、調達・共通ベースイメージの扱いは
-[利用者の作業一覧](docs/operations.md#利用者の作業一覧いつどこで何をするか)を参照してください。
-CIへの組込みは利用者側で行います。配備先の自動発見や実行メモリの収集は提供していません。
+[運用ガイドの5つの利用シーン](docs/operations.md#利用者の作業一覧いつどこで何をするか)で、
+導入・イメージ更新・配備変更・日常対応・修正確認の担当と手順を確認できます。
+調達・共通ベースイメージの扱いも同じページにまとめています。
 
 ## 現在できること
 
@@ -213,7 +200,7 @@ labは製品パッケージに含まれません。実験手順・権限・削�
 | 現在の実装仕様と制約 | [SPEC](SPEC.md) |
 | 次の作業・優先順位・完了条件 | [ROADMAP](ROADMAP.md) |
 | 構成と責任分担 | [ARCHITECTURE](ARCHITECTURE.md) |
-| 対応判断の考え方 | [優先度方針](docs/priority-policy.md)・[ユースケース](docs/use-cases.md) |
+| 対応判断の考え方 | [優先度方針](docs/priority-policy.md) |
 | DTの導入・API | [DTガイド](docs/dependency-track/README.md) |
 | 情報源と判断の背景 | [データソース](docs/data-sources.md)・[ADR](docs/adr/README.md) |
 | 検証手順と観測事実 | [DT lab](lab/dependency_track/README.md)・[Exploit Intelligence lab](lab/exploit_intelligence/README.md) |

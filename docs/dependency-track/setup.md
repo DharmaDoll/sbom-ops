@@ -1,5 +1,13 @@
 # Dependency-Track Setup
 
+Local bootstrap, validation and ongoing administration are collected here.
+For application workflows, use the [operator guide](../operations.md).
+
+- [Prerequisites](#prerequisites) and [startup](#start-dependency-track)
+- [API keys](#api-key-model) and [SBOM upload](#upload-a-cyclonedx-sbom)
+- [Scheduled operation](#scheduled-operation) and [troubleshooting](#troubleshooting)
+- [Operational ownership](#operational-ownership), [lab cleanup](#local-lab-cleanup) and [production checklist](#minimum-production-checklist)
+
 ## Purpose
 
 This document defines the local evaluation setup for Dependency-Track used by this project.
@@ -564,3 +572,54 @@ Dependency-Track is considered ready for this repository when all of the followi
 - optional lab cleanup key created only when run cleanup is required
 - test CycloneDX BOM uploaded successfully
 - project and findings visible in the UI
+
+## Operational Ownership
+
+Security team owns:
+
+- Dependency-Track configuration
+- API keys
+- vulnerability intelligence sources
+- priority policy
+- exception approval
+
+Development teams own:
+
+- remediation
+- dependency updates
+- code changes
+- risk acceptance requests
+
+Platform team owns:
+
+- Dependency-Track hosting
+- backup
+- monitoring
+- upgrade
+- availability
+
+## Local Lab Cleanup
+
+DT lab cleanup is a development operation, not part of the production daily
+flow. It is scoped to one recorded run, previews locally by default, and needs a
+separate `VIEW_PORTFOLIO` plus `PORTFOLIO_MANAGEMENT` key for explicit deletion.
+Use `make dt-lab-cleanup RUN_ID=<uuid>` before adding `EXECUTE=1`. Wait until
+repository metadata and other target background work is quiet; BOM event-token
+completion alone is not sufficient for immediate deletion on DT 4.14.3. Failed
+runs remain intact unless a human deliberately cleans them. See the
+[behavior lab runbook](../../lab/dependency_track/README.md#cleaning-a-run).
+
+## Minimum Production Checklist
+
+- Dependency-Track deployed with persistent database
+- Admin account secured
+- API access restricted by team permissions
+- Separate API key for SBOM upload
+- Separate API key for orchestrator read operations
+- Separate future key for analysis-write operations, only if explicit workflow support is implemented
+- Vulnerability data sources configured
+- Backup policy defined
+- Upgrade policy defined
+- Project naming convention defined
+- SBOM upload convention defined
+- Analysis state workflow defined

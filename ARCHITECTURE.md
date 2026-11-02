@@ -3,8 +3,8 @@
 ## Goal
 Transform SBOM vulnerabilities into actionable engineering tasks.
 
-Concrete operational flows and acceptance conditions are defined in
-`docs/use-cases.md`.
+Operational flows are described in [the operator guide](docs/operations.md);
+behavioral contracts and acceptance conditions are defined in [SPEC](SPEC.md).
 
 Dependency-Track is intentionally kept as an inventory platform.
 Workflow management belongs outside Dependency-Track.
@@ -194,7 +194,7 @@ dependency-track-sbom-ops/
 │   ├── operations.md
 │   ├── priority-policy.md
 │   ├── vex.md
-│   ├── use-cases.md
+│   ├── use-cases.md  # compatibility links to operations.md
 │   ├── data-sources.md
 │   ├── dependency-track/
 │   └── adr/

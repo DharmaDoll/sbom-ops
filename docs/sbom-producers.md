@@ -1,10 +1,58 @@
-# npm・uv・Trivyから資産登録へつなぐ
+<a id="npmuvtrivyから資産登録へつなぐ"></a>
 
-開発者・CI担当・運用担当が、架空の`checkout-api`を登録し、配布したイメージを
-Dependency-Track（DT）と資産台帳で追跡する手順。
-[作業別の入口](operations.md)／[利用シーン](use-cases.md)へ戻る。
+# SBOMの生成・投入とCIからの引渡し
+
+開発者・CI担当・運用担当向けに、生成・投入の共通手順と、
+npm・uv・Trivyを使う架空の`checkout-api`の実行例をまとめる。
+配布したイメージをDependency-Track（DT）と資産台帳で追跡する。
+[運用ガイド](operations.md)へ戻る。
 サンプルは[npm版・uv版](../examples/sbom-producers/)の二つの配布単位。
 既存プロジェクトのパッケージ管理を変更する手順ではない。
+
+## 目次
+
+- [生成・投入のタイミングと共通手順](#コンテナのsbomを生成してdtへ送るタイミング)
+- [担当と引渡しの流れ](#担当と引渡しの流れ)
+- [導入条件](#導入条件を決める)
+- [1. 資産登録](#1-資産を登録する)
+- [2. Source生成](#2-source-sbomを生成する)
+- [3. Build生成](#3-最終イメージからbuild-sbomを生成する)
+- [4. Project確認と投入](#4-projectを確認して投入する)
+- [5. 資産への対応付けと配備申告](#5-資産への対応付けと配備申告)
+- [失敗時と再実行](#失敗時と再実行)
+- [検証記録と適用範囲](#検証記録と適用範囲)
+
+## コンテナのSBOMを生成してDTへ送るタイミング
+
+[生成・投入契約](../SPEC.md#sbomの生成対象と投入タイミング)に従い、CI担当が
+リリース候補・配布対象イメージの生成ジョブへ次の処理を組み込む。
+下記は導入時の手順であり、本番CIの接続やOS別検出の検証が完了済みという意味ではない。
+
+1. 最終イメージをbuildし、registryへpushして配布対象のdigestを確定する。
+   複数アーキテクチャではplatformと個々のイメージdigestを記録する。
+2. 確定したイメージを対象にTrivy等でCycloneDX SBOMを生成する。
+   ツール名・版・設定を固定して記録し、OS名・リリース、OSパッケージ、アプリ依存、
+   PURLと`distro`の収録を確認する。ソースディレクトリだけの収集で代用しない。
+3. 元SBOMとそのファイルハッシュ、イメージdigest、ソースcommit、CI実行参照を
+   CI成果物として保持する。SBOMファイルのハッシュとイメージdigestは別物として扱う。
+4. 登録済み配布単位に対応するProject名・不変の成果物版へ、CIからDTに直接送る。
+   既存の[投入手順](dependency-track/setup.md#upload-a-cyclonedx-sbom)を使い、
+   別の成果物やSource SBOMで同じProjectを上書きしない。
+5. アップロードとBOM処理の結果を記録し、Componentの収録とFindingの取得を確認する。
+   解析途中・失敗・空の応答を安全判定にしない。導入時は対象OSの代表イメージで
+   期待する部品・既知脆弱性と照合し、DT版・解析器・データソース設定を確認する。
+6. 同じdigestをデプロイ対象として追跡し、運用担当が既存の資産対応・稼働申告を登録する。
+   DTへの投入成功自体は、デプロイ成功や実稼働を意味しない。
+
+push前のローカルイメージから生成する場合も、配布物との同一性を確認する。
+マルチステージのビルド用イメージやホストOSは、最終イメージと別の対象として扱う。
+導入CIでDT解析をデプロイ判定に使う場合は、待機・timeout・承認条件を別途定義する。
+この手順だけで自動的なデプロイ許可・禁止は追加しない。
+
+新しい成果物では再生成・再送する。同じ成果物の再配備では既存のBuild SBOMを参照する。
+新しいCVEについてはDTの登録済み構成の定期再解析を使い、再送を日次処理にしない。
+収録漏れなどを訂正するときは、成果物IDを維持してSBOM文書の版・ハッシュ・訂正理由を残す。
+DTの再解析については[公式CI/CDガイド](https://docs.dependencytrack.org/usage/cicd/)を参照。
 
 ## 担当と引渡しの流れ
 
@@ -64,7 +112,7 @@ sequenceDiagram
 | 投入後 | 運用担当 | 上記＋UUID・受付token・BOM処理・Finding読取結果／upload artifact | [照合と承認](#5-資産への対応付けと配備申告) |
 | 失敗／timeout | CI担当（依存やビルド原因は開発者） | 失敗段階・残った結果・実行リンク。投入結果不明なら運用担当にも連絡 | [失敗時](#失敗時と再実行) |
 | 配備／停止 | 運用担当 | 配備先の実測digest・環境・日時・期限・確認者／資産台帳 | [新旧並存](#新版並存旧版停止sbom訂正) |
-| 対応候補 | セキュリティ担当→開発者 | DT・詳細結果・手動作業管理の参照 | [日常操作](daily-operations.md)／[任意Slack](slack-notifications.md) |
+| 対応候補 | セキュリティ担当→開発者 | DT・詳細結果・手動作業管理の参照 | [日常操作](operations.md#日常の運用とログ)／[任意Slack](slack-notifications.md) |
 
 連絡の基本はActionsの結果画面と受取担当が読めるartifactの参照。
 能動通知の経路・宛先・失敗時の当番は導入時に決める。本例はメール・Slackを送らない。
@@ -364,24 +412,31 @@ sbom-ops assets --db var/producer-operations/assets.sqlite3 list
 `python examples/lifecycle_scenario.py --output json`を実行する。
 これはDTへの実投入や実デプロイの検証を代替しない。
 
+<a id="投入後の確認と失敗時対応"></a>
+
 ## 失敗時と再実行
+
+一般のアップロード例は[DT投入手順](dependency-track/setup.md#upload-a-cyclonedx-sbom)、
+一件を追う演習は[初回演習](getting-started.md#2-人が資産を登録しdtへ直接sbomを送る約20分)を使う。
 
 | 段階 | 確認すること | 引受担当・再実行条件 |
 | --- | --- | --- |
 | Source生成 | lockとmanifest、生成器版、optional/platform、ネットワーク | 開発者＋CI担当。lock修正をレビューしPRを再実行 |
 | Build／push | ビルドログ、registry権限、pushされたdigestの有無 | CI担当。tagだけを見て以前の成果物を送らない |
 | Trivy／handoff検査 | 元文書の対象、代表OS／アプリPURL、同じイメージの補足証拠 | CI担当＋開発者。不足原因を解消して再収集。Sourceで穴埋めしない |
+| 記載品質 | [品質評価](sbom-input.md)の結果と不足項目 | 生成器／サービス担当。架空値を補わず、生成設定を直す |
 | artifact取得 | 実行ID・workflow・main・成功・commit・保持期限 | CI担当。別PRや失敗runの成果物へ切り替えない |
 | UUID照合 | Project ACL、UUID、名前、版、重複 | 運用担当。正しいProjectを確認するまでuploadしない |
 | upload失敗／timeout | resultの受付段階、DT側の受付・Components・token、認証／権限 | CI担当→運用担当。応答喪失を未送信とみなさず無条件再送しない |
 | BOM処理timeout | 受領token、DTジョブ・ログ・DB状態 | 運用担当。待機の再確認とBOM再送を分ける |
 | Finding読取失敗 | 権限・DT状態・部分読取 | 運用担当。空の成功一覧へ読み替えない。読取を再確認するだけでBOMを再送しない |
+| Component・Finding確認 | 対象Projectの部品収録、データソース、解析状況 | 運用担当。0件や応答安定を安全・修正済みの証明にしない |
+| 引渡し | 元SBOM参照・ハッシュ・digest・CI参照・DT Project・各処理結果 | CI担当→運用担当。[対応承認と根拠登録](#5-資産への対応付けと配備申告)を行う。未確認の解析・配備状況を成功欄へ補わない |
 | 結果保存失敗／取消 | Actionsログと残ったintent／token、DT側 | CI担当。成功扱いせず外部状態を照合。結果ファイル不在は未送信の証拠ではない |
 
 helperはHTTP自動再試行0回、BOM待機300秒（各HTTP要求時間が加わる）で実行する。
 結果が不明なままActionsの「Re-run」を押すと再送になるため、先に状態確認する。
 正当な再送でも別の実行／結果名を使い、前回の参照と理由を残す。
-[一般の投入障害手順](sbom-input.md#投入後の確認と失敗時対応)。
 停止する場合はupload workflow／Environmentの承認を止める。既存DT inventoryや台帳を
 削除しない。誤ったSBOMは正しい同一成果物の元文書で訂正し、誤リンクは
 [撤回・再承認](assets.md#資産の廃止と紐付けの訂正)する。

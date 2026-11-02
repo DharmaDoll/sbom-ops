@@ -16,6 +16,10 @@
 生成器別のCI例とSlack通知はそれぞれ計画2・計画3として分け、導線再編を理由に
 製品のGitHub同期を有効化しない。配置先は[文書配置表](docs/documentation-map.md)を参照。
 
+[#28 文書の重複統合](https://github.com/DharmaDoll/sbom-ops/issues/28)では、
+利用シーンと短い日常手順を運用ガイドへ集約し、生成・投入と品質評価の正本を分ける。
+長い初回教材・資産・調査・任意連携は独立させ、旧リンクを維持して往復を減らす。
+
 ## 基本方針
 
 Slack通知は[#25](https://github.com/DharmaDoll/sbom-ops/issues/25)で扱う。

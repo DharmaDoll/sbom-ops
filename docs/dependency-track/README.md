@@ -15,9 +15,9 @@ Official documentation must be treated as the source of truth:
 
 Local repository guides:
 
-- `setup.md` for local bootstrap and API validation
-- `api.md` for production client implementation rules
-- `operations.md` for day-2 operating flow
+- [setup.md](setup.md) for bootstrap, API validation and ongoing administration
+- [api.md](api.md) for production client implementation rules
+- [operator guide](../operations.md#日常の流れ) for the day-to-day application workflow
 - [`../getting-started.md`](../getting-started.md#運用担当者向けの初回演習)
   for the guided first operator exercise (with an optional isolated SBOM upload)
 - [`../../lab/dependency_track/README.md`](../../lab/dependency_track/README.md)
